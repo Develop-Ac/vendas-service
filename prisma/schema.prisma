@@ -1,0 +1,394 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgres"
+  url      = env("DATABASE_URL")
+}
+
+model sis_usuarios {
+  nome              String
+  senha             String
+  trash             Int                @default(0)
+  id                String             @id @default(cuid())
+  codigo            String             @unique
+  setor             String
+  est_contagem      est_contagem[]
+  est_contagem_logs est_contagem_log[]
+  sis_permissoes    sis_permissoes[]
+}
+
+model com_cotacao {
+  id                String              @id @default(cuid())
+  empresa           Int
+  pedido_cotacao    Int                 @unique
+  com_cotacao_itens com_cotacao_itens[]
+}
+
+model com_cotacao_itens {
+  pedido_cotacao   Int
+  emissao          DateTime?
+  pro_codigo       Int
+  pro_descricao    String
+  mar_descricao    String?
+  referencia       String?
+  unidade          String?
+  quantidade       Int
+  dt_ultima_compra DateTime?
+  com_cotacao      com_cotacao @relation(fields: [pedido_cotacao], references: [pedido_cotacao], onDelete: Cascade)
+
+  @@id([pedido_cotacao, pro_codigo])
+}
+
+model ofi_checklists {
+  id                           String                   @id @default(cuid())
+  osInterna                    String?
+  dataHoraEntrada              DateTime?
+  observacoes                  String?
+  combustivelPercentual        Int?
+  clienteNome                  String?
+  clienteDoc                   String?
+  clienteTel                   String?
+  clienteEnd                   String?
+  veiculoNome                  String?
+  veiculoPlaca                 String?
+  veiculoCor                   String?
+  veiculoKm                    BigInt?
+  createdAt                    DateTime                 @default(now())
+  updatedAt                    DateTime                 @updatedAt
+  assinaturasclienteBase64     String?
+  assinaturasresponsavelBase64 String?
+  ofi_checklists_avarias       ofi_checklists_avarias[]
+  ofi_checklists_items         ofi_checklists_items[]
+}
+
+model ofi_checklists_avarias {
+  id             String         @id @default(cuid())
+  checklistId    String
+  tipo           String?
+  peca           String?
+  observacoes    String?
+  posX           Float?
+  posY           Float?
+  posZ           Float?
+  normX          Float?
+  normY          Float?
+  normZ          Float?
+  fotoBase64     String?
+  timestamp      DateTime?
+  ofi_checklists ofi_checklists @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  @@index([checklistId])
+}
+
+model ofi_checklists_items {
+  id             String         @id @default(cuid())
+  checklistId    String
+  item           String
+  status         String
+  ofi_checklists ofi_checklists @relation(fields: [checklistId], references: [id], onDelete: Cascade)
+
+  @@index([checklistId])
+}
+
+model com_cotacao_for {
+  id             String                  @id @default(cuid())
+  empresa        Int                     @default(3)
+  pedido_cotacao Int
+  for_codigo     Int
+  for_nome       String?
+  cpf_cnpj       String?
+  created_at     DateTime                @default(now())
+  updated_at     DateTime                @updatedAt
+  itens          com_cotacao_itens_for[]
+
+  @@unique([pedido_cotacao, for_codigo], name: "pedido_for")
+  @@index([pedido_cotacao])
+}
+
+model com_cotacao_itens_for {
+  id             String          @id @default(cuid())
+  pedido_cotacao Int
+  for_codigo     Int
+  emissao        DateTime?
+  pro_codigo     Int
+  pro_descricao  String
+  mar_descricao  String?
+  referencia     String?
+  unidade        String?
+  quantidade     Int
+  valor_unitario Float?
+  cotacao        com_cotacao_for @relation(fields: [pedido_cotacao, for_codigo], references: [pedido_cotacao, for_codigo], onDelete: Cascade)
+
+  @@index([pedido_cotacao, for_codigo])
+}
+
+model com_pedido {
+  id             String             @id @default(cuid())
+  pedido_cotacao Int
+  for_codigo     Int
+  created_at     DateTime           @default(now())
+  updated_at     DateTime           @updatedAt
+  itens          com_pedido_itens[]
+
+  @@unique([pedido_cotacao, for_codigo])
+  @@index([pedido_cotacao])
+  @@index([for_codigo])
+}
+
+model com_pedido_itens {
+  id             String     @id @default(cuid())
+  pedido_id      String
+  item_id_origem String?
+  pro_codigo     Int
+  pro_descricao  String
+  mar_descricao  String?
+  referencia     String?
+  unidade        String?
+  emissao        DateTime?
+  valor_unitario Decimal?
+  custo_fabrica  Decimal?
+  preco_custo    Decimal?
+  for_codigo     Int
+  quantidade     Decimal
+  created_at     DateTime   @default(now())
+  pedido         com_pedido @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
+
+  @@unique([pedido_id, pro_codigo, for_codigo])
+  @@index([pedido_id])
+}
+
+model est_contagem {
+  id                String             @id @default(cuid())
+  colaborador       String
+  created_at        DateTime           @default(now())
+  contagem          Int                @default(1)
+  liberado_contagem Boolean            @default(false)
+  contagem_cuid     String?
+  usuario           sis_usuarios       @relation(fields: [colaborador], references: [id])
+  logs              est_contagem_log[]
+
+  @@index([colaborador])
+  @@index([contagem_cuid])
+}
+
+model est_contagem_itens {
+  id             String             @id @default(cuid())
+  data           DateTime
+  cod_produto    Int
+  desc_produto   String
+  mar_descricao  String?
+  ref_fabricante String?
+  ref_fornecedor String?
+  localizacao    String?
+  unidade        String?
+  qtde_saida     Int
+  estoque        Int
+  reserva        Int
+  conferir       Boolean            @default(true)
+  contagem_cuid  String
+  aplicacoes     String?
+  logs           est_contagem_log[]
+
+  @@index([contagem_cuid])
+  @@index([cod_produto])
+}
+
+model est_contagem_log {
+  id          String             @id @default(cuid())
+  contagem_id String
+  usuario_id  String
+  item_id     String
+  estoque     Int
+  contado     Int
+  created_at  DateTime           @default(now())
+  contagem    est_contagem       @relation(fields: [contagem_id], references: [id])
+  item        est_contagem_itens @relation(fields: [item_id], references: [id])
+  usuario     sis_usuarios       @relation(fields: [usuario_id], references: [id])
+
+  @@index([contagem_id])
+  @@index([usuario_id])
+  @@index([item_id])
+}
+
+model com_kanban {
+  id        String   @id
+  data      Json
+  updatedAt DateTime
+  createdAt DateTime @default(now())
+}
+
+model gar_anexos_garantias {
+  id            Int           @id @default(autoincrement())
+  garantia_id   Int
+  nome_ficheiro String        @db.VarChar(255)
+  path_ficheiro String        @db.VarChar(255)
+  data_upload   DateTime?     @default(now()) @db.Timestamptz(6)
+  gar_garantias gar_garantias @relation(fields: [garantia_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model gar_caixa_de_entrada_emails {
+  id               Int            @id @default(autoincrement())
+  message_id       String         @unique
+  garantia_id      Int?
+  remetente        String?
+  assunto          String?
+  corpo_html       String?
+  data_recebimento DateTime?      @db.Timestamptz(6)
+  foi_processado   Boolean?       @default(false)
+  reply_to         String?
+  to_list          String[]       @default([])
+  cc_list          String[]       @default([])
+  bcc_list         String[]       @default([])
+  attachments      Json?          @default("[]")
+  gar_garantias    gar_garantias? @relation(fields: [garantia_id], references: [id], onUpdate: NoAction)
+
+  @@index([garantia_id], map: "gar_idx_caixa_entrada_garantia_id")
+}
+
+model gar_email_attachments {
+  id             BigInt      @id @default(autoincrement())
+  email_id       BigInt?
+  filename       String?
+  mime_type      String?
+  size_bytes     BigInt?
+  content_id     String?
+  content_base64 String?
+  gar_emails     gar_emails? @relation(fields: [email_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model gar_emails {
+  id                    BigInt                  @id @default(autoincrement())
+  message_id            String?                 @unique
+  remetente             String?
+  assunto               String?
+  corpo_html            String?
+  data_recebimento      DateTime?               @db.Timestamptz(6)
+  reply_to              String?
+  to_list               Json?
+  cc_list               Json?
+  bcc_list              Json?
+  controle_interno      String?
+  nota_interna          String?
+  garantia_id           Int?
+  created_at            DateTime?               @default(now()) @db.Timestamptz(6)
+  gar_email_attachments gar_email_attachments[]
+  gar_garantias         gar_garantias?          @relation(fields: [garantia_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([garantia_id], map: "gar_idx_emails_garantia_id")
+  @@index([nota_interna], map: "gar_idx_emails_nota_interna")
+}
+
+model gar_fornecedores_config {
+  id                Int     @id @default(autoincrement())
+  erp_fornecedor_id Int     @unique
+  processo_tipo     String  @db.VarChar(50)
+  portal_link       String?
+  formulario_path   String?
+  nome_formulario   String? @db.VarChar(255)
+  instrucoes        String?
+}
+
+model gar_garantias {
+  id                          Int                           @id @default(autoincrement())
+  erp_fornecedor_id           Int?
+  nome_fornecedor             String                        @db.VarChar(255)
+  email_fornecedor            String?                       @db.VarChar(255)
+  produtos                    String
+  nota_interna                String                        @db.VarChar(255)
+  descricao                   String?
+  tipo_garantia               String?                       @db.VarChar(100)
+  nfs_compra                  String?                       @db.VarChar(255)
+  data_criacao                DateTime?                     @default(now()) @db.Timestamptz(6)
+  precisa_nota_fiscal         Boolean?
+  cfop                        String?                       @db.VarChar(10)
+  frete_por_conta_de          String?                       @db.VarChar(50)
+  transportadora_razao_social String?                       @db.VarChar(255)
+  transportadora_cnpj         String?                       @db.VarChar(20)
+  transportadora_ie           String?                       @db.VarChar(20)
+  transportadora_endereco     String?
+  numero_nf_devolucao         String?                       @db.VarChar(50)
+  data_coleta_envio           DateTime?                     @db.Date
+  nf_abatida_boleto           String?                       @db.VarChar(50)
+  tipo_credito_final          String?                       @db.VarChar(255)
+  protocolo_fornecedor        String?                       @db.VarChar(255)
+  tem_nova_interacao          Boolean?                      @default(false)
+  copias_email                String?
+  transportadora_cidade       String?
+  transportadora_uf           String?
+  codigo_coleta_envio         String?
+  obs                         String?
+  valor_credito_total         Decimal?                      @db.Decimal(12, 2)
+  valor_credito_utilizado     Decimal                       @default(0) @db.Decimal(12, 2)
+  status                      Int                           @default(1)
+  gar_anexos_garantias        gar_anexos_garantias[]
+  gar_caixa_de_entrada_emails gar_caixa_de_entrada_emails[]
+  gar_emails                  gar_emails[]
+  gar_garantias_abatimentos   gar_garantias_abatimentos[]
+  gar_historico_garantias     gar_historico_garantias[]
+}
+
+model gar_garantias_abatimentos {
+  id            BigInt        @id @default(autoincrement())
+  garantia_id   Int
+  nf            String
+  parcela       String
+  vencimento    DateTime      @db.Date
+  valor         Decimal       @db.Decimal(12, 2)
+  created_at    DateTime      @default(now()) @db.Timestamptz(6)
+  gar_garantias gar_garantias @relation(fields: [garantia_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model gar_historico_garantias {
+  id              Int           @id @default(autoincrement())
+  garantia_id     Int
+  descricao       String
+  tipo_interacao  String        @db.VarChar(100)
+  data_ocorrencia DateTime?     @default(now()) @db.Timestamptz(6)
+  foi_visto       Boolean?      @default(true)
+  message_id      String?
+  assunto         String?
+  gar_garantias   gar_garantias @relation(fields: [garantia_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model sac_kanban {
+  id                 String               @id
+  data               DateTime             @db.Timestamptz(6)
+  tipo               String?
+  custo              String?
+  title              String?
+  venda              String?
+  cliente            String?
+  solucao            String?
+  vendedor           String?
+  createdAt          BigInt
+  reclamacao         String?
+  dataSolucao        String?
+  itemReclamado      String?
+  dptoResponsavel    String?
+  etapa              String
+  updatedAt          DateTime             @db.Timestamptz(6)
+  imagem             String?
+  sac_kanban_imagens sac_kanban_imagens[]
+}
+
+model sis_permissoes {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  usuario_id   String       @db.VarChar(36)
+  modulo       String       @db.VarChar
+  tela         String       @db.VarChar
+  visualizar   Boolean      @default(false)
+  editar       Boolean      @default(false)
+  criar        Boolean      @default(false)
+  deletar      Boolean      @default(false)
+  sis_usuarios sis_usuarios @relation(fields: [usuario_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_usuario")
+}
+
+model sac_kanban_imagens {
+  id         Int        @id @default(autoincrement())
+  kanban_id  String
+  imagem     String
+  created_at DateTime?  @default(now()) @db.Timestamptz(6)
+  sac_kanban sac_kanban @relation(fields: [kanban_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
