@@ -1,19 +1,18 @@
 # ============
 # Build stage
 # ============
-FROM node:20-alpine AS build
+FROM node:20-slim AS build
 WORKDIR /app
 
-# Toolchain + headers para node-canvas
-RUN apk add --no-cache \
+# Toolchain + headers para node-canvas (Debian/glibc)
+RUN apt-get update && apt-get install -y --no-install-recommends \
   openssl \
-  python3 make g++ pkgconf \
-  cairo-dev pango-dev jpeg-dev giflib-dev librsvg-dev pixman-dev
+  python3 make g++ pkg-config \
+  libcairo2-dev libpango1.0-dev libjpeg-dev libgif-dev librsvg2-dev libpixman-1-dev \
+  && rm -rf /var/lib/apt/lists/*
 
-# >>> Defina o Python para o node-gyp via env (npm 10 não aceita 'npm config set python')
 ENV PYTHON=/usr/bin/python3
 ENV npm_config_python=/usr/bin/python3
-RUN ln -sf /usr/bin/python3 /usr/bin/python
 
 # Instala deps antes do código (cache melhor)
 COPY package*.json ./
@@ -31,13 +30,14 @@ RUN npm run build
 # ==============
 # Runtime stage
 # ==============
-FROM node:20-alpine AS runtime
+FROM node:20-slim AS runtime
 WORKDIR /app
 
 # Somente libs de execução (sem -dev)
-RUN apk add --no-cache \
+RUN apt-get update && apt-get install -y --no-install-recommends \
   openssl \
-  cairo pango jpeg giflib librsvg pixman
+  libcairo2 libpango-1.0-0 libjpeg62-turbo libgif7 librsvg2-2 libpixman-1-0 \
+  && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production
 ENV PORT=8000
