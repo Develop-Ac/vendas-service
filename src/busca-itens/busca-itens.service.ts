@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
+import { BuscaItensRepository, UpdateProdutoCarroData } from './busca-itens.repository';
 
 interface BuscaItensParams {
   placa?: string;
@@ -30,7 +31,10 @@ interface PlacaResponse {
 export class BuscaItensService {
   private readonly logger = new Logger(BuscaItensService.name);
 
-  constructor(private readonly httpService: HttpService) {}
+  constructor(
+    private readonly httpService: HttpService,
+    private readonly buscaItensRepository: BuscaItensRepository,
+  ) {}
 
   async buscarItens({ placa, produto, codigo }: BuscaItensParams) {
     let query: string;
@@ -95,5 +99,9 @@ export class BuscaItensService {
         `Erro ao consultar a API de busca: ${err.message}`,
       );
     }
+  }
+
+  async updateProdutoCarro(proCodigo: string, data: UpdateProdutoCarroData) {
+    return this.buscaItensRepository.updateProdutoCarro(proCodigo, data);
   }
 }
