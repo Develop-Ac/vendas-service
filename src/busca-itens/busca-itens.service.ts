@@ -42,7 +42,7 @@ export class BuscaItensService {
 
     if (codigo) {
       query = codigo;
-    } else if (placa && produto) {
+    } else if (placa) {
       const placaUrl = `http://placas-service.acacessorios.local/placa/${placa}`;
       try {
         const placaRes = await firstValueFrom(
@@ -50,7 +50,9 @@ export class BuscaItensService {
         );
         const { modelo, ano_modelo } = placaRes.data;
         const firstWordModelo = modelo.split(' ')[0];
-        query = `${produto} ${firstWordModelo} ${ano_modelo}`;
+        query = produto
+          ? `${produto} ${firstWordModelo} ${ano_modelo}`
+          : `${firstWordModelo} ${ano_modelo}`;
         anoModeloFiltro = ano_modelo;
       } catch (err) {
         const status = err?.response?.status;
@@ -62,6 +64,8 @@ export class BuscaItensService {
           `Erro ao consultar a API de placas: ${err.message}`,
         );
       }
+    } else if (produto) {
+      query = produto;
     } else {
       throw new BadRequestException(
         'Informe (placa + produto) ou codigo para realizar a busca.',
