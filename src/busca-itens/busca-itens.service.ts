@@ -40,6 +40,8 @@ export class BuscaItensService {
     let query: string;
     let anoModeloFiltro: string | null = null;
 
+    codigo = codigo?.replaceAll("%", "+");  
+
     if (codigo) {
       query = codigo;
     } else if (placa) {
