@@ -120,7 +120,7 @@ async function bootstrap() {
       'appToken',
       )
       .addServer(process.env.PUBLIC_URL ?? 'http://localhost:8000', 'Servidor de Desenvolvimento')
-      .addServer('http://sistema-service.acacessorios.local', 'Servidor de Produção')
+      .addServer('http://vendas-service.acacessorios.local', 'Servidor de Produção')
       .build();
 
     const document = SwaggerModule.createDocument(app, config, {
