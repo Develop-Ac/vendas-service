@@ -72,7 +72,8 @@ export class BuscaItensService {
       );
     }
 
-    const searchUrl = `http://smart-search-service.acacessorios.local/api/search?q=${encodeURIComponent(query)}&limit=500`;
+    const searchUrl = `http://smart-search-service.acacessorios.local/api/search?q=${encodeURIComponent(query.replace(/\+/g, ' '))}&limit=500`;
+
     try {
       const searchRes = await firstValueFrom(
         this.httpService.get<{ query: string; results: any[] }>(searchUrl),
