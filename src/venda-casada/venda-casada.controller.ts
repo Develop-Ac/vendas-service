@@ -52,8 +52,7 @@ export class VendaCasadaController {
       properties: {
         nome_vendedor: { type: 'string' },
         carro: { type: 'string' },
-        peca: { type: 'string' },
-        lado: { type: 'string' },
+        pecas: { type: 'array', items: { type: 'string' } },
         ano: { type: 'integer' },
         observacao: { type: 'string' },
         cliente: { type: 'string' },

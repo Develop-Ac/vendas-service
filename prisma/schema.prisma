@@ -812,15 +812,14 @@ model sis_log {
 }
 
 model ven_venda_casada {
-  id            Int     @id @default(autoincrement())
-  nome_vendedor String? @db.VarChar(255)
-  carro         String? @db.VarChar(255)
-  peca          String? @db.VarChar(255)
-  lado          String? @db.VarChar(100)
+  id            Int      @id @default(autoincrement())
+  nome_vendedor String?  @db.VarChar(255)
+  carro         String?  @db.VarChar(255)
   ano           Int?
   observacao    String?
-  cliente       String? @db.VarChar(255)
-  numero        String? @db.VarChar(50)
+  cliente       String?  @db.VarChar(255)
+  numero        String?  @db.VarChar(50)
   imagem        String?
-  status        String? @db.VarChar(50)
+  status        String?  @db.VarChar(50)
+  pecas         String[]
 }

@@ -4,6 +4,11 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  IsArray,
+  ArrayNotEmpty,
+  IsDefined,
+  IsNotEmpty,
+  IsString as IsStringValidator,
 } from 'class-validator';
 
 export class CreateVendaCasadaDto {
@@ -19,17 +24,17 @@ export class CreateVendaCasadaDto {
   @MaxLength(255)
   carro?: string;
 
-  @ApiProperty({ description: 'Peça', required: false })
-  @IsOptional()
-  @IsString()
-  @MaxLength(255)
-  peca?: string;
-
-  @ApiProperty({ description: 'Lado', required: false })
-  @IsOptional()
-  @IsString()
-  @MaxLength(100)
-  lado?: string;
+  @ApiProperty({
+    description: 'Lista de peças',
+    required: true,
+    type: [String],
+    example: ['Porta dianteira esquerda', 'Retrovisor direito'],
+  })
+  @IsDefined()
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsStringValidator({ each: true })
+  pecas: string[];
 
   @ApiProperty({ description: 'Ano', required: false })
   @IsOptional()

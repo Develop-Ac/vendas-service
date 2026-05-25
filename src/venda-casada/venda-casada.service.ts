@@ -34,7 +34,7 @@ export class VendaCasadaService {
     if (file) {
       const ext = file.originalname.split('.').pop();
       const timestamp = Date.now();
-      imagemKey = `venda-casada/${timestamp}_${file.originalname}`;
+      imagemKey = `${timestamp}_${file.originalname}`;
       await this.s3.putObject(imagemKey, file.buffer, file.mimetype, this.BUCKET);
     }
 
@@ -42,13 +42,12 @@ export class VendaCasadaService {
       ...dto,
       nome_vendedor: dto.nome_vendedor ?? null,
       carro: dto.carro ?? null,
-      peca: dto.peca ?? null,
-      lado: dto.lado ?? null,
       ano: Number(dto.ano) ?? null,
       observacao: dto.observacao ?? null,
       cliente: dto.cliente ?? null,
       numero: dto.numero ?? null,
       imagem: imagemKey,
+      pecas: dto.pecas,
       status: 'Em aberto',
     });
   }
