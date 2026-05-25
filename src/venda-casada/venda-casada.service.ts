@@ -44,7 +44,7 @@ export class VendaCasadaService {
       carro: dto.carro ?? null,
       peca: dto.peca ?? null,
       lado: dto.lado ?? null,
-      ano: dto.ano ?? null,
+      ano: Number(dto.ano) ?? null,
       observacao: dto.observacao ?? null,
       cliente: dto.cliente ?? null,
       numero: dto.numero ?? null,
