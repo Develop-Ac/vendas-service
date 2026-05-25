@@ -38,8 +38,22 @@ export class VendaCasadaService {
       await this.s3.putObject(imagemKey, file.buffer, file.mimetype, this.BUCKET);
     }
 
+    // Garante que pecas seja sempre array de string
+    let pecas: string[];
+    if (Array.isArray(dto.pecas)) {
+      pecas = dto.pecas;
+    } else if (typeof dto.pecas === 'string') {
+      try {
+        const parsed = JSON.parse(dto.pecas);
+        pecas = Array.isArray(parsed) ? parsed : [dto.pecas];
+      } catch {
+        pecas = [dto.pecas];
+      }
+    } else {
+      pecas = [];
+    }
+
     return this.repository.create({
-      ...dto,
       nome_vendedor: dto.nome_vendedor ?? null,
       carro: dto.carro ?? null,
       ano: Number(dto.ano) ?? null,
@@ -47,7 +61,7 @@ export class VendaCasadaService {
       cliente: dto.cliente ?? null,
       numero: dto.numero ?? null,
       imagem: imagemKey,
-      pecas: dto.pecas,
+      pecas: pecas,
       status: 'Em aberto',
     });
   }
