@@ -822,4 +822,14 @@ model ven_venda_casada {
   imagem        String?
   status        String?  @db.VarChar(50)
   pecas         String[]
+  pecas_cotadas String[]
+}
+
+model ven_venda_casada_itens {
+  id         Int     @id @default(autoincrement())
+  nome       String  @db.VarChar(255)
+  valor      Float   @db.Real
+  prazo      String? @db.VarChar(100)
+  fornecedor String? @db.VarChar(255)
+  marca      String? @db.VarChar(255)
 }

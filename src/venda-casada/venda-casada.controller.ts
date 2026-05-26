@@ -19,6 +19,7 @@ import {
 } from '@nestjs/swagger';
 import { VendaCasadaService } from './venda-casada.service';
 import { CreateVendaCasadaDto } from './dto/create-venda-casada.dto';
+import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
 
 @ApiTags('Venda Casada')
 @Controller('venda-casada')
@@ -67,5 +68,22 @@ export class VendaCasadaController {
     @UploadedFile() file?: Express.Multer.File,
   ) {
     return this.service.create(dto, file);
+  }
+
+  @Post(':id')
+  @ApiOperation({
+    summary: 'Adiciona peças cotadas a uma venda casada',
+    description:
+      'Cria registros em ven_venda_casada_itens e salva os IDs gerados na lista pecas_cotadas da venda casada.',
+  })
+  @ApiParam({ name: 'id', type: Number, description: 'ID da venda casada' })
+  @ApiBody({ type: AddPecasCotadasDto })
+  @ApiResponse({ status: 201, description: 'Peças cotadas adicionadas com sucesso' })
+  @ApiResponse({ status: 404, description: 'Venda casada não encontrada' })
+  addPecasCotadas(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: AddPecasCotadasDto,
+  ) {
+    return this.service.addPecasCotadas(id, dto);
   }
 }

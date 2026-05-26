@@ -1,8 +1,12 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { VendaCasadaRepository } from './venda-casada.repository';
+import {
+  VendaCasadaRepository,
+  VendaCasadaComItens,
+} from './venda-casada.repository';
 import { S3Service } from '../storage/s3.service';
 import { CreateVendaCasadaDto } from './dto/create-venda-casada.dto';
-import { ven_venda_casada } from '@prisma/client';
+import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
+import { ven_venda_casada, ven_venda_casada_itens } from '@prisma/client';
 
 @Injectable()
 export class VendaCasadaService {
@@ -17,7 +21,7 @@ export class VendaCasadaService {
     return this.repository.findAll();
   }
 
-  async findById(id: number): Promise<ven_venda_casada> {
+  async findById(id: number): Promise<VendaCasadaComItens> {
     const record = await this.repository.findById(id);
     if (!record) {
       throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
@@ -62,7 +66,28 @@ export class VendaCasadaService {
       numero: dto.numero ?? null,
       imagem: imagemKey,
       pecas: pecas,
+      pecas_cotadas: [],
       status: 'Em aberto',
     });
+  }
+
+  async addPecasCotadas(
+    id: number,
+    dto: AddPecasCotadasDto,
+  ): Promise<{ created: ven_venda_casada_itens[]; venda: ven_venda_casada }> {
+    const venda = await this.repository.findById(id);
+    if (!venda) {
+      throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
+    }
+
+    const itens = dto.itens.map((item) => ({
+      nome: item.nome,
+      valor: item.valor,
+      prazo: item.prazo ?? null,
+      fornecedor: item.fornecedor ?? null,
+      marca: item.marca ?? null,
+    }));
+
+    return this.repository.addPecasCotadas(id, itens);
   }
 }
