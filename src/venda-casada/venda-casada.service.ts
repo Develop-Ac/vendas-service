@@ -80,15 +80,15 @@ export class VendaCasadaService {
       throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
     }
 
-    const itens = dto.itens.map((item) => ({
+    const lista = Array.isArray(dto.itens) ? dto.itens : [dto.itens];
+
+    const itens = lista.map((item) => ({
       nome: item.nome,
       valor: item.valor,
       prazo: item.prazo ?? null,
       fornecedor: item.fornecedor ?? null,
       marca: item.marca ?? null,
     }));
-
-    console.log('Adicionando peças cotadas:', itens);
 
     return this.repository.addPecasCotadas(id, itens); 
   }

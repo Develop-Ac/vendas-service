@@ -73,7 +73,6 @@ export class VendaCasadaController {
   }
 
   @Post(':id')
-  @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
   @ApiOperation({
     summary: 'Adiciona peças cotadas a uma venda casada',
     description:
