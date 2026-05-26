@@ -88,6 +88,8 @@ export class VendaCasadaService {
       marca: item.marca ?? null,
     }));
 
-    return this.repository.addPecasCotadas(id, itens);
+    console.log('Adicionando peças cotadas:', itens);
+
+    return this.repository.addPecasCotadas(id, itens); 
   }
 }
