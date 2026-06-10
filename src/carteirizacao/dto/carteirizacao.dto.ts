@@ -10,6 +10,9 @@ export interface ListarClientesQuery {
   busca?: string;
   faturamentoMin?: number;
   faturamentoMax?: number;
+  altoFaturamento?: boolean;
+  queda?: boolean;
+  novo?: boolean;
   ordenarPor?: string;
   ordem?: 'asc' | 'desc';
   janelaDias?: number;

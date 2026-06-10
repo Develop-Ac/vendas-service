@@ -174,6 +174,9 @@ export class CarteirizacaoService {
     if (q.uf) lista = lista.filter((c) => (c.uf ?? '').toUpperCase() === q.uf!.toUpperCase());
     if (q.faturamentoMin != null) lista = lista.filter((c) => c.faturamento_total >= Number(q.faturamentoMin));
     if (q.faturamentoMax != null) lista = lista.filter((c) => c.faturamento_total <= Number(q.faturamentoMax));
+    if (q.altoFaturamento) lista = lista.filter((c) => c.alto_faturamento);
+    if (q.queda) lista = lista.filter((c) => c.queda);
+    if (q.novo) lista = lista.filter((c) => c.novo);
     if (q.busca) {
       const termo = q.busca.trim().toLowerCase();
       lista = lista.filter(
