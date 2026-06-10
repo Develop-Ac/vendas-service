@@ -887,3 +887,18 @@ model ven_carteira_vendedor_config {
   created_at       DateTime @default(now()) @db.Timestamptz(6)
   updated_at       DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 }
+
+model ven_meta_vendedor {
+  id             String   @id @default(cuid())
+  rep_codigo     Int
+  rep_nome       String?
+  ano            Int
+  mes            Int
+  valor_meta     Decimal  @default(0) @db.Decimal(15, 2)
+  observacao     String?
+  atualizado_por String?
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([rep_codigo, ano, mes], map: "uq_ven_meta_vendedor_periodo")
+}

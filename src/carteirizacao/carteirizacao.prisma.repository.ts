@@ -68,6 +68,65 @@ export class CarteirizacaoPrismaRepository {
     });
   }
 
+  // -------------------------------------------------------- config vendedor
+  async listarConfigs() {
+    return this.prisma.ven_carteira_vendedor_config.findMany();
+  }
+
+  async getConfig(rep_codigo: number) {
+    return this.prisma.ven_carteira_vendedor_config.findUnique({ where: { rep_codigo } });
+  }
+
+  async upsertConfig(params: {
+    rep_codigo: number;
+    rep_nome?: string | null;
+    capacidade_max?: number | null;
+    canal?: string | null;
+    ativo?: boolean;
+    meta_faturamento?: number | null;
+    observacao?: string | null;
+  }) {
+    const { rep_codigo, ...rest } = params;
+    return this.prisma.ven_carteira_vendedor_config.upsert({
+      where: { rep_codigo },
+      create: { rep_codigo, ...rest },
+      update: { ...rest, updated_at: new Date() },
+    });
+  }
+
+  // --------------------------------------------------------- metas vendedor
+  async listarMetasPeriodo(ano: number, mes: number) {
+    return this.prisma.ven_meta_vendedor.findMany({ where: { ano, mes } });
+  }
+
+  /** Feriados de um mês (sis_feriados). Retorna os dias do mês (1-31) que são feriado. */
+  async diasFeriadosDoMes(ano: number, mes: number): Promise<number[]> {
+    const inicio = new Date(Date.UTC(ano, mes - 1, 1));
+    const fim = new Date(Date.UTC(ano, mes, 1));
+    const rows = await this.prisma.sis_feriados.findMany({
+      where: { data: { gte: inicio, lt: fim } },
+      select: { data: true },
+    });
+    return [...new Set(rows.map((r) => new Date(r.data).getUTCDate()))];
+  }
+
+  async upsertMeta(params: {
+    rep_codigo: number;
+    rep_nome?: string | null;
+    ano: number;
+    mes: number;
+    valor_meta: number;
+    observacao?: string | null;
+    atualizado_por?: string | null;
+  }) {
+    const { rep_codigo, ano, mes, ...rest } = params;
+    return this.prisma.ven_meta_vendedor.upsert({
+      where: { rep_codigo_ano_mes: { rep_codigo, ano, mes } },
+      create: { rep_codigo, ano, mes, ...rest },
+      update: { ...rest, updated_at: new Date() },
+    });
+  }
+
   /** Para o seed: insere muitas atribuições de uma vez (ignora as já existentes). */
   async semearMuitos(
     rows: Array<{

@@ -10,8 +10,9 @@ Rodar o DDL no banco do vendas-service:
 psql "$DATABASE_URL" -f sql/carteirizacao_postgres.sql
 ```
 
-Cria: `ven_carteira_cliente`, `ven_carteira_historico`, `ven_carteira_vendedor_config`.
+Cria: `ven_carteira_cliente`, `ven_carteira_historico`, `ven_carteira_vendedor_config`, `ven_meta_vendedor`.
 > Não usar `prisma migrate`. O `schema.prisma` já reflete essas tabelas (para o Prisma Client).
+> O arquivo é idempotente (IF NOT EXISTS) — re-rodar após a Fase 3 só cria a tabela nova `ven_meta_vendedor`.
 
 ## 2. Variáveis de ambiente
 Adicionar ao `.env` (ver `.env.example`):
@@ -55,6 +56,18 @@ Universo = clientes atacado (tabela de preço 2 e 5). ~433 clientes têm `rep_co
 - `POST /carteirizacao/transferir` — `{rep_origem, rep_destino, cli_codigos?[], motivo?}`.
 - `DELETE /carteirizacao/cliente/:cli` — remove da carteira.
 - `GET  /carteirizacao/cliente/:cli/historico`.
+
+## Endpoints (Fase 2 — acompanhamento)
+- `GET /carteirizacao/indicadores/vendedores` · `GET /carteirizacao/indicadores/cliente/:cli`
+- `GET /carteirizacao/alertas`
+- `GET/PUT /carteirizacao/vendedores/:rep/config` · `POST /carteirizacao/redistribuir`
+
+## Endpoints (Fase 3 — inteligência / metas)
+- Score do cliente (0-100, RFM+margem) e curva ABC vêm embutidos em `GET /carteirizacao/clientes` (campos `score`, `score_faixa`, `curva_abc`, `margem_pct`).
+- `GET /carteirizacao/metas?ano&mes` — metas x realizado por vendedor (todos os vendedores ativos das comissões; meta = override Postgres > `f_metas_vendedores` do DW).
+- `PUT /carteirizacao/metas/:rep` — define/override meta `{ ano, mes, valor_meta, observacao? }` (gerencial).
+
+> Telas/permissões: `/vendas/carteirizacao` (Clientes), `/vendas/carteirizacao/vendedores`, `/vendas/carteirizacao/alertas`, `/vendas/carteirizacao/metas` (gerencial). As abas são gateadas por permissão exata.
 
 ## Frontend
 Tela em `cotacao-frontend/app/(private)/vendas/carteirizacao/page.tsx` (menu Vendas → Carteirização).

@@ -20,6 +20,34 @@ export interface ClienteBaseRow {
   faturamento_12m: number;
   qtd_pedidos: number;
   ult_compra_venda: Date | null;
+  lucro_12m: number;
+  base_12m: number;
+  custo_12m: number;
+}
+
+export interface MetaDwRow {
+  cod_vendedor: number;
+  vendedor: string;
+  valor_total: number;
+  valor_diario: number;
+  data_inicial: Date | null;
+  data_final: Date | null;
+}
+
+export interface RealizadoVendedorRow {
+  vendedor_venda: number;
+  nome: string | null;
+  realizado: number;
+  pedidos: number;
+  lucro: number;
+  custo: number;
+}
+
+export interface VendedorAtivoRow {
+  rep_codigo: number;
+  nome: string;
+  papel: string | null;
+  local_venda: string | null;
 }
 
 export interface VendedorRow {
@@ -72,6 +100,17 @@ export class CarteirizacaoSqlServerRepository {
           MAX(dt) AS ult_compra_venda
         FROM notas
         GROUP BY CLI_CODIGO
+      ),
+      marg AS (
+        SELECT v.CLI_CODIGO,
+               SUM(v.lucro) AS lucro_12m,
+               SUM(v.liquido_produto) AS base_12m,
+               SUM(v.custo_produto) AS custo_12m
+        FROM dbo.vw_analise_vendas v
+        WHERE v.DT_CANCELAMENTO IS NULL
+          AND v.dt_emissao_convertida >= DATEADD(MONTH,-12, CAST(GETDATE() AS date))
+          AND v.CLI_CODIGO IN (SELECT cli_codigo FROM atac)
+        GROUP BY v.CLI_CODIGO
       )
       SELECT a.cli_codigo, a.cli_nome, a.uf, a.cidade, a.fone, a.contato,
              a.data_ult_compra, a.rep_codigo, a.tabela_preco, a.inativo,
@@ -82,10 +121,14 @@ export class CarteirizacaoSqlServerRepository {
              COALESCE(m.faturamento_3m_ant, 0)  AS faturamento_3m_ant,
              COALESCE(m.faturamento_12m, 0)     AS faturamento_12m,
              COALESCE(m.qtd_pedidos, 0)         AS qtd_pedidos,
-             m.ult_compra_venda
+             m.ult_compra_venda,
+             COALESCE(g.lucro_12m, 0)           AS lucro_12m,
+             COALESCE(g.base_12m, 0)            AS base_12m,
+             COALESCE(g.custo_12m, 0)           AS custo_12m
       FROM atac a
       LEFT JOIN dbo.d_cadastro_representantes r ON r.cod = a.rep_codigo
       LEFT JOIN metr m ON m.CLI_CODIGO = a.cli_codigo
+      LEFT JOIN marg g ON g.CLI_CODIGO = a.cli_codigo
     `;
     return this.mssql.query<ClienteBaseRow>(query);
   }
@@ -103,6 +146,71 @@ export class CarteirizacaoSqlServerRepository {
       ORDER BY r.nome_representante
     `;
     return this.mssql.query<VendedorRow>(query);
+  }
+
+  /** Faturamento mensal de um cliente nos últimos N meses (evolução). */
+  async serieMensalCliente(
+    cliCodigo: number,
+    meses = 12,
+  ): Promise<Array<{ ano: number; mes: number; faturamento: number; pedidos: number }>> {
+    const query = `
+      SELECT n.ano, n.mes,
+             SUM(n.valor_nota) AS faturamento,
+             COUNT(*) AS pedidos
+      FROM (
+        SELECT YEAR(v.dt_emissao_convertida) AS ano,
+               MONTH(v.dt_emissao_convertida) AS mes,
+               v.EMPRESA, v.SERIE, v.NFS,
+               MAX(v.TOTAL_NOTA) AS valor_nota
+        FROM dbo.vw_analise_vendas v
+        WHERE v.CLI_CODIGO = @cli
+          AND v.DT_CANCELAMENTO IS NULL
+          AND v.dt_emissao_convertida >= DATEADD(MONTH, -@meses, CAST(GETDATE() AS date))
+        GROUP BY YEAR(v.dt_emissao_convertida), MONTH(v.dt_emissao_convertida),
+                 v.EMPRESA, v.SERIE, v.NFS
+      ) n
+      GROUP BY n.ano, n.mes
+      ORDER BY n.ano, n.mes
+    `;
+    return this.mssql.query(query, { cli: cliCodigo, meses });
+  }
+
+  // ============================ Fase 3 — Metas & Performance ============
+  /** Vendedores ativos do módulo de comissões (todos os canais, varejo+atacado). */
+  async vendedoresAtivosComissao(): Promise<VendedorAtivoRow[]> {
+    const query = `
+      SELECT rep_codigo, nome, papel, local_venda
+      FROM dbo.ComissaoRepresentante
+      WHERE inativo = 0 AND papel = 'VENDEDOR'
+      ORDER BY nome
+    `;
+    return this.mssql.query<VendedorAtivoRow>(query);
+  }
+
+  /** Metas oficiais do DW (f_metas_vendedores) para um período. */
+  async metasDw(ano: number, mes: number): Promise<MetaDwRow[]> {
+    const query = `
+      SELECT cod_vendedor, vendedor, valor_total, valor_diario, data_inicial, data_final
+      FROM dbo.f_metas_vendedores
+      WHERE ano = @ano AND mes = @mes
+    `;
+    return this.mssql.query<MetaDwRow>(query, { ano, mes });
+  }
+
+  /** Faturamento realizado por vendedor em um período (todos os canais). */
+  async realizadoVendedores(ano: number, mes: number): Promise<RealizadoVendedorRow[]> {
+    const query = `
+      SELECT v.vendedor_venda,
+             MAX(v.nome_representante) AS nome,
+             SUM(v.total_item) AS realizado,
+             COUNT(DISTINCT v.NFS) AS pedidos,
+             SUM(v.lucro) AS lucro,
+             SUM(v.custo_produto) AS custo
+      FROM dbo.vw_analise_vendas v
+      WHERE v.DT_CANCELAMENTO IS NULL AND v.ano = @ano AND v.mes = @mes
+      GROUP BY v.vendedor_venda
+    `;
+    return this.mssql.query<RealizadoVendedorRow>(query, { ano, mes });
   }
 
   /** Nomes de representantes por códigos (para reps que só aparecem no overlay). */

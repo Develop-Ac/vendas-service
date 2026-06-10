@@ -59,3 +59,20 @@ CREATE TABLE IF NOT EXISTS ven_carteira_vendedor_config (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_ven_carteira_vend_cfg_rep ON ven_carteira_vendedor_config (rep_codigo);
+
+-- 4) Metas por vendedor (Fase 3) — override da meta oficial (f_metas_vendedores) -
+-- Quando existe, tem precedência sobre a meta do DW. Período = ano+mes.
+CREATE TABLE IF NOT EXISTS ven_meta_vendedor (
+  id              TEXT PRIMARY KEY,
+  rep_codigo      INTEGER NOT NULL,
+  rep_nome        TEXT,
+  ano             INTEGER NOT NULL,
+  mes             INTEGER NOT NULL,
+  valor_meta      NUMERIC(15,2) NOT NULL DEFAULT 0,
+  observacao      TEXT,
+  atualizado_por  TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ven_meta_vendedor_periodo ON ven_meta_vendedor (rep_codigo, ano, mes);

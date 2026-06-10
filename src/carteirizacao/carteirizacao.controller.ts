@@ -6,6 +6,7 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Put,
   Query,
   Res,
 } from '@nestjs/common';
@@ -14,7 +15,10 @@ import { CarteirizacaoService } from './carteirizacao.service';
 import {
   AtribuirDto,
   AtribuirLoteDto,
+  ConfigVendedorDto,
   ListarClientesQuery,
+  MetaVendedorDto,
+  RedistribuirDto,
   RemoverDto,
   SeedDto,
   StatusCliente,
@@ -80,6 +84,51 @@ export class CarteirizacaoController {
     return this.service.seed(dto ?? {});
   }
 
+  // -------------------------------------------------- Fase 2: acompanhamento
+  @Get('indicadores/vendedores')
+  indicadoresVendedores(@Query('janelaDias') janelaDias?: string) {
+    return this.service.indicadoresVendedores(toNum(janelaDias));
+  }
+
+  @Get('indicadores/cliente/:cli')
+  indicadoresCliente(
+    @Param('cli', ParseIntPipe) cli: number,
+    @Query('janelaDias') janelaDias?: string,
+  ) {
+    return this.service.indicadoresCliente(cli, toNum(janelaDias));
+  }
+
+  @Get('alertas')
+  alertas(@Query('janelaDias') janelaDias?: string) {
+    return this.service.alertas(toNum(janelaDias));
+  }
+
+  @Get('vendedores/:rep/config')
+  getConfig(@Param('rep', ParseIntPipe) rep: number) {
+    return this.service.getConfigVendedor(rep);
+  }
+
+  @Put('vendedores/:rep/config')
+  salvarConfig(@Param('rep', ParseIntPipe) rep: number, @Body() dto: ConfigVendedorDto) {
+    return this.service.salvarConfigVendedor(rep, dto ?? {});
+  }
+
+  @Post('redistribuir')
+  redistribuir(@Body() dto: RedistribuirDto) {
+    return this.service.redistribuir(dto);
+  }
+
+  // ------------------------------------------------- Fase 3: metas & perform.
+  @Get('metas')
+  metas(@Query('ano') ano?: string, @Query('mes') mes?: string) {
+    return this.service.metasVendedores(toNum(ano), toNum(mes));
+  }
+
+  @Put('metas/:rep')
+  setMeta(@Param('rep', ParseIntPipe) rep: number, @Body() dto: MetaVendedorDto) {
+    return this.service.setMetaVendedor(rep, dto);
+  }
+
   private parseQuery(q: Record<string, string>): ListarClientesQuery {
     return {
       page: toNum(q.page),
@@ -94,6 +143,8 @@ export class CarteirizacaoController {
       altoFaturamento: q.altoFaturamento != null ? toBool(q.altoFaturamento) : undefined,
       queda: q.queda != null ? toBool(q.queda) : undefined,
       novo: q.novo != null ? toBool(q.novo) : undefined,
+      curvaAbc: (q.curvaAbc as 'A' | 'B' | 'C') || undefined,
+      scoreFaixa: (q.scoreFaixa as 'A' | 'B' | 'C' | 'D') || undefined,
       ordenarPor: q.ordenarPor || undefined,
       ordem: q.ordem === 'asc' ? 'asc' : q.ordem === 'desc' ? 'desc' : undefined,
       janelaDias: toNum(q.janelaDias),
