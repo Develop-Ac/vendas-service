@@ -6,6 +6,8 @@ import { BuscaItensModule } from './busca-itens/busca-itens.module';
 import { S3Module } from './storage/s3.module';
 import { VendaCasadaModule } from './venda-casada/venda-casada.module';
 import { B2bModule } from './b2b/b2b.module';
+import { MssqlModule } from './common/mssql/mssql.module';
+import { CarteirizacaoModule } from './carteirizacao/carteirizacao.module';
 
 @Module({
   imports: [
@@ -14,6 +16,8 @@ import { B2bModule } from './b2b/b2b.module';
     S3Module,
     VendaCasadaModule,
     B2bModule,
+    MssqlModule,
+    CarteirizacaoModule,
   ],
   controllers: [AppController],
   providers: [AppService],

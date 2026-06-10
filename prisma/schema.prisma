@@ -833,3 +833,57 @@ model ven_venda_casada_itens {
   fornecedor String? @db.VarChar(255)
   marca      String? @db.VarChar(255)
 }
+
+// ===================== Carteirização de Clientes =====================
+// Overlay da carteira (fonte de verdade cliente->vendedor para o atacado).
+// Base/métricas dos clientes vêm do SQL Server BI (leitura). Ver sql/carteirizacao_postgres.sql
+
+model ven_carteira_cliente {
+  id            String   @id @default(cuid())
+  cli_codigo    Int      @unique(map: "uq_ven_carteira_cliente_cli")
+  rep_codigo    Int?
+  rep_nome      String?
+  canal         String?
+  origem        String   @default("MANUAL") // SEED_ERP | SEED_VENDAS | MANUAL | LOTE | TRANSFERENCIA | AUTOMATICA
+  observacao    String?
+  atribuido_por String?
+  atribuido_em  DateTime @default(now()) @db.Timestamptz(6)
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  trash         Int      @default(0)
+
+  @@index([rep_codigo], map: "idx_ven_carteira_cliente_rep")
+}
+
+model ven_carteira_historico {
+  id                  String   @id @default(cuid())
+  cli_codigo          Int
+  rep_codigo_anterior Int?
+  rep_nome_anterior   String?
+  rep_codigo_novo     Int?
+  rep_nome_novo       String?
+  acao                String // ATRIBUICAO | ALTERACAO | REMOCAO | TRANSFERENCIA | LOTE
+  motivo              String?
+  usuario_id          String?
+  usuario_nome        String?
+  lote_id             String?
+  created_at          DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([cli_codigo], map: "idx_ven_carteira_hist_cli")
+  @@index([rep_codigo_novo], map: "idx_ven_carteira_hist_rep_novo")
+  @@index([created_at], map: "idx_ven_carteira_hist_created")
+  @@index([lote_id], map: "idx_ven_carteira_hist_lote")
+}
+
+model ven_carteira_vendedor_config {
+  id               String   @id @default(cuid())
+  rep_codigo       Int      @unique(map: "uq_ven_carteira_vend_cfg_rep")
+  rep_nome         String?
+  capacidade_max   Int?
+  canal            String?
+  ativo            Boolean  @default(true)
+  meta_faturamento Decimal? @db.Decimal(15, 2)
+  observacao       String?
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+}
