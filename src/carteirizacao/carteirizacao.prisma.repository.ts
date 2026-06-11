@@ -23,6 +23,11 @@ export class CarteirizacaoPrismaRepository {
     return this.prisma.ven_carteira_cliente.findMany({ where: { trash: 0 } });
   }
 
+  /** Qtde de clientes na carteira (overlay) de um vendedor. */
+  async contarCarteira(rep_codigo: number) {
+    return this.prisma.ven_carteira_cliente.count({ where: { rep_codigo, trash: 0 } });
+  }
+
   async obterCliente(cli_codigo: number) {
     return this.prisma.ven_carteira_cliente.findUnique({ where: { cli_codigo } });
   }

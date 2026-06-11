@@ -141,6 +141,16 @@ export class CarteirizacaoController {
     return this.service.municipiosGeo();
   }
 
+  // KPIs de carteira do painel (qtde em carteira do Postgres, com venda e positivação).
+  @Get('painel-carteira')
+  painelCarteira(
+    @Query('rep', ParseIntPipe) rep: number,
+    @Query('ini') ini: string,
+    @Query('fim') fim: string,
+  ) {
+    return this.service.painelCarteira(rep, ini, fim);
+  }
+
   private parseQuery(q: Record<string, string>): ListarClientesQuery {
     return {
       page: toNum(q.page),

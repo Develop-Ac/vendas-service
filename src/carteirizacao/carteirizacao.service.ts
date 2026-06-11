@@ -947,6 +947,24 @@ export class CarteirizacaoService {
     return this.sql.municipiosGeo();
   }
 
+  /**
+   * KPIs de carteira do painel: qtde em carteira (overlay Postgres), qtde de
+   * clientes com venda no período (BI) e positivação = carteira - com_venda.
+   */
+  async painelCarteira(repCodigo: number, dataInicio: string, dataFim: string) {
+    if (!repCodigo) throw new BadRequestException('rep é obrigatório.');
+    const nome = await this.sql.nomeRepresentanteComissao(repCodigo);
+    const [clientesCarteira, clientesComVenda] = await Promise.all([
+      this.overlay.contarCarteira(repCodigo),
+      nome ? this.sql.clientesComVenda(nome, dataInicio, dataFim) : Promise.resolve(0),
+    ]);
+    return {
+      clientes_carteira: clientesCarteira,
+      clientes_com_venda: clientesComVenda,
+      positivacao: clientesCarteira - clientesComVenda,
+    };
+  }
+
   async setMetaVendedor(
     rep_codigo: number,
     dto: { ano: number; mes: number; valor_meta: number; rep_nome?: string; observacao?: string; usuario_id?: string },

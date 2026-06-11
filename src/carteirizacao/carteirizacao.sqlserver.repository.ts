@@ -246,6 +246,19 @@ export class CarteirizacaoSqlServerRepository {
     `);
   }
 
+  /** Qtde de clientes distintos com venda no período (replica o card "Qtde de Clientes com vendas"). */
+  async clientesComVenda(nomeUpper: string, dataInicio: string, dataFim: string): Promise<number> {
+    const rows = await this.mssql.query<{ qtd: number }>(
+      `SELECT COUNT(DISTINCT v.CLI_CODIGO) AS qtd
+       FROM dbo.vw_analise_vendas v
+       WHERE v.DT_CANCELAMENTO IS NULL
+         AND LTRIM(RTRIM(UPPER(v.nome_representante))) = @nome
+         AND v.dt_emissao_convertida BETWEEN @ini AND @fim`,
+      { nome: nomeUpper, ini: dataInicio, fim: dataFim },
+    );
+    return Number(rows[0]?.qtd ?? 0);
+  }
+
   /** Nome do representante (UPPER/TRIM) para casar com o filtro `vendedor` do Metabase. */
   async nomeRepresentanteComissao(repCodigo: number): Promise<string | null> {
     const rows = await this.mssql.query<{ nome: string }>(
