@@ -237,6 +237,15 @@ export class CarteirizacaoSqlServerRepository {
     return this.periodoComissional(r.ano, r.mes);
   }
 
+  /** Lat/long por código IBGE (para o mapa de calor de vendas por município). */
+  async municipiosGeo(): Promise<{ c: number; lat: number; lng: number }[]> {
+    return this.mssql.query<{ c: number; lat: number; lng: number }>(`
+      SELECT codigo_ibge AS c, latitude AS lat, longitude AS lng
+      FROM dbo.vw_municipio_ibge
+      WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+    `);
+  }
+
   /** Nome do representante (UPPER/TRIM) para casar com o filtro `vendedor` do Metabase. */
   async nomeRepresentanteComissao(repCodigo: number): Promise<string | null> {
     const rows = await this.mssql.query<{ nome: string }>(

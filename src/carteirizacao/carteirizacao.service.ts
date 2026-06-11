@@ -942,6 +942,11 @@ export class CarteirizacaoService {
     };
   }
 
+  /** Lookup codigo_ibge -> lat/lng para o mapa de calor (vendas por município). */
+  async municipiosGeo() {
+    return this.sql.municipiosGeo();
+  }
+
   async setMetaVendedor(
     rep_codigo: number,
     dto: { ano: number; mes: number; valor_meta: number; rep_nome?: string; observacao?: string; usuario_id?: string },

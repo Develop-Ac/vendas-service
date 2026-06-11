@@ -135,6 +135,12 @@ export class CarteirizacaoController {
     return this.service.painelVendas(rep);
   }
 
+  // Lookup codigo_ibge -> lat/lng para o mapa de calor de vendas por município.
+  @Get('municipios-geo')
+  municipiosGeo() {
+    return this.service.municipiosGeo();
+  }
+
   private parseQuery(q: Record<string, string>): ListarClientesQuery {
     return {
       page: toNum(q.page),
