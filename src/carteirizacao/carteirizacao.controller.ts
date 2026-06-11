@@ -129,6 +129,12 @@ export class CarteirizacaoController {
     return this.service.setMetaVendedor(rep, dto);
   }
 
+  // Dados do painel de vendas (Metabase) de um vendedor: nome + período vigente.
+  @Get('painel-vendas')
+  painelVendas(@Query('rep', ParseIntPipe) rep: number) {
+    return this.service.painelVendas(rep);
+  }
+
   private parseQuery(q: Record<string, string>): ListarClientesQuery {
     return {
       page: toNum(q.page),

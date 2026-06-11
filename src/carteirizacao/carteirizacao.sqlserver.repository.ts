@@ -43,6 +43,14 @@ export interface RealizadoVendedorRow {
   custo: number;
 }
 
+/** Datas e dias úteis do período comissional (26 -> 25), lidas de d_calendario. */
+export interface PeriodoComissionalRow {
+  data_inicio: string; // 'yyyy-MM-dd'
+  data_fim: string; // 'yyyy-MM-dd'
+  dias_uteis_total: number;
+  dias_uteis_decorridos: number;
+}
+
 export interface VendedorAtivoRow {
   rep_codigo: number;
   nome: string;
@@ -181,7 +189,7 @@ export class CarteirizacaoSqlServerRepository {
     const query = `
       SELECT rep_codigo, nome, papel, local_venda
       FROM dbo.ComissaoRepresentante
-      WHERE inativo = 0 AND papel = 'VENDEDOR'
+      WHERE inativo = 0 AND papel IN ('VENDEDOR', 'VENDEDOR_ATACADO')
       ORDER BY nome
     `;
     return this.mssql.query<VendedorAtivoRow>(query);
@@ -197,8 +205,49 @@ export class CarteirizacaoSqlServerRepository {
     return this.mssql.query<MetaDwRow>(query, { ano, mes });
   }
 
-  /** Faturamento realizado por vendedor em um período (todos os canais). */
-  async realizadoVendedores(ano: number, mes: number): Promise<RealizadoVendedorRow[]> {
+  /**
+   * Datas e dias úteis do período comissional (26 -> 25) a partir de d_calendario.
+   * `mes` segue a convenção de fechamento: mês em que cai o dia 25 (= mes_comissional).
+   * Dias decorridos contam até hoje (0 se o período é futuro; total se já encerrado).
+   */
+  async periodoComissional(ano: number, mes: number): Promise<PeriodoComissionalRow | null> {
+    const query = `
+      SELECT CONVERT(varchar(10), MIN(data), 23) AS data_inicio,
+             CONVERT(varchar(10), MAX(data), 23) AS data_fim,
+             SUM(CAST(is_dia_util AS int)) AS dias_uteis_total,
+             SUM(CASE WHEN is_dia_util = 1 AND data <= CAST(GETDATE() AS date)
+                      THEN 1 ELSE 0 END) AS dias_uteis_decorridos
+      FROM dbo.d_calendario
+      WHERE ano_comissional = @ano AND mes_comissional = @mes
+    `;
+    const rows = await this.mssql.query<PeriodoComissionalRow>(query, { ano, mes });
+    const r = rows[0];
+    return r && r.data_inicio ? r : null;
+  }
+
+  /** Período comissional vigente (o que contém a data de hoje) a partir de d_calendario. */
+  async periodoComissionalAtual(): Promise<PeriodoComissionalRow | null> {
+    const hoje = await this.mssql.query<{ ano: number; mes: number }>(`
+      SELECT ano_comissional AS ano, mes_comissional AS mes
+      FROM dbo.d_calendario
+      WHERE data = CAST(GETDATE() AS date)
+    `);
+    const r = hoje[0];
+    if (!r) return null;
+    return this.periodoComissional(r.ano, r.mes);
+  }
+
+  /** Nome do representante (UPPER/TRIM) para casar com o filtro `vendedor` do Metabase. */
+  async nomeRepresentanteComissao(repCodigo: number): Promise<string | null> {
+    const rows = await this.mssql.query<{ nome: string }>(
+      `SELECT LTRIM(RTRIM(UPPER(nome))) AS nome FROM dbo.ComissaoRepresentante WHERE rep_codigo = @rep`,
+      { rep: repCodigo },
+    );
+    return rows[0]?.nome ?? null;
+  }
+
+  /** Faturamento realizado por vendedor no período comissional (todos os canais). */
+  async realizadoVendedores(dataInicio: string, dataFim: string): Promise<RealizadoVendedorRow[]> {
     const query = `
       SELECT v.vendedor_venda,
              MAX(v.nome_representante) AS nome,
@@ -207,10 +256,11 @@ export class CarteirizacaoSqlServerRepository {
              SUM(v.lucro) AS lucro,
              SUM(v.custo_produto) AS custo
       FROM dbo.vw_analise_vendas v
-      WHERE v.DT_CANCELAMENTO IS NULL AND v.ano = @ano AND v.mes = @mes
+      WHERE v.DT_CANCELAMENTO IS NULL
+        AND v.dt_emissao_convertida BETWEEN @dataInicio AND @dataFim
       GROUP BY v.vendedor_venda
     `;
-    return this.mssql.query<RealizadoVendedorRow>(query, { ano, mes });
+    return this.mssql.query<RealizadoVendedorRow>(query, { dataInicio, dataFim });
   }
 
   /** Nomes de representantes por códigos (para reps que só aparecem no overlay). */

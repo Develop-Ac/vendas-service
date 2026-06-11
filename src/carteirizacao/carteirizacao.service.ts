@@ -2,6 +2,7 @@ import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import {
   CarteirizacaoSqlServerRepository,
   ClienteBaseRow,
+  PeriodoComissionalRow,
 } from './carteirizacao.sqlserver.repository';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import {
@@ -796,12 +797,16 @@ export class CarteirizacaoService {
     const a = ano ?? hoje.getFullYear();
     const m = mes ?? hoje.getMonth() + 1;
 
-    const [ativos, metasDw, realizado, overrides, feriadosDias] = await Promise.all([
+    // Período comissional (26 -> 25) é a base de TODOS os números da tela:
+    // realizado, dias úteis, meta diária e projeção. Datas vêm de d_calendario.
+    const periodo =
+      (await this.sql.periodoComissional(a, m)) ?? this.periodoComissionalFallback(a, m);
+
+    const [ativos, metasDw, realizado, overrides] = await Promise.all([
       this.sql.vendedoresAtivosComissao(),
       this.sql.metasDw(a, m),
-      this.sql.realizadoVendedores(a, m),
+      this.sql.realizadoVendedores(periodo.data_inicio, periodo.data_fim),
       this.overlay.listarMetasPeriodo(a, m),
-      this.overlay.diasFeriadosDoMes(a, m),
     ]);
 
     const dwMap = new Map(metasDw.map((x) => [x.cod_vendedor, x]));
@@ -820,21 +825,9 @@ export class CarteirizacaoService {
       ...realizado.filter((x) => this.num(x.realizado) > 0).map((x) => x.vendedor_venda),
     ]);
 
-    // dias ÚTEIS do período (Seg-Sáb, descontando feriados de sis_feriados)
-    const feriadosSet = new Set(feriadosDias);
-    const diasCalendario = new Date(a, m, 0).getDate();
-    const ehAtual = a === hoje.getFullYear() && m === hoje.getMonth() + 1;
-    const ehFuturo = a > hoje.getFullYear() || (a === hoje.getFullYear() && m > hoje.getMonth() + 1);
-    const ateDia = ehFuturo ? 0 : ehAtual ? hoje.getDate() : diasCalendario;
-    // útil = dia da semana != domingo (getDay 0) e não-feriado
-    const ehUtil = (dia: number) => new Date(a, m - 1, dia).getDay() !== 0 && !feriadosSet.has(dia);
-    let diasNoMes = 0;
-    let diasDecorridos = 0;
-    for (let d = 1; d <= diasCalendario; d++) {
-      if (!ehUtil(d)) continue;
-      diasNoMes++;
-      if (d <= ateDia) diasDecorridos++;
-    }
+    // dias ÚTEIS do período comissional (is_dia_util de d_calendario)
+    const diasNoMes = periodo.dias_uteis_total;
+    const diasDecorridos = periodo.dias_uteis_decorridos;
 
     const linhas = [...codigos].map((rep) => {
       const dw = dwMap.get(rep);
@@ -879,7 +872,14 @@ export class CarteirizacaoService {
     const totalRealizado = linhas.reduce((s, l) => s + l.realizado, 0);
 
     return {
-      periodo: { ano: a, mes: m, dias_no_mes: diasNoMes, dias_decorridos: diasDecorridos },
+      periodo: {
+        ano: a,
+        mes: m,
+        data_inicio: periodo.data_inicio,
+        data_fim: periodo.data_fim,
+        dias_no_mes: diasNoMes,
+        dias_decorridos: diasDecorridos,
+      },
       resumo: {
         vendedores: linhas.length,
         com_meta: linhas.filter((l) => l.meta > 0).length,
@@ -888,6 +888,57 @@ export class CarteirizacaoService {
         atingimento_total_pct: totalMeta > 0 ? (totalRealizado / totalMeta) * 100 : null,
       },
       vendedores: linhas,
+    };
+  }
+
+  /**
+   * Fallback do período comissional quando d_calendario não cobre o mês pedido.
+   * Reproduz 26 do mês anterior -> 25 do mês de fechamento; dia útil = Seg-Sáb
+   * (aproximação simples, sem feriados — só usado fora da cobertura do calendário).
+   */
+  private periodoComissionalFallback(ano: number, mes: number): PeriodoComissionalRow {
+    const ini = new Date(ano, mes - 2, 26); // 26 do mês anterior
+    const fim = new Date(ano, mes - 1, 25); // 25 do mês de fechamento
+    const hoje = new Date();
+    const ymd = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    let total = 0;
+    let decorridos = 0;
+    for (let d = new Date(ini); d <= fim; d.setDate(d.getDate() + 1)) {
+      if (d.getDay() === 0) continue; // domingo não é dia útil
+      total++;
+      if (d <= hoje) decorridos++;
+    }
+    return {
+      data_inicio: ymd(ini),
+      data_fim: ymd(fim),
+      dias_uteis_total: total,
+      dias_uteis_decorridos: decorridos,
+    };
+  }
+
+  /**
+   * Dados para o painel de vendas (Metabase) de um vendedor: nome para o filtro
+   * `vendedor` e o intervalo do período comissional vigente (26 -> 25).
+   */
+  async painelVendas(repCodigo: number) {
+    if (!repCodigo) throw new BadRequestException('rep é obrigatório.');
+    const [vendedorNome, periodo] = await Promise.all([
+      this.sql.nomeRepresentanteComissao(repCodigo),
+      this.sql.periodoComissionalAtual(),
+    ]);
+    if (!vendedorNome) {
+      throw new BadRequestException(`Representante ${repCodigo} não encontrado no cadastro de comissão.`);
+    }
+    const p = periodo ?? this.periodoComissionalFallback(
+      new Date().getFullYear(),
+      new Date().getMonth() + 1,
+    );
+    return {
+      rep_codigo: repCodigo,
+      vendedor_nome: vendedorNome,
+      data_inicio: p.data_inicio,
+      data_fim: p.data_fim,
     };
   }
 
