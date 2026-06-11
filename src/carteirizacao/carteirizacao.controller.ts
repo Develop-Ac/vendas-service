@@ -120,8 +120,8 @@ export class CarteirizacaoController {
 
   // ------------------------------------------------- Fase 3: metas & perform.
   @Get('metas')
-  metas(@Query('ano') ano?: string, @Query('mes') mes?: string) {
-    return this.service.metasVendedores(toNum(ano), toNum(mes));
+  metas(@Query('ano') ano?: string, @Query('mes') mes?: string, @Query('canal') canal?: string) {
+    return this.service.metasVendedores(toNum(ano), toNum(mes), canal);
   }
 
   @Put('metas/:rep')
@@ -133,6 +133,12 @@ export class CarteirizacaoController {
   @Get('painel-vendas')
   painelVendas(@Query('rep', ParseIntPipe) rep: number) {
     return this.service.painelVendas(rep);
+  }
+
+  // Dados do painel de Supervisão Atacado: equipe (vendedores do canal) + período.
+  @Get('painel-supervisao')
+  painelSupervisao() {
+    return this.service.painelSupervisao();
   }
 
   // Lookup codigo_ibge -> lat/lng para o mapa de calor de vendas por município.

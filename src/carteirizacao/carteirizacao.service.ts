@@ -792,7 +792,7 @@ export class CarteirizacaoService {
   // =================================================================
   // FASE 3 — Metas & Performance (todos os vendedores; gerencial)
   // =================================================================
-  async metasVendedores(ano?: number, mes?: number) {
+  async metasVendedores(ano?: number, mes?: number, canal?: string) {
     const hoje = new Date();
     const a = ano ?? hoje.getFullYear();
     const m = mes ?? hoje.getMonth() + 1;
@@ -829,7 +829,7 @@ export class CarteirizacaoService {
     const diasNoMes = periodo.dias_uteis_total;
     const diasDecorridos = periodo.dias_uteis_decorridos;
 
-    const linhas = [...codigos].map((rep) => {
+    let linhas = [...codigos].map((rep) => {
       const dw = dwMap.get(rep);
       const ov = ovMap.get(rep);
       const r = realMap.get(rep);
@@ -859,6 +859,12 @@ export class CarteirizacaoService {
         projecao_pct: meta > 0 ? (projecao / meta) * 100 : null,
       };
     });
+
+    // Filtro por canal (ex.: supervisão do atacado vê só a equipe do atacado).
+    if (canal === 'atacado') {
+      const team = new Set((await this.sql.equipeAtacadoNomes()).map((n) => n.toUpperCase()));
+      linhas = linhas.filter((l) => team.has((l.rep_nome || '').toUpperCase()));
+    }
 
     linhas.sort((x, y) => {
       const ax = x.atingimento_pct ?? -1;
@@ -963,6 +969,22 @@ export class CarteirizacaoService {
       clientes_com_venda: clientesComVenda,
       positivacao: clientesCarteira - clientesComVenda,
     };
+  }
+
+  /**
+   * Dados para o painel de Supervisão do Atacado: lista de vendedores do canal
+   * (a equipe, filtro `vendedor` múltiplo) + período comissional vigente.
+   */
+  async painelSupervisao() {
+    const [vendedores, periodo] = await Promise.all([
+      this.sql.equipeAtacadoNomes(),
+      this.sql.periodoComissionalAtual(),
+    ]);
+    const p = periodo ?? this.periodoComissionalFallback(
+      new Date().getFullYear(),
+      new Date().getMonth() + 1,
+    );
+    return { vendedores, data_inicio: p.data_inicio, data_fim: p.data_fim };
   }
 
   async setMetaVendedor(

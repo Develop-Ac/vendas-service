@@ -259,6 +259,18 @@ export class CarteirizacaoSqlServerRepository {
     return Number(rows[0]?.qtd ?? 0);
   }
 
+  /** Nomes (UPPER) dos vendedores do canal ATACADO (equipe da supervisão), últimos 12 meses. */
+  async equipeAtacadoNomes(): Promise<string[]> {
+    const rows = await this.mssql.query<{ nome: string }>(`
+      SELECT DISTINCT LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome
+      FROM dbo.vw_analise_vendas v
+      WHERE v.local_venda = 'ATACADO'
+        AND v.nome_representante IS NOT NULL
+        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))
+    `);
+    return rows.map((r) => r.nome).filter(Boolean);
+  }
+
   /** Nome do representante (UPPER/TRIM) para casar com o filtro `vendedor` do Metabase. */
   async nomeRepresentanteComissao(repCodigo: number): Promise<string | null> {
     const rows = await this.mssql.query<{ nome: string }>(
