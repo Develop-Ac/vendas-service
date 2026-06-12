@@ -141,6 +141,16 @@ export class CarteirizacaoController {
     return this.service.painelSupervisao();
   }
 
+  // KPIs de carteira do supervisor: equipe inteira ou 1 vendedor (?vendedor=).
+  @Get('painel-carteira-supervisao')
+  painelCarteiraSupervisao(
+    @Query('vendedor') vendedor?: string,
+    @Query('ini') ini?: string,
+    @Query('fim') fim?: string,
+  ) {
+    return this.service.painelCarteiraSupervisao(vendedor, ini ?? '', fim ?? '');
+  }
+
   // Lookup codigo_ibge -> lat/lng para o mapa de calor de vendas por município.
   @Get('municipios-geo')
   municipiosGeo() {

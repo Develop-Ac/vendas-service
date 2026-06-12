@@ -246,6 +246,35 @@ export class CarteirizacaoSqlServerRepository {
     `);
   }
 
+  /** rep_codigos da equipe do atacado no período (ajustada pelo histórico de canal). */
+  async equipeAtacadoReps(dataInicio?: string): Promise<number[]> {
+    const rows = await this.equipeAtacado(dataInicio);
+    return Array.from(new Set(rows.map((r) => Number(r.rep)).filter((n) => !Number.isNaN(n))));
+  }
+
+  /** rep_codigo a partir do nome do representante (para o filtro do supervisor). */
+  async repPorNome(nomeUpper: string): Promise<number | null> {
+    const rows = await this.mssql.query<{ rep: number }>(
+      `SELECT TOP 1 v.vendedor_venda AS rep FROM dbo.vw_analise_vendas v
+       WHERE LTRIM(RTRIM(UPPER(v.nome_representante))) = @nome AND v.vendedor_venda IS NOT NULL`,
+      { nome: nomeUpper },
+    );
+    return rows[0]?.rep != null ? Number(rows[0].rep) : null;
+  }
+
+  /** Clientes distintos com venda no período, para um conjunto de reps (supervisão). */
+  async clientesComVendaReps(reps: number[], dataInicio: string, dataFim: string): Promise<number> {
+    const inList = reps.map(Number).filter((n) => !Number.isNaN(n)).join(',');
+    if (!inList) return 0;
+    const rows = await this.mssql.query<{ qtd: number }>(
+      `SELECT COUNT(DISTINCT v.CLI_CODIGO) AS qtd FROM dbo.vw_analise_vendas v
+       WHERE v.DT_CANCELAMENTO IS NULL AND v.vendedor_venda IN (${inList})
+         AND v.dt_emissao_convertida BETWEEN @ini AND @fim`,
+      { ini: dataInicio, fim: dataFim },
+    );
+    return Number(rows[0]?.qtd ?? 0);
+  }
+
   /** Qtde de clientes distintos com venda no período (replica o card "Qtde de Clientes com vendas"). */
   async clientesComVenda(nomeUpper: string, dataInicio: string, dataFim: string): Promise<number> {
     const rows = await this.mssql.query<{ qtd: number }>(
@@ -259,16 +288,55 @@ export class CarteirizacaoSqlServerRepository {
     return Number(rows[0]?.qtd ?? 0);
   }
 
-  /** Nomes (UPPER) dos vendedores do canal ATACADO (equipe da supervisão), últimos 12 meses. */
-  async equipeAtacadoNomes(): Promise<string[]> {
-    const rows = await this.mssql.query<{ nome: string }>(`
-      SELECT DISTINCT LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome
+  /**
+   * Equipe do canal ATACADO para um período (data de início = dia 26).
+   * Base: vendedores com venda no canal atacado (12 meses). Ajustada pelo HISTÓRICO
+   * de canal (dbo.ComissaoRepresentanteCanal): o canal vigente de cada rep é a última
+   * mudança com `vigente_de <= dataInicio`. Remove quem saiu do atacado e inclui quem
+   * entrou no atacado naquele período. Se a tabela de histórico não existir, usa só a base.
+   */
+  async equipeAtacado(dataInicio?: string): Promise<{ rep: number; nome: string }[]> {
+    const base = `
+      SELECT DISTINCT v.vendedor_venda AS rep, LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome
       FROM dbo.vw_analise_vendas v
-      WHERE v.local_venda = 'ATACADO'
+      WHERE v.local_venda = 'ATACADO' AND v.vendedor_venda IS NOT NULL
         AND v.nome_representante IS NOT NULL
-        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))
-    `);
-    return rows.map((r) => r.nome).filter(Boolean);
+        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))`;
+
+    const temHist =
+      dataInicio &&
+      (await this.mssql.query<{ ok: number }>(
+        `SELECT CASE WHEN OBJECT_ID('dbo.ComissaoRepresentanteCanal') IS NULL THEN 0 ELSE 1 END AS ok`,
+      ))[0]?.ok === 1;
+
+    if (!temHist) {
+      return this.mssql.query<{ rep: number; nome: string }>(base);
+    }
+
+    return this.mssql.query<{ rep: number; nome: string }>(
+      `WITH base AS (${base}),
+       hist AS (
+         SELECT rep_codigo, canal FROM (
+           SELECT h.rep_codigo, h.canal,
+                  ROW_NUMBER() OVER (PARTITION BY h.rep_codigo ORDER BY h.vigente_de DESC, h.id DESC) rn
+           FROM dbo.ComissaoRepresentanteCanal h
+           WHERE h.vigente_de <= @ini
+         ) z WHERE rn = 1
+       )
+       SELECT b.rep, b.nome FROM base b
+       WHERE NOT EXISTS (SELECT 1 FROM hist h WHERE h.rep_codigo = b.rep AND h.canal <> 'ATACADO')
+       UNION
+       SELECT cr.rep_codigo AS rep, LTRIM(RTRIM(UPPER(cr.nome))) AS nome
+       FROM hist h JOIN dbo.ComissaoRepresentante cr ON cr.rep_codigo = h.rep_codigo
+       WHERE h.canal = 'ATACADO'`,
+      { ini: dataInicio },
+    );
+  }
+
+  /** Nomes (UPPER) da equipe do atacado no período. */
+  async equipeAtacadoNomes(dataInicio?: string): Promise<string[]> {
+    const rows = await this.equipeAtacado(dataInicio);
+    return Array.from(new Set(rows.map((r) => r.nome).filter(Boolean)));
   }
 
   /** Nome do representante (UPPER/TRIM) para casar com o filtro `vendedor` do Metabase. */
@@ -280,12 +348,16 @@ export class CarteirizacaoSqlServerRepository {
     return rows[0]?.nome ?? null;
   }
 
-  /** Faturamento realizado por vendedor no período comissional (todos os canais). */
+  /**
+   * Faturamento realizado por vendedor no período comissional (todos os canais).
+   * Usa `liquido_produto` (líquido) — a MESMA base dos painéis do Metabase e das
+   * metas — para que realizado/projeção batam com a tela do painel.
+   */
   async realizadoVendedores(dataInicio: string, dataFim: string): Promise<RealizadoVendedorRow[]> {
     const query = `
       SELECT v.vendedor_venda,
              MAX(v.nome_representante) AS nome,
-             SUM(v.total_item) AS realizado,
+             SUM(v.liquido_produto) AS realizado,
              COUNT(DISTINCT v.NFS) AS pedidos,
              SUM(v.lucro) AS lucro,
              SUM(v.custo_produto) AS custo

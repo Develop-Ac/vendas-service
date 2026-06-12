@@ -860,9 +860,10 @@ export class CarteirizacaoService {
       };
     });
 
-    // Filtro por canal (ex.: supervisão do atacado vê só a equipe do atacado).
+    // Filtro por canal (ex.: supervisão do atacado vê só a equipe do atacado,
+    // já excluindo quem saiu do atacado antes do período).
     if (canal === 'atacado') {
-      const team = new Set((await this.sql.equipeAtacadoNomes()).map((n) => n.toUpperCase()));
+      const team = new Set((await this.sql.equipeAtacadoNomes(periodo.data_inicio)).map((n) => n.toUpperCase()));
       linhas = linhas.filter((l) => team.has((l.rep_nome || '').toUpperCase()));
     }
 
@@ -976,15 +977,34 @@ export class CarteirizacaoService {
    * (a equipe, filtro `vendedor` múltiplo) + período comissional vigente.
    */
   async painelSupervisao() {
-    const [vendedores, periodo] = await Promise.all([
-      this.sql.equipeAtacadoNomes(),
-      this.sql.periodoComissionalAtual(),
+    const periodo =
+      (await this.sql.periodoComissionalAtual()) ??
+      this.periodoComissionalFallback(new Date().getFullYear(), new Date().getMonth() + 1);
+    const vendedores = await this.sql.equipeAtacadoNomes(periodo.data_inicio);
+    return { vendedores, data_inicio: periodo.data_inicio, data_fim: periodo.data_fim };
+  }
+
+  /**
+   * KPIs de carteira para o painel de Supervisão Atacado: equipe inteira (ou um
+   * vendedor selecionado). Mesma lógica do painel do vendedor, mas agregando reps.
+   */
+  async painelCarteiraSupervisao(vendedorNome: string | undefined, dataInicio: string, dataFim: string) {
+    let reps: number[];
+    if (vendedorNome) {
+      const rep = await this.sql.repPorNome(vendedorNome.toUpperCase());
+      reps = rep ? [rep] : [];
+    } else {
+      reps = await this.sql.equipeAtacadoReps(dataInicio);
+    }
+    const [clientesCarteira, clientesComVenda] = await Promise.all([
+      this.overlay.contarCarteiraReps(reps),
+      this.sql.clientesComVendaReps(reps, dataInicio, dataFim),
     ]);
-    const p = periodo ?? this.periodoComissionalFallback(
-      new Date().getFullYear(),
-      new Date().getMonth() + 1,
-    );
-    return { vendedores, data_inicio: p.data_inicio, data_fim: p.data_fim };
+    return {
+      clientes_carteira: clientesCarteira,
+      clientes_com_venda: clientesComVenda,
+      positivacao: clientesCarteira - clientesComVenda,
+    };
   }
 
   async setMetaVendedor(
