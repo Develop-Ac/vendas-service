@@ -968,7 +968,8 @@ export class CarteirizacaoService {
     return {
       clientes_carteira: clientesCarteira,
       clientes_com_venda: clientesComVenda,
-      positivacao: clientesCarteira - clientesComVenda,
+      // positivação = % de clientes com venda sobre a carteira
+      positivacao: clientesCarteira > 0 ? (clientesComVenda / clientesCarteira) * 100 : 0,
     };
   }
 
@@ -1008,7 +1009,8 @@ export class CarteirizacaoService {
     return {
       clientes_carteira: clientesCarteira,
       clientes_com_venda: clientesComVenda,
-      positivacao: clientesCarteira - clientesComVenda,
+      // positivação = % de clientes com venda sobre a carteira
+      positivacao: clientesCarteira > 0 ? (clientesComVenda / clientesCarteira) * 100 : 0,
     };
   }
 
