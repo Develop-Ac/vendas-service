@@ -141,6 +141,12 @@ export class CarteirizacaoController {
     return this.service.painelSupervisao();
   }
 
+  // Equipe do atacado com venda no período (dropdown de vendedor do supervisor).
+  @Get('equipe-atacado-periodo')
+  equipeAtacadoPeriodo(@Query('ini') ini: string, @Query('fim') fim: string) {
+    return this.service.equipeAtacadoComVenda(ini, fim);
+  }
+
   // KPIs de carteira do supervisor: equipe inteira ou 1 vendedor (?vendedor=).
   @Get('painel-carteira-supervisao')
   painelCarteiraSupervisao(

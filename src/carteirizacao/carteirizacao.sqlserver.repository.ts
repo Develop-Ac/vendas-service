@@ -339,6 +339,42 @@ export class CarteirizacaoSqlServerRepository {
     return Array.from(new Set(rows.map((r) => r.nome).filter(Boolean)));
   }
 
+  /**
+   * Nomes da equipe do atacado COM VENDA dentro do intervalo [ini, fim] (para o
+   * filtro de vendedor do supervisor). Respeita o histórico de canal (exclui quem
+   * saiu do atacado até o início do período).
+   */
+  async equipeAtacadoNomesComVenda(ini: string, fim: string): Promise<string[]> {
+    const baseSel = `
+      SELECT DISTINCT v.vendedor_venda AS rep, LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome
+      FROM dbo.vw_analise_vendas v
+      WHERE v.local_venda = 'ATACADO' AND v.vendedor_venda IS NOT NULL
+        AND v.nome_representante IS NOT NULL
+        AND v.dt_emissao_convertida BETWEEN @ini AND @fim`;
+
+    const temHist =
+      (await this.mssql.query<{ ok: number }>(
+        `SELECT CASE WHEN OBJECT_ID('dbo.ComissaoRepresentanteCanal') IS NULL THEN 0 ELSE 1 END AS ok`,
+      ))[0]?.ok === 1;
+
+    const rows = temHist
+      ? await this.mssql.query<{ nome: string }>(
+          `WITH base AS (${baseSel}),
+           hist AS (
+             SELECT rep_codigo, canal FROM (
+               SELECT h.rep_codigo, h.canal,
+                      ROW_NUMBER() OVER (PARTITION BY h.rep_codigo ORDER BY h.vigente_de DESC, h.id DESC) rn
+               FROM dbo.ComissaoRepresentanteCanal h WHERE h.vigente_de <= @ini
+             ) z WHERE rn = 1
+           )
+           SELECT b.nome FROM base b
+           WHERE NOT EXISTS (SELECT 1 FROM hist h WHERE h.rep_codigo = b.rep AND h.canal <> 'ATACADO')`,
+          { ini, fim },
+        )
+      : await this.mssql.query<{ nome: string }>(baseSel, { ini, fim });
+    return Array.from(new Set(rows.map((r) => r.nome).filter(Boolean)));
+  }
+
   /** Nome do representante (UPPER/TRIM) para casar com o filtro `vendedor` do Metabase. */
   async nomeRepresentanteComissao(repCodigo: number): Promise<string | null> {
     const rows = await this.mssql.query<{ nome: string }>(

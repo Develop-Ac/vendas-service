@@ -984,6 +984,11 @@ export class CarteirizacaoService {
     return { vendedores, data_inicio: periodo.data_inicio, data_fim: periodo.data_fim };
   }
 
+  /** Equipe do atacado com venda no período [ini, fim] (filtro de vendedor do supervisor). */
+  async equipeAtacadoComVenda(ini: string, fim: string) {
+    return this.sql.equipeAtacadoNomesComVenda(ini, fim);
+  }
+
   /**
    * KPIs de carteira para o painel de Supervisão Atacado: equipe inteira (ou um
    * vendedor selecionado). Mesma lógica do painel do vendedor, mas agregando reps.
