@@ -136,9 +136,10 @@ export class CarteirizacaoController {
   }
 
   // Dados do painel de Supervisão Atacado: equipe (vendedores do canal) + período.
+  // ini/fim (opcionais) = período visualizado; a equipe é resolvida pelo histórico de canal nessa data.
   @Get('painel-supervisao')
-  painelSupervisao() {
-    return this.service.painelSupervisao();
+  painelSupervisao(@Query('ini') ini?: string, @Query('fim') fim?: string) {
+    return this.service.painelSupervisao(ini, fim);
   }
 
   // Equipe do atacado com venda no período (dropdown de vendedor do supervisor).

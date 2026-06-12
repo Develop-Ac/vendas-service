@@ -977,10 +977,16 @@ export class CarteirizacaoService {
    * Dados para o painel de Supervisão do Atacado: lista de vendedores do canal
    * (a equipe, filtro `vendedor` múltiplo) + período comissional vigente.
    */
-  async painelSupervisao() {
+  async painelSupervisao(ini?: string, fim?: string) {
+    // Período visualizado pelo supervisor (filtro de data) tem prioridade sobre o vigente.
+    // A equipe é resolvida pelo histórico de canal NA DATA DE INÍCIO desse período: assim,
+    // quem mudou de canal (ex.: atacado -> balcão em 26/05) continua contando no atacado
+    // nos períodos comissionais anteriores à mudança.
     const periodo =
-      (await this.sql.periodoComissionalAtual()) ??
-      this.periodoComissionalFallback(new Date().getFullYear(), new Date().getMonth() + 1);
+      ini && fim
+        ? { data_inicio: ini, data_fim: fim }
+        : (await this.sql.periodoComissionalAtual()) ??
+          this.periodoComissionalFallback(new Date().getFullYear(), new Date().getMonth() + 1);
     const vendedores = await this.sql.equipeAtacadoNomes(periodo.data_inicio);
     return { vendedores, data_inicio: periodo.data_inicio, data_fim: periodo.data_fim };
   }
