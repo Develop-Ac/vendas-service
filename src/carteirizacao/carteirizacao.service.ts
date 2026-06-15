@@ -66,9 +66,9 @@ const DEFAULT_JANELA_DIAS = 60;
 const RISCO_INATIVACAO_DIAS = 45;
 const BASE_CACHE_TTL_MS = 60_000;
 // Vendedor "pool": clientes inativos que saíram de outras carteiras são movidos
-// para a carteira do Lucas Barrada (203) e ficam com status DISPONIVEL, aguardando
-// recarterização para o vendedor que voltar a vender para eles.
-const REP_DISPONIVEL = 203;
+// para a carteira do Lucas Barrada (rep_codigo 316) e ficam com status DISPONIVEL,
+// aguardando recarterização para o vendedor que voltar a vender para eles.
+const REP_DISPONIVEL = 316;
 
 @Injectable()
 export class CarteirizacaoService {

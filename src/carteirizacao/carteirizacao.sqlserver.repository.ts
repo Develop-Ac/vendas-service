@@ -72,8 +72,8 @@ export interface VendaAposCarteiraRow {
   ult_venda: Date | null;
 }
 
-// Vendedor "pool" (Lucas Barrada): excluído das sugestões de recarterização.
-const REP_DISPONIVEL = 203;
+// Vendedor "pool" (Lucas Barrada, rep_codigo 316): excluído das sugestões de recarterização.
+const REP_DISPONIVEL = 316;
 
 /**
  * Universo da carteirização = clientes ATACADO (tabela de preço 2 = atacado esp, 5 = atacado).
@@ -153,17 +153,23 @@ export class CarteirizacaoSqlServerRepository {
     return this.mssql.query<ClienteBaseRow>(query);
   }
 
-  /** Representantes que atuam no atacado (têm cliente atacado vinculado por cadastro). */
+  /**
+   * TODOS os representantes que possuem cliente nas tabelas de atacado (2/5) — parte dos
+   * CLIENTES atacado e traz os reps pelo `rep_codigo` deles, independentemente de o rep
+   * ainda atuar no atacado. LEFT JOIN no cadastro só para o nome: reps que saíram do
+   * atacado (ou não estão mais em d_cadastro_representantes) continuam aparecendo, com
+   * fallback "Rep N". Necessário para gerir/redistribuir a carteira de quem saiu.
+   */
   async listarVendedoresAtacado(): Promise<VendedorRow[]> {
     const inList = TABELAS_ATACADO.map((t) => `'${t}'`).join(',');
     const query = `
-      SELECT r.cod AS rep_codigo, r.nome_representante AS rep_nome
-      FROM dbo.d_cadastro_representantes r
-      WHERE r.cod IN (
-        SELECT DISTINCT rep_codigo FROM dbo.vw_clientes
-        WHERE tabela_preco IN (${inList}) AND rep_codigo IS NOT NULL
-      )
-      ORDER BY r.nome_representante
+      SELECT c.rep_codigo AS rep_codigo,
+             COALESCE(MAX(r.nome_representante), CONCAT('Rep ', c.rep_codigo)) AS rep_nome
+      FROM dbo.vw_clientes c
+      LEFT JOIN dbo.d_cadastro_representantes r ON r.cod = c.rep_codigo
+      WHERE c.tabela_preco IN (${inList}) AND c.rep_codigo IS NOT NULL
+      GROUP BY c.rep_codigo
+      ORDER BY rep_nome
     `;
     return this.mssql.query<VendedorRow>(query);
   }
