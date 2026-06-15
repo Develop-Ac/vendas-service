@@ -63,6 +63,18 @@ export interface VendedorRow {
   rep_nome: string;
 }
 
+export interface VendaAposCarteiraRow {
+  cli_codigo: number;
+  rep_codigo: number;
+  rep_nome: string | null;
+  valor: number;
+  pedidos: number;
+  ult_venda: Date | null;
+}
+
+// Vendedor "pool" (Lucas Barrada): excluído das sugestões de recarterização.
+const REP_DISPONIVEL = 203;
+
 /**
  * Universo da carteirização = clientes ATACADO (tabela de preço 2 = atacado esp, 5 = atacado).
  * Clientes de varejo não são carteirizados.
@@ -154,6 +166,42 @@ export class CarteirizacaoSqlServerRepository {
       ORDER BY r.nome_representante
     `;
     return this.mssql.query<VendedorRow>(query);
+  }
+
+  /**
+   * Vendas (líquidas) feitas a um conjunto de clientes APÓS uma data de corte específica
+   * de cada cliente, agregadas por vendedor — excluindo o próprio pool (203). Usado para
+   * sugerir a recarterização dos clientes "disponíveis": quem voltou a vender para eles
+   * depois que entraram no pool. Só considera vendas posteriores ao corte (entrada no pool),
+   * para não contar vendas anteriores à saída da carteira antiga.
+   */
+  async vendasAposCarteira(
+    itens: Array<{ cli_codigo: number; cutoff: string }>,
+  ): Promise<VendaAposCarteiraRow[]> {
+    const linhas = itens
+      .filter((i) => Number.isInteger(i.cli_codigo) && /^\d{4}-\d{2}-\d{2}$/.test(i.cutoff))
+      .map((i) => `(${i.cli_codigo}, '${i.cutoff}')`);
+    if (!linhas.length) return [];
+    const query = `
+      WITH cutoffs (cli_codigo, cutoff) AS (
+        SELECT * FROM (VALUES ${linhas.join(',')}) AS t(cli_codigo, cutoff)
+      )
+      SELECT v.CLI_CODIGO AS cli_codigo,
+             v.vendedor_venda AS rep_codigo,
+             MAX(v.nome_representante) AS rep_nome,
+             SUM(v.liquido_produto) AS valor,
+             COUNT(DISTINCT v.NFS) AS pedidos,
+             MAX(v.dt_emissao_convertida) AS ult_venda
+      FROM dbo.vw_analise_vendas v
+      JOIN cutoffs c ON c.cli_codigo = v.CLI_CODIGO
+      WHERE v.DT_CANCELAMENTO IS NULL
+        AND v.vendedor_venda IS NOT NULL
+        AND v.vendedor_venda <> ${REP_DISPONIVEL}
+        AND v.dt_emissao_convertida > CAST(c.cutoff AS date)
+      GROUP BY v.CLI_CODIGO, v.vendedor_venda
+      ORDER BY v.CLI_CODIGO, MAX(v.dt_emissao_convertida) DESC
+    `;
+    return this.mssql.query<VendaAposCarteiraRow>(query);
   }
 
   /** Faturamento mensal de um cliente nos últimos N meses (evolução). */

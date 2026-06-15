@@ -49,6 +49,13 @@ export class CarteirizacaoController {
     return this.service.listarVendedores();
   }
 
+  // Clientes disponíveis (pool 203) que já têm venda de outro vendedor após entrarem no
+  // pool — lista de apoio à manutenção da carteira no ERP, com o vendedor sugerido.
+  @Get('para-carteirizar')
+  paraCarteirizar() {
+    return this.service.clientesParaCarteirizar();
+  }
+
   @Get('cliente/:cli/historico')
   historico(@Param('cli', ParseIntPipe) cli: number) {
     return this.service.historicoCliente(cli);

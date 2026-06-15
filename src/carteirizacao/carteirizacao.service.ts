@@ -3,6 +3,7 @@ import {
   CarteirizacaoSqlServerRepository,
   ClienteBaseRow,
   PeriodoComissionalRow,
+  VendaAposCarteiraRow,
 } from './carteirizacao.sqlserver.repository';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import {
@@ -64,6 +65,10 @@ const DEFAULT_JANELA_DIAS = 60;
 // Risco de inativação: ativo, mas já a 45+ dias sem compra (alerta antecipado).
 const RISCO_INATIVACAO_DIAS = 45;
 const BASE_CACHE_TTL_MS = 60_000;
+// Vendedor "pool": clientes inativos que saíram de outras carteiras são movidos
+// para a carteira do Lucas Barrada (203) e ficam com status DISPONIVEL, aguardando
+// recarterização para o vendedor que voltar a vender para eles.
+const REP_DISPONIVEL = 203;
 
 @Injectable()
 export class CarteirizacaoService {
@@ -155,8 +160,11 @@ export class CarteirizacaoService {
       // markup: margem sobre o custo (preço = custo × (1 + markup)). ~50% no padrão do atacado.
       const margemCustoPct = custo12 > 0 ? (lucro12 / custo12) * 100 : 0;
 
+      // Cliente na carteira do "pool" (203) fica DISPONIVEL para recarterização.
+      const isDisponivel = emCarteira && ov!.rep_codigo === REP_DISPONIVEL;
       let status: StatusCliente;
       if (!emCarteira) status = 'SEM_CARTEIRA';
+      else if (isDisponivel) status = 'DISPONIVEL';
       else if (dias != null && dias <= janelaDias) status = 'ATIVO';
       else status = 'INATIVO';
 
@@ -226,6 +234,7 @@ export class CarteirizacaoService {
       ativos: todos.filter((c) => c.status === 'ATIVO').length,
       inativos: todos.filter((c) => c.status === 'INATIVO').length,
       sem_carteira: todos.filter((c) => c.status === 'SEM_CARTEIRA').length,
+      disponivel: todos.filter((c) => c.status === 'DISPONIVEL').length,
       alto_faturamento: todos.filter((c) => c.alto_faturamento).length,
       queda: todos.filter((c) => c.queda).length,
       novos: todos.filter((c) => c.novo).length,
@@ -679,6 +688,64 @@ export class CarteirizacaoService {
       usuario_nome: dto.usuario_nome ?? null,
     });
     return { ok: true, cli_codigo };
+  }
+
+  // -------------------------------------------------------- para carteirizar
+  private ymd(d: Date): string {
+    const x = new Date(d);
+    return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`;
+  }
+
+  /**
+   * Lista "para carteirizar": clientes DISPONÍVEIS (na carteira do pool 203) que já tiveram
+   * venda de OUTRO vendedor APÓS entrarem no pool (corte = atribuido_em). Sugere o vendedor
+   * da venda mais recente, para apoiar a manutenção da carteira no ERP.
+   */
+  async clientesParaCarteirizar() {
+    const carteira = await this.overlay.listarCarteira();
+    const pool = carteira.filter((c) => c.trash === 0 && c.rep_codigo === REP_DISPONIVEL);
+    if (!pool.length) return { itens: [], total: 0 };
+
+    const cortes = pool.map((c) => ({ cli_codigo: c.cli_codigo, cutoff: this.ymd(c.atribuido_em) }));
+    const [vendas, base] = await Promise.all([
+      this.sql.vendasAposCarteira(cortes),
+      this.getBase(),
+    ]);
+    const baseMap = new Map(base.map((b) => [b.cli_codigo, b]));
+    const entradaMap = new Map(pool.map((c) => [c.cli_codigo, c.atribuido_em]));
+
+    // agrupa por cliente; sugere o vendedor da venda mais recente
+    const porCliente = new Map<number, VendaAposCarteiraRow[]>();
+    for (const v of vendas) {
+      const arr = porCliente.get(v.cli_codigo) ?? [];
+      arr.push(v);
+      porCliente.set(v.cli_codigo, arr);
+    }
+
+    const itens = [...porCliente.entries()].map(([cli_codigo, vs]) => {
+      const sugerido = vs.reduce((a, b) =>
+        new Date(b.ult_venda ?? 0) > new Date(a.ult_venda ?? 0) ? b : a,
+      );
+      const b = baseMap.get(cli_codigo);
+      const entrada = entradaMap.get(cli_codigo) ?? null;
+      return {
+        cli_codigo,
+        cli_nome: b?.cli_nome ?? `Cliente ${cli_codigo}`,
+        uf: b?.uf ?? null,
+        cidade: b?.cidade ?? null,
+        entrada_pool: entrada,
+        dias_no_pool: entrada ? this.diasDesde(entrada) : null,
+        rep_sugerido_codigo: sugerido.rep_codigo,
+        rep_sugerido_nome: sugerido.rep_nome,
+        ult_venda: sugerido.ult_venda,
+        valor: this.num(sugerido.valor),
+        pedidos: this.num(sugerido.pedidos),
+        qtd_vendedores: vs.length,
+      };
+    });
+
+    itens.sort((a, b) => new Date(b.ult_venda ?? 0).getTime() - new Date(a.ult_venda ?? 0).getTime());
+    return { itens, total: itens.length };
   }
 
   // =================================================================

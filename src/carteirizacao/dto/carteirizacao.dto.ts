@@ -1,4 +1,4 @@
-export type StatusCliente = 'ATIVO' | 'INATIVO' | 'SEM_CARTEIRA';
+export type StatusCliente = 'ATIVO' | 'INATIVO' | 'SEM_CARTEIRA' | 'DISPONIVEL';
 
 export interface ListarClientesQuery {
   page?: number;
