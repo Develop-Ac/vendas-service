@@ -802,11 +802,12 @@ export class CarteirizacaoService {
     const periodo =
       (await this.sql.periodoComissional(a, m)) ?? this.periodoComissionalFallback(a, m);
 
-    const [ativos, metasDw, realizado, overrides] = await Promise.all([
+    const [ativos, metasDw, realizado, overrides, papeis] = await Promise.all([
       this.sql.vendedoresAtivosComissao(),
       this.sql.metasDw(a, m),
       this.sql.realizadoVendedores(periodo.data_inicio, periodo.data_fim),
       this.overlay.listarMetasPeriodo(a, m),
+      this.sql.papeisPorRep(),
     ]);
 
     const dwMap = new Map(metasDw.map((x) => [x.cod_vendedor, x]));
@@ -816,6 +817,11 @@ export class CarteirizacaoService {
     ativos.forEach((v) => nomeMap.set(v.rep_codigo, v.nome));
     metasDw.forEach((x) => { if (!nomeMap.has(x.cod_vendedor)) nomeMap.set(x.cod_vendedor, x.vendedor); });
     realizado.forEach((x) => { if (x.nome && !nomeMap.has(x.vendedor_venda)) nomeMap.set(x.vendedor_venda, x.nome); });
+    // Papel do representante (VENDEDOR / VENDEDOR_ATACADO / TECNICO) — vem de TODOS
+    // os reps de ComissaoRepresentante (cobre inativos e técnicos com realizado, que
+    // ficam fora de `ativos`); usado pelo filtro de papéis do painel da Gerência.
+    const papelMap = new Map<number, string | null>();
+    papeis.forEach((p) => papelMap.set(Number(p.rep_codigo), p.papel ?? null));
 
     // universo: ativos (comissões) + quem tem meta/override/realizado
     const codigos = new Set<number>([
@@ -843,6 +849,7 @@ export class CarteirizacaoService {
       return {
         rep_codigo: rep,
         rep_nome: nomeMap.get(rep) ?? `Rep ${rep}`,
+        papel: papelMap.get(rep) ?? null,
         ativo: ativos.some((v) => v.rep_codigo === rep),
         meta,
         meta_origem,
@@ -994,6 +1001,48 @@ export class CarteirizacaoService {
   /** Equipe do atacado com venda no período [ini, fim] (filtro de vendedor do supervisor). */
   async equipeAtacadoComVenda(ini: string, fim: string) {
     return this.sql.equipeAtacadoNomesComVenda(ini, fim);
+  }
+
+  /**
+   * Dados para o painel da Gerência: TODOS os vendedores da empresa (todos os canais)
+   * + período comissional vigente. Mesma forma de painelSupervisao, sem filtro de canal.
+   */
+  async painelGerencia(ini?: string, fim?: string) {
+    const periodo =
+      ini && fim
+        ? { data_inicio: ini, data_fim: fim }
+        : (await this.sql.periodoComissionalAtual()) ??
+          this.periodoComissionalFallback(new Date().getFullYear(), new Date().getMonth() + 1);
+    const vendedores = await this.sql.vendedoresEmpresaNomes();
+    return { vendedores, data_inicio: periodo.data_inicio, data_fim: periodo.data_fim };
+  }
+
+  /** Todos os vendedores da empresa com venda no período (dropdown de vendedor da Gerência). */
+  async vendedoresEmpresaComVenda(ini: string, fim: string) {
+    return this.sql.vendedoresComVendaNomes(ini, fim);
+  }
+
+  /**
+   * KPIs de carteira para o painel da Gerência: empresa inteira (ou 1 vendedor
+   * selecionado). Mesma lógica de painelCarteiraSupervisao, mas com todos os reps.
+   */
+  async painelCarteiraGerencia(vendedorNome: string | undefined, dataInicio: string, dataFim: string) {
+    let reps: number[];
+    if (vendedorNome) {
+      const rep = await this.sql.repPorNome(vendedorNome.toUpperCase());
+      reps = rep ? [rep] : [];
+    } else {
+      reps = await this.sql.vendedoresEmpresaReps();
+    }
+    const [clientesCarteira, clientesComVenda] = await Promise.all([
+      this.overlay.contarCarteiraReps(reps),
+      this.sql.clientesComVendaReps(reps, dataInicio, dataFim),
+    ]);
+    return {
+      clientes_carteira: clientesCarteira,
+      clientes_com_venda: clientesComVenda,
+      positivacao: clientesCarteira > 0 ? (clientesComVenda / clientesCarteira) * 100 : 0,
+    };
   }
 
   /**

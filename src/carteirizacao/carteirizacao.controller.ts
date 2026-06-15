@@ -158,6 +158,29 @@ export class CarteirizacaoController {
     return this.service.painelCarteiraSupervisao(vendedor, ini ?? '', fim ?? '');
   }
 
+  // ------------------------------------------------- Gerência (empresa toda)
+  // Painel da Gerência: todos os vendedores (filtro agregado) + período.
+  @Get('painel-gerencia')
+  painelGerencia(@Query('ini') ini?: string, @Query('fim') fim?: string) {
+    return this.service.painelGerencia(ini, fim);
+  }
+
+  // Todos os vendedores da empresa com venda no período (dropdown da Gerência).
+  @Get('vendedores-empresa-periodo')
+  vendedoresEmpresaPeriodo(@Query('ini') ini: string, @Query('fim') fim: string) {
+    return this.service.vendedoresEmpresaComVenda(ini, fim);
+  }
+
+  // KPIs de carteira da Gerência: empresa inteira ou 1 vendedor (?vendedor=).
+  @Get('painel-carteira-gerencia')
+  painelCarteiraGerencia(
+    @Query('vendedor') vendedor?: string,
+    @Query('ini') ini?: string,
+    @Query('fim') fim?: string,
+  ) {
+    return this.service.painelCarteiraGerencia(vendedor, ini ?? '', fim ?? '');
+  }
+
   // Lookup codigo_ibge -> lat/lng para o mapa de calor de vendas por município.
   @Get('municipios-geo')
   municipiosGeo() {

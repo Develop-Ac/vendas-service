@@ -375,6 +375,54 @@ export class CarteirizacaoSqlServerRepository {
     return Array.from(new Set(rows.map((r) => r.nome).filter(Boolean)));
   }
 
+  /**
+   * Papel (VENDEDOR / VENDEDOR_ATACADO / TECNICO) de TODOS os representantes,
+   * 1 por rep_codigo (preferindo o cadastro ativo). Usado pelo filtro de papéis
+   * do painel da Gerência — cobre também inativos e técnicos, que têm realizado
+   * mas ficam de fora de `vendedoresAtivosComissao`.
+   */
+  async papeisPorRep(): Promise<{ rep_codigo: number; papel: string | null }[]> {
+    return this.mssql.query<{ rep_codigo: number; papel: string | null }>(`
+      SELECT rep_codigo, papel FROM (
+        SELECT rep_codigo, papel,
+               ROW_NUMBER() OVER (PARTITION BY rep_codigo ORDER BY inativo ASC) AS rn
+        FROM dbo.ComissaoRepresentante
+      ) z WHERE rn = 1`);
+  }
+
+  // ===================================== Gerência (empresa toda, todos os canais)
+  /** Nomes (UPPER) de TODOS os representantes com venda nos últimos 12 meses (filtro agregado da Gerência). */
+  async vendedoresEmpresaNomes(): Promise<string[]> {
+    const rows = await this.mssql.query<{ nome: string }>(`
+      SELECT DISTINCT LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome
+      FROM dbo.vw_analise_vendas v
+      WHERE v.vendedor_venda IS NOT NULL AND v.nome_representante IS NOT NULL
+        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))`);
+    return Array.from(new Set(rows.map((r) => r.nome).filter(Boolean)));
+  }
+
+  /** rep_codigos de TODOS os representantes com venda nos últimos 12 meses (carteira da Gerência). */
+  async vendedoresEmpresaReps(): Promise<number[]> {
+    const rows = await this.mssql.query<{ rep: number }>(`
+      SELECT DISTINCT v.vendedor_venda AS rep
+      FROM dbo.vw_analise_vendas v
+      WHERE v.vendedor_venda IS NOT NULL
+        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))`);
+    return Array.from(new Set(rows.map((r) => Number(r.rep)).filter((n) => !Number.isNaN(n))));
+  }
+
+  /** Nomes de TODOS os representantes com venda no intervalo [ini, fim] (dropdown de vendedor da Gerência). */
+  async vendedoresComVendaNomes(ini: string, fim: string): Promise<string[]> {
+    const rows = await this.mssql.query<{ nome: string }>(
+      `SELECT DISTINCT LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome
+       FROM dbo.vw_analise_vendas v
+       WHERE v.DT_CANCELAMENTO IS NULL AND v.vendedor_venda IS NOT NULL AND v.nome_representante IS NOT NULL
+         AND v.dt_emissao_convertida BETWEEN @ini AND @fim`,
+      { ini, fim },
+    );
+    return Array.from(new Set(rows.map((r) => r.nome).filter(Boolean)));
+  }
+
   /** Nome do representante (UPPER/TRIM) para casar com o filtro `vendedor` do Metabase. */
   async nomeRepresentanteComissao(repCodigo: number): Promise<string | null> {
     const rows = await this.mssql.query<{ nome: string }>(
