@@ -1,7 +1,6 @@
 import {
   Body,
   Controller,
-  Delete,
   Get,
   Param,
   ParseIntPipe,
@@ -13,16 +12,12 @@ import {
 import type { Response } from 'express';
 import { CarteirizacaoService } from './carteirizacao.service';
 import {
-  AtribuirDto,
-  AtribuirLoteDto,
   ConfigVendedorDto,
+  ConfirmarExclusaoDto,
   ListarClientesQuery,
   MetaVendedorDto,
-  RedistribuirDto,
-  RemoverDto,
-  SeedDto,
+  SincronizarDto,
   StatusCliente,
-  TransferirDto,
 } from './dto/carteirizacao.dto';
 
 const toBool = (v: unknown) => v === true || v === 'true' || v === '1';
@@ -59,29 +54,22 @@ export class CarteirizacaoController {
     return this.service.historicoCliente(cli);
   }
 
-  @Post('atribuir')
-  atribuir(@Body() dto: AtribuirDto) {
-    return this.service.atribuir(dto);
+  // Carga/reconciliação com o ERP (fonte da verdade). Usada pelo botão "Atualizar"
+  // e pela carga diária automática. A manutenção manual da carteira foi desabilitada:
+  // o ERP é a única origem de atribuição/movimentação.
+  @Post('sincronizar')
+  sincronizar(@Body() dto: SincronizarDto) {
+    return this.service.sincronizar(dto ?? {});
   }
 
-  @Post('atribuir-lote')
-  atribuirLote(@Body() dto: AtribuirLoteDto) {
-    return this.service.atribuirLote(dto);
-  }
-
-  @Post('transferir')
-  transferir(@Body() dto: TransferirDto) {
-    return this.service.transferir(dto);
-  }
-
-  @Delete('cliente/:cli')
-  remover(@Param('cli', ParseIntPipe) cli: number, @Body() dto: RemoverDto) {
-    return this.service.remover(cli, dto ?? {});
-  }
-
-  @Post('seed')
-  seed(@Body() dto: SeedDto) {
-    return this.service.seed(dto ?? {});
+  // Única escrita manual restante: confirmar a exclusão de um cliente em revisão
+  // (saiu da tabela de preço do atacado).
+  @Post('cliente/:cli/confirmar-exclusao')
+  confirmarExclusao(
+    @Param('cli', ParseIntPipe) cli: number,
+    @Body() dto: ConfirmarExclusaoDto,
+  ) {
+    return this.service.confirmarExclusao(cli, dto ?? {});
   }
 
   // -------------------------------------------------- Fase 2: acompanhamento
@@ -111,11 +99,6 @@ export class CarteirizacaoController {
   @Put('vendedores/:rep/config')
   salvarConfig(@Param('rep', ParseIntPipe) rep: number, @Body() dto: ConfigVendedorDto) {
     return this.service.salvarConfigVendedor(rep, dto ?? {});
-  }
-
-  @Post('redistribuir')
-  redistribuir(@Body() dto: RedistribuirDto) {
-    return this.service.redistribuir(dto);
   }
 
   // ------------------------------------------------- Fase 3: metas & perform.
@@ -211,6 +194,8 @@ export class CarteirizacaoController {
       altoFaturamento: q.altoFaturamento != null ? toBool(q.altoFaturamento) : undefined,
       queda: q.queda != null ? toBool(q.queda) : undefined,
       novo: q.novo != null ? toBool(q.novo) : undefined,
+      risco: q.risco != null ? toBool(q.risco) : undefined,
+      revisao: q.revisao != null ? toBool(q.revisao) : undefined,
       curvaAbc: (q.curvaAbc as 'A' | 'B' | 'C') || undefined,
       scoreFaixa: (q.scoreFaixa as 'A' | 'B' | 'C' | 'D') || undefined,
       ordenarPor: q.ordenarPor || undefined,

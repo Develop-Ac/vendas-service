@@ -851,8 +851,14 @@ model ven_carteira_cliente {
   created_at    DateTime @default(now()) @db.Timestamptz(6)
   updated_at    DateTime @default(now()) @updatedAt @db.Timestamptz(6)
   trash         Int      @default(0)
+  // Revisão (sincronização ERP): cliente que saiu do atacado fica sem vendedor
+  // e revisao=1 aguardando confirmação manual da exclusão da carteira.
+  revisao        Int       @default(0)
+  revisao_motivo String?
+  revisao_em     DateTime? @db.Timestamptz(6)
 
   @@index([rep_codigo], map: "idx_ven_carteira_cliente_rep")
+  @@index([revisao], map: "idx_ven_carteira_cliente_revisao")
 }
 
 model ven_carteira_historico {

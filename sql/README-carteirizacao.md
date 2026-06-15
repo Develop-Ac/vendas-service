@@ -34,28 +34,39 @@ npx prisma generate
 npm run build
 ```
 
-## 4. Carga inicial (seed)
-Após subir o serviço, popular a carteira a partir do `rep_codigo` do ERP:
+## 4. Carga / sincronização com o ERP (fonte da verdade)
+A carteira é mantida **automaticamente pelo ERP**: o `rep_codigo` do cadastro é a fonte da verdade.
+A sincronização lê a base atacado, compara com o overlay e aplica as diferenças (trocas de
+vendedor, novos clientes), gravando histórico. Substitui o antigo `seed` para manutenção contínua.
 
 ```
-# simulação (não grava):
-curl -X POST http://localhost:8000/carteirizacao/seed -H "Content-Type: application/json" -d '{"estrategia":"rep_codigo","dryRun":true}'
+# simulação (não grava) — mostra novos/alterados/sem_vendedor/revisao:
+curl -X POST http://localhost:8000/carteirizacao/sincronizar -H "Content-Type: application/json" -d '{"dryRun":true}'
 
 # aplicar:
-curl -X POST http://localhost:8000/carteirizacao/seed -H "Content-Type: application/json" -d '{"estrategia":"rep_codigo"}'
+curl -X POST http://localhost:8000/carteirizacao/sincronizar -H "Content-Type: application/json" -d '{}'
 ```
 
-Universo = clientes atacado (tabela de preço 2 e 5). ~433 clientes têm `rep_codigo` e serão carteirizados; os demais ficam "sem carteira" para distribuição manual na tela.
+Regras da reconciliação (ERP sempre vence):
+- ERP tem rep e overlay diverge/ausente → atribui/atualiza (`ATRIBUICAO`/`ALTERACAO`).
+- ERP sem rep (cliente segue no atacado) → zera vendedor (`REMOCAO`).
+- Cliente saiu do atacado (sumiu da base 2/5) → fica sem vendedor + `revisao=1` (`REVISAO`),
+  aguardando confirmação manual da exclusão.
 
-## 5. Endpoints (Fase 1)
-- `GET  /carteirizacao/clientes` — lista paginada + filtros (status, rep_codigo, uf, busca, semVendedor, faturamentoMin/Max, ordenarPor, ordem, janelaDias).
+Universo = clientes atacado (tabela de preço 2 e 5). Inativação: 60 dias sem compra; 45 dias = risco.
+
+### Carga diária automática
+Cron interno (`@nestjs/schedule`), padrão 05:00 (fuso America/Sao_Paulo). Configurável por
+`CARTEIRIZACAO_SYNC_CRON` no `.env` (formato cron de 5 campos).
+
+## 5. Endpoints (carteira — intranet somente-leitura)
+A atribuição/movimentação **manual foi desabilitada**. Restam consulta, histórico e a sincronização.
+- `GET  /carteirizacao/clientes` — lista paginada + filtros (status, rep_codigo, uf, busca, semVendedor, risco, revisao, faturamentoMin/Max, ordenarPor, ordem, janelaDias).
 - `GET  /carteirizacao/clientes/export` — CSV (mesmos filtros).
 - `GET  /carteirizacao/vendedores` — vendedores do atacado + contagem da carteira.
-- `POST /carteirizacao/atribuir` — `{cli_codigo, rep_codigo, motivo?}`.
-- `POST /carteirizacao/atribuir-lote` — `{cli_codigos[], rep_codigo, motivo?}`.
-- `POST /carteirizacao/transferir` — `{rep_origem, rep_destino, cli_codigos?[], motivo?}`.
-- `DELETE /carteirizacao/cliente/:cli` — remove da carteira.
 - `GET  /carteirizacao/cliente/:cli/historico`.
+- `POST /carteirizacao/sincronizar` — `{dryRun?}` carga/reconciliação com o ERP.
+- `POST /carteirizacao/cliente/:cli/confirmar-exclusao` — confirma exclusão de cliente em revisão (única escrita manual).
 
 ## Endpoints (Fase 2 — acompanhamento)
 - `GET /carteirizacao/indicadores/vendedores` · `GET /carteirizacao/indicadores/cliente/:cli`

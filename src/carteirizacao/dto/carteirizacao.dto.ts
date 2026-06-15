@@ -13,6 +13,8 @@ export interface ListarClientesQuery {
   altoFaturamento?: boolean;
   queda?: boolean;
   novo?: boolean;
+  risco?: boolean;
+  revisao?: boolean;
   curvaAbc?: 'A' | 'B' | 'C';
   scoreFaixa?: 'A' | 'B' | 'C' | 'D';
   ordenarPor?: string;
@@ -57,6 +59,19 @@ export class SeedDto {
   // 'rep_codigo' (default) = só cadastro; 'hibrido' = rep_codigo + vendedor dominante; 'vendas' = só vendas
   estrategia?: 'rep_codigo' | 'hibrido' | 'vendas';
   dryRun?: boolean;
+}
+
+export class SincronizarDto {
+  // se true, apenas conta as diferenças sem gravar
+  dryRun?: boolean;
+  usuario_id?: string;
+  usuario_nome?: string;
+}
+
+export class ConfirmarExclusaoDto {
+  motivo?: string;
+  usuario_id?: string;
+  usuario_nome?: string;
 }
 
 export class ConfigVendedorDto {

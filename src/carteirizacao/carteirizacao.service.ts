@@ -8,9 +8,11 @@ import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository
 import {
   AtribuirDto,
   AtribuirLoteDto,
+  ConfirmarExclusaoDto,
   ListarClientesQuery,
   RemoverDto,
   SeedDto,
+  SincronizarDto,
   StatusCliente,
   TransferirDto,
 } from './dto/carteirizacao.dto';
@@ -51,9 +53,16 @@ export interface ClienteCarteira {
   score: number; // 0-100
   score_faixa: 'A' | 'B' | 'C' | 'D';
   curva_abc: 'A' | 'B' | 'C';
+  // risco/revisão
+  risco_inativacao: boolean; // ativo, mas 45–60 dias sem compra
+  revisao: boolean; // saiu do atacado: sem vendedor, aguardando confirmação de exclusão
+  revisao_motivo: string | null;
 }
 
-const DEFAULT_JANELA_DIAS = 90;
+// Inativação: cliente em carteira sem compra há mais de 60 dias vira INATIVO.
+const DEFAULT_JANELA_DIAS = 60;
+// Risco de inativação: ativo, mas já a 45+ dias sem compra (alerta antecipado).
+const RISCO_INATIVACAO_DIAS = 45;
 const BASE_CACHE_TTL_MS = 60_000;
 
 @Injectable()
@@ -151,6 +160,10 @@ export class CarteirizacaoService {
       else if (dias != null && dias <= janelaDias) status = 'ATIVO';
       else status = 'INATIVO';
 
+      // Risco de inativação: ainda ATIVO, mas já 45+ dias sem compra.
+      const riscoInativacao =
+        status === 'ATIVO' && dias != null && dias >= RISCO_INATIVACAO_DIAS;
+
       // ---- Score do cliente (0-100): RFM + tendência + margem ----
       const sValor = pctl(fats, fat12m); // valor relativo
       const sFreq = pctl(peds, qtd); // frequência relativa
@@ -196,6 +209,9 @@ export class CarteirizacaoService {
         score,
         score_faixa,
         curva_abc: abcMap.get(b.cli_codigo) ?? 'C',
+        risco_inativacao: riscoInativacao,
+        revisao: !!ov && ov.revisao === 1,
+        revisao_motivo: ov?.revisao_motivo ?? null,
       };
     });
   }
@@ -213,6 +229,8 @@ export class CarteirizacaoService {
       alto_faturamento: todos.filter((c) => c.alto_faturamento).length,
       queda: todos.filter((c) => c.queda).length,
       novos: todos.filter((c) => c.novo).length,
+      risco_inativacao: todos.filter((c) => c.risco_inativacao).length,
+      revisao: todos.filter((c) => c.revisao).length,
     };
 
     let lista = todos;
@@ -225,6 +243,8 @@ export class CarteirizacaoService {
     if (q.altoFaturamento) lista = lista.filter((c) => c.alto_faturamento);
     if (q.queda) lista = lista.filter((c) => c.queda);
     if (q.novo) lista = lista.filter((c) => c.novo);
+    if (q.risco) lista = lista.filter((c) => c.risco_inativacao);
+    if (q.revisao) lista = lista.filter((c) => c.revisao);
     if (q.curvaAbc) lista = lista.filter((c) => c.curva_abc === q.curvaAbc);
     if (q.scoreFaixa) lista = lista.filter((c) => c.score_faixa === q.scoreFaixa);
     if (q.busca) {
@@ -497,6 +517,168 @@ export class CarteirizacaoService {
       inseridos: res.count,
       candidatos: rows.length,
     };
+  }
+
+  // ------------------------------------------------------------- sincronizar
+  /**
+   * Carga/reconciliação com o ERP (fonte da verdade). Lê a base atacado, compara com o
+   * overlay e aplica as diferenças, gravando histórico:
+   *  - cliente novo / reativado (ERP tem rep)            -> ATRIBUICAO
+   *  - rep mudou no ERP                                  -> ALTERACAO (ERP sempre vence)
+   *  - rep ficou nulo no ERP (cliente segue no atacado)  -> REMOCAO (sem vendedor)
+   *  - cliente saiu do atacado (sumiu da base 2/5)       -> REVISAO (sem vendedor + flag)
+   * `dryRun` apenas conta, sem gravar.
+   */
+  async sincronizar(dto: SincronizarDto = {}) {
+    const base = await this.getBase(true); // força recarga do ERP (invalida o cache)
+    const overlay = await this.overlay.listarTodos();
+    const baseMap = new Map(base.map((b) => [b.cli_codigo, b]));
+    const overlayMap = new Map(overlay.map((o) => [o.cli_codigo, o]));
+
+    type Acao = 'ATRIBUICAO' | 'ALTERACAO' | 'REMOCAO' | 'REVISAO';
+    interface Mudanca {
+      tipo: 'novo' | 'alterado' | 'sem_vendedor' | 'revisao';
+      acao: Acao;
+      cli_codigo: number;
+      rep_codigo_anterior: number | null;
+      rep_nome_anterior: string | null;
+      rep_codigo_novo: number | null;
+      rep_nome_novo: string | null;
+      motivo: string;
+    }
+
+    const mudancas: Mudanca[] = [];
+
+    // 1) Clientes presentes no ERP (universo atacado)
+    for (const b of base) {
+      const ov = overlayMap.get(b.cli_codigo);
+      const erpRep = b.rep_codigo ?? null;
+      const ativoNoOverlay = !!ov && ov.trash === 0 && ov.rep_codigo != null;
+
+      if (erpRep != null) {
+        // ERP tem vendedor
+        if (ativoNoOverlay && ov!.rep_codigo === erpRep) continue; // sem mudança
+        const tipo: Mudanca['tipo'] = ativoNoOverlay ? 'alterado' : 'novo';
+        mudancas.push({
+          tipo,
+          acao: ativoNoOverlay ? 'ALTERACAO' : 'ATRIBUICAO',
+          cli_codigo: b.cli_codigo,
+          rep_codigo_anterior: ativoNoOverlay ? ov!.rep_codigo : null,
+          rep_nome_anterior: ativoNoOverlay ? ov!.rep_nome : null,
+          rep_codigo_novo: erpRep,
+          rep_nome_novo: b.rep_cadastro_nome ?? null,
+          motivo: 'Sincronização ERP',
+        });
+      } else if (ativoNoOverlay || (ov && ov.revisao === 1)) {
+        // ERP sem vendedor, mas cliente está no atacado (na base): zera vendedor e
+        // limpa eventual flag de revisão (não saiu do atacado).
+        mudancas.push({
+          tipo: 'sem_vendedor',
+          acao: 'REMOCAO',
+          cli_codigo: b.cli_codigo,
+          rep_codigo_anterior: ov!.rep_codigo,
+          rep_nome_anterior: ov!.rep_nome,
+          rep_codigo_novo: null,
+          rep_nome_novo: null,
+          motivo: ov!.revisao === 1 ? 'Cliente retornou ao atacado (sem representante)' : 'Sem representante no ERP',
+        });
+      }
+    }
+
+    // 2) Clientes no overlay (ativos) que sumiram da base atacado -> revisão
+    const MOTIVO_REVISAO =
+      'Cliente não faz mais parte da tabela de preço do atacado (2/5). Confirme a exclusão da carteira.';
+    for (const ov of overlay) {
+      if (ov.trash !== 0) continue;
+      if (baseMap.has(ov.cli_codigo)) continue;
+      if (ov.revisao === 1) continue; // já marcado
+      mudancas.push({
+        tipo: 'revisao',
+        acao: 'REVISAO',
+        cli_codigo: ov.cli_codigo,
+        rep_codigo_anterior: ov.rep_codigo,
+        rep_nome_anterior: ov.rep_nome,
+        rep_codigo_novo: null,
+        rep_nome_novo: null,
+        motivo: MOTIVO_REVISAO,
+      });
+    }
+
+    const resumo = {
+      universo_atacado: base.length,
+      novos: mudancas.filter((m) => m.tipo === 'novo').length,
+      alterados: mudancas.filter((m) => m.tipo === 'alterado').length,
+      sem_vendedor: mudancas.filter((m) => m.tipo === 'sem_vendedor').length,
+      revisao: mudancas.filter((m) => m.tipo === 'revisao').length,
+      inalterados: base.length - mudancas.filter((m) => m.tipo !== 'revisao').length,
+      total_mudancas: mudancas.length,
+    };
+
+    if (dto.dryRun) {
+      return { dryRun: true, ...resumo };
+    }
+
+    // Aplica as mudanças
+    const lote_id = `sync_${Date.now()}`;
+    for (const m of mudancas) {
+      if (m.tipo === 'novo' || m.tipo === 'alterado') {
+        await this.overlay.upsertAtribuicao({
+          cli_codigo: m.cli_codigo,
+          rep_codigo: m.rep_codigo_novo,
+          rep_nome: m.rep_nome_novo,
+          origem: 'SYNC_ERP',
+          atribuido_por: dto.usuario_id ?? null,
+        });
+      } else if (m.tipo === 'sem_vendedor') {
+        await this.overlay.zerarVendedor(m.cli_codigo);
+      } else {
+        await this.overlay.marcarRevisao(m.cli_codigo, m.motivo);
+      }
+    }
+
+    await this.overlay.registrarHistoricoMuitos(
+      mudancas.map((m) => ({
+        cli_codigo: m.cli_codigo,
+        rep_codigo_anterior: m.rep_codigo_anterior,
+        rep_nome_anterior: m.rep_nome_anterior,
+        rep_codigo_novo: m.rep_codigo_novo,
+        rep_nome_novo: m.rep_nome_novo,
+        acao: m.acao,
+        motivo: m.motivo,
+        usuario_id: dto.usuario_id ?? null,
+        usuario_nome: dto.usuario_nome ?? null,
+        lote_id,
+      })),
+    );
+
+    return { dryRun: false, lote_id, ...resumo };
+  }
+
+  // -------------------------------------------------------- confirmar exclusão
+  /**
+   * Única escrita manual da carteira restante: confirma a exclusão de um cliente que
+   * saiu do atacado (revisao=1). Faz a remoção lógica (trash=1) e grava histórico.
+   */
+  async confirmarExclusao(cli_codigo: number, dto: ConfirmarExclusaoDto = {}) {
+    const atual = await this.overlay.obterCliente(cli_codigo);
+    if (!atual || atual.trash !== 0 || atual.revisao !== 1) {
+      throw new BadRequestException(
+        'Cliente não está marcado para revisão. A exclusão só é permitida para clientes que saíram do atacado.',
+      );
+    }
+    await this.overlay.removerCliente(cli_codigo);
+    await this.overlay.registrarHistorico({
+      cli_codigo,
+      rep_codigo_anterior: atual.rep_codigo,
+      rep_nome_anterior: atual.rep_nome,
+      rep_codigo_novo: null,
+      rep_nome_novo: null,
+      acao: 'REMOCAO',
+      motivo: dto.motivo ?? 'Exclusão confirmada (saiu do atacado)',
+      usuario_id: dto.usuario_id ?? null,
+      usuario_nome: dto.usuario_nome ?? null,
+    });
+    return { ok: true, cli_codigo };
   }
 
   // =================================================================

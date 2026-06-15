@@ -23,6 +23,11 @@ export class CarteirizacaoPrismaRepository {
     return this.prisma.ven_carteira_cliente.findMany({ where: { trash: 0 } });
   }
 
+  /** Todas as linhas do overlay (inclusive trash=1) — usado na sincronização (diff/reativação). */
+  async listarTodos() {
+    return this.prisma.ven_carteira_cliente.findMany();
+  }
+
   /** Qtde de clientes na carteira (overlay) de um vendedor. */
   async contarCarteira(rep_codigo: number) {
     return this.prisma.ven_carteira_cliente.count({ where: { rep_codigo, trash: 0 } });
@@ -48,10 +53,50 @@ export class CarteirizacaoPrismaRepository {
     atribuido_por?: string | null;
   }) {
     const { cli_codigo, ...rest } = params;
+    // Atribuir/confirmar um vendedor encerra qualquer pendência de revisão.
+    const limparRevisao = { revisao: 0, revisao_motivo: null, revisao_em: null };
     return this.prisma.ven_carteira_cliente.upsert({
       where: { cli_codigo },
-      create: { cli_codigo, ...rest, atribuido_em: new Date(), trash: 0 },
-      update: { ...rest, atribuido_em: new Date(), trash: 0 },
+      create: { cli_codigo, ...rest, ...limparRevisao, atribuido_em: new Date(), trash: 0 },
+      update: { ...rest, ...limparRevisao, atribuido_em: new Date(), trash: 0 },
+    });
+  }
+
+  /**
+   * Sincronização ERP: cliente saiu do atacado (sumiu da base 2/5). Fica sem vendedor,
+   * permanece na carteira (trash=0) e é marcado para revisão aguardando confirmação manual.
+   */
+  async marcarRevisao(cli_codigo: number, motivo: string) {
+    return this.prisma.ven_carteira_cliente.update({
+      where: { cli_codigo },
+      data: {
+        rep_codigo: null,
+        rep_nome: null,
+        origem: 'SYNC_ERP',
+        revisao: 1,
+        revisao_motivo: motivo,
+        revisao_em: new Date(),
+        updated_at: new Date(),
+      },
+    });
+  }
+
+  /**
+   * Sincronização ERP: cliente está no atacado (na base) mas sem rep no ERP — zera
+   * vendedor e limpa eventual flag de revisão (não saiu do atacado).
+   */
+  async zerarVendedor(cli_codigo: number) {
+    return this.prisma.ven_carteira_cliente.update({
+      where: { cli_codigo },
+      data: {
+        rep_codigo: null,
+        rep_nome: null,
+        origem: 'SYNC_ERP',
+        revisao: 0,
+        revisao_motivo: null,
+        revisao_em: null,
+        updated_at: new Date(),
+      },
     });
   }
 

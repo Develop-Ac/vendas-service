@@ -23,6 +23,13 @@ CREATE TABLE IF NOT EXISTS ven_carteira_cliente (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_ven_carteira_cliente_cli ON ven_carteira_cliente (cli_codigo);
 CREATE INDEX IF NOT EXISTS idx_ven_carteira_cliente_rep ON ven_carteira_cliente (rep_codigo);
 
+-- 1b) Revisão (sincronização ERP): cliente que saiu da tabela de preço do atacado
+-- fica sem vendedor e flag=1 aguardando confirmação manual da exclusão da carteira.
+ALTER TABLE ven_carteira_cliente ADD COLUMN IF NOT EXISTS revisao        INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE ven_carteira_cliente ADD COLUMN IF NOT EXISTS revisao_motivo TEXT;
+ALTER TABLE ven_carteira_cliente ADD COLUMN IF NOT EXISTS revisao_em     TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_ven_carteira_cliente_revisao ON ven_carteira_cliente (revisao);
+
 -- 2) Histórico append-only (rastreabilidade — Regras 3 e 4) --------------------
 CREATE TABLE IF NOT EXISTS ven_carteira_historico (
   id                   TEXT PRIMARY KEY,
