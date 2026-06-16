@@ -43,9 +43,19 @@ export interface ClienteCarteira {
   faturamento_3m_ant: number;
   faturamento_12m: number;
   ticket_medio: number;
+  ticket_dia: number; // faturamento_total / dias distintos com venda
+  dias_com_venda: number;
   qtd_pedidos: number;
+  participacao_carteira_pct: number; // share do faturamento_3m do cliente na carteira do vendedor
   margem_custo_pct: number; // markup: lucro / custo (margem sobre o custo)
   lucro_12m: number;
+  // crediário (fonte BI dbo.Stage_Clientes / Stage_ContasReceber_Titulos)
+  crediario: string | null; // 'LIBERADO' | 'BLOQUEADO' (ou outro do ERP)
+  crediario_liberado: boolean;
+  limite_credito: number;
+  limite_disponivel: number;
+  con_codigo: number | null; // conceito do cliente (Stage_Clientes.CON_CODIGO)
+  conceito: string | null; // descrição do conceito (CONCEITO_MAP)
   // classificação / inteligência
   status: StatusCliente;
   alto_faturamento: boolean;
@@ -65,6 +75,20 @@ const DEFAULT_JANELA_DIAS = 60;
 // Risco de inativação: ativo, mas já a 45+ dias sem compra (alerta antecipado).
 const RISCO_INATIVACAO_DIAS = 45;
 const BASE_CACHE_TTL_MS = 60_000;
+// Conceito do cliente (CON_CODIGO em dbo.Stage_Clientes) -> descrição (cadastro do ERP).
+const CONCEITO_MAP: Record<number, string> = {
+  1: 'BOM',
+  2: 'REGULAR',
+  3: 'RUIM',
+  4: 'PRE CADASTRO',
+  5: 'CADASTRO PARA DEVOLUÇÃO',
+  6: 'CADASTRO PARA NFE SEGURO',
+  7: 'CADASTRO RECEBIMENTO CHEQUES',
+  8: 'CLIENTE INADIMPLENTE',
+  9: 'BOLETO - SOMENTE FATURAR COM BOLETO',
+  10: 'ATUALIZAR CADASTRO NA PRÓXIMA COMPRA',
+};
+
 // Vendedor "pool": clientes inativos que saíram de outras carteiras são movidos
 // para a carteira do Lucas Barrada (rep_codigo 316) e ficam com status DISPONIVEL,
 // aguardando recarterização para o vendedor que voltar a vender para eles.
@@ -119,6 +143,16 @@ export class CarteirizacaoService {
 
     const carteiraMap = new Map(carteira.map((c) => [c.cli_codigo, c]));
 
+    // Total de faturamento dos últimos 3 meses por vendedor (apenas clientes em carteira),
+    // base para o % de participação de cada cliente na carteira do seu vendedor.
+    const repFat3m = new Map<number, number>();
+    for (const b of base) {
+      const ov = carteiraMap.get(b.cli_codigo);
+      if (ov && ov.trash === 0 && ov.rep_codigo != null) {
+        repFat3m.set(ov.rep_codigo, (repFat3m.get(ov.rep_codigo) ?? 0) + this.num(b.faturamento_3m));
+      }
+    }
+
     // distribuições para percentis (entre quem comprou nos últimos 12m)
     const fats = base.map((b) => this.num(b.faturamento_12m)).filter((v) => v > 0).sort((a, b) => a - b);
     const peds = base.map((b) => this.num(b.qtd_pedidos)).filter((v) => v > 0).sort((a, b) => a - b);
@@ -151,6 +185,7 @@ export class CarteirizacaoService {
       const ultima = this.maxData(b.data_ult_compra, b.ult_compra_venda);
       const dias = this.diasDesde(ultima);
       const qtd = this.num(b.qtd_pedidos);
+      const diasComVenda = this.num(b.dias_com_venda);
       const fatTotal = this.num(b.faturamento_total);
       const fat3m = this.num(b.faturamento_3m);
       const fat3mAnt = this.num(b.faturamento_3m_ant);
@@ -207,9 +242,24 @@ export class CarteirizacaoService {
         faturamento_3m_ant: fat3mAnt,
         faturamento_12m: fat12m,
         ticket_medio: qtd > 0 ? fatTotal / qtd : 0,
+        ticket_dia: diasComVenda > 0 ? fatTotal / diasComVenda : 0,
+        dias_com_venda: diasComVenda,
         qtd_pedidos: qtd,
+        participacao_carteira_pct:
+          emCarteira && ov && (repFat3m.get(ov.rep_codigo as number) ?? 0) > 0
+            ? (fat3m / (repFat3m.get(ov.rep_codigo as number) as number)) * 100
+            : 0,
         margem_custo_pct: margemCustoPct,
         lucro_12m: lucro12,
+        crediario: b.crediario,
+        crediario_liberado: (b.crediario ?? '').toUpperCase() === 'LIBERADO',
+        limite_credito: this.num(b.limite_credito),
+        limite_disponivel: this.num(b.limite_disponivel),
+        con_codigo: b.con_codigo ?? null,
+        conceito:
+          b.con_codigo != null
+            ? CONCEITO_MAP[Number(b.con_codigo)] ?? `Conceito ${b.con_codigo}`
+            : null,
         status,
         alto_faturamento: fat12m >= limiarAlto && fat12m > 0,
         queda: fat3mAnt > 0 && fat3m < fat3mAnt * 0.7,
@@ -814,9 +864,8 @@ export class CarteirizacaoService {
     }
     const serie = await this.sql.serieMensalCliente(cli_codigo, 12);
     const mesesComCompra = serie.length;
-    const frequencia_mensal = mesesComCompra > 0
-      ? serie.reduce((s, m) => s + Number(m.pedidos), 0) / 12
-      : 0;
+    // Frequência mensal = média de DIAS por mês em que o cliente comprou (12 meses).
+    const frequencia_mensal = serie.reduce((s, m) => s + Number(m.dias), 0) / 12;
     const evolucao_pct = cliente.faturamento_3m_ant > 0
       ? ((cliente.faturamento_3m - cliente.faturamento_3m_ant) / cliente.faturamento_3m_ant) * 100
       : null;
@@ -1358,7 +1407,13 @@ export class CarteirizacaoService {
       'faturamento_3m',
       'faturamento_12m',
       'ticket_medio',
+      'ticket_dia',
+      'participacao_carteira_pct',
       'qtd_pedidos',
+      'conceito',
+      'crediario',
+      'limite_credito',
+      'limite_disponivel',
     ];
     const head = cols.join(';');
     const esc = (v: unknown) => {

@@ -19,10 +19,15 @@ export interface ClienteBaseRow {
   faturamento_3m_ant: number;
   faturamento_12m: number;
   qtd_pedidos: number;
+  dias_com_venda: number;
   ult_compra_venda: Date | null;
   lucro_12m: number;
   base_12m: number;
   custo_12m: number;
+  crediario: string | null;
+  con_codigo: number | null;
+  limite_credito: number;
+  limite_disponivel: number;
 }
 
 export interface MetaDwRow {
@@ -117,6 +122,7 @@ export class CarteirizacaoSqlServerRepository {
                     AND dt <  DATEADD(MONTH,-3, CAST(GETDATE() AS date)) THEN valor_nota ELSE 0 END) AS faturamento_3m_ant,
           SUM(CASE WHEN dt >= DATEADD(MONTH,-12, CAST(GETDATE() AS date)) THEN valor_nota ELSE 0 END) AS faturamento_12m,
           COUNT(*) AS qtd_pedidos,
+          COUNT(DISTINCT CAST(dt AS date)) AS dias_com_venda,
           MAX(dt) AS ult_compra_venda
         FROM notas
         GROUP BY CLI_CODIGO
@@ -131,6 +137,12 @@ export class CarteirizacaoSqlServerRepository {
           AND v.dt_emissao_convertida >= DATEADD(MONTH,-12, CAST(GETDATE() AS date))
           AND v.CLI_CODIGO IN (SELECT cli_codigo FROM atac)
         GROUP BY v.CLI_CODIGO
+      ),
+      saldo AS (
+        SELECT CLI_CODIGO, SUM(VALOR - VALOR_LIQUIDO_PAGO) AS valor_em_aberto
+        FROM dbo.Stage_ContasReceber_Titulos
+        WHERE status = 0
+        GROUP BY CLI_CODIGO
       )
       SELECT a.cli_codigo, a.cli_nome, a.uf, a.cidade, a.fone, a.contato,
              a.data_ult_compra, a.rep_codigo, a.tabela_preco, a.inativo,
@@ -141,14 +153,23 @@ export class CarteirizacaoSqlServerRepository {
              COALESCE(m.faturamento_3m_ant, 0)  AS faturamento_3m_ant,
              COALESCE(m.faturamento_12m, 0)     AS faturamento_12m,
              COALESCE(m.qtd_pedidos, 0)         AS qtd_pedidos,
+             COALESCE(m.dias_com_venda, 0)      AS dias_com_venda,
              m.ult_compra_venda,
              COALESCE(g.lucro_12m, 0)           AS lucro_12m,
              COALESCE(g.base_12m, 0)            AS base_12m,
-             COALESCE(g.custo_12m, 0)           AS custo_12m
+             COALESCE(g.custo_12m, 0)           AS custo_12m,
+             sc.CREDIARIO                       AS crediario,
+             sc.CON_CODIGO                      AS con_codigo,
+             COALESCE(sc.LIMITE_CREDITO, 0)     AS limite_credito,
+             CASE WHEN sc.CREDIARIO = 'LIBERADO'
+                  THEN COALESCE(sc.LIMITE_CREDITO, 0) - COALESCE(sal.valor_em_aberto, 0)
+                  ELSE 0 END                    AS limite_disponivel
       FROM atac a
       LEFT JOIN dbo.d_cadastro_representantes r ON r.cod = a.rep_codigo
       LEFT JOIN metr m ON m.CLI_CODIGO = a.cli_codigo
       LEFT JOIN marg g ON g.CLI_CODIGO = a.cli_codigo
+      LEFT JOIN dbo.Stage_Clientes sc ON sc.cli_codigo = a.cli_codigo
+      LEFT JOIN saldo sal ON sal.CLI_CODIGO = a.cli_codigo
     `;
     return this.mssql.query<ClienteBaseRow>(query);
   }
@@ -210,20 +231,22 @@ export class CarteirizacaoSqlServerRepository {
     return this.mssql.query<VendaAposCarteiraRow>(query);
   }
 
-  /** Faturamento mensal de um cliente nos últimos N meses (evolução). */
+  /** Faturamento mensal de um cliente nos últimos N meses (evolução + dias com compra). */
   async serieMensalCliente(
     cliCodigo: number,
     meses = 12,
-  ): Promise<Array<{ ano: number; mes: number; faturamento: number; pedidos: number }>> {
+  ): Promise<Array<{ ano: number; mes: number; faturamento: number; pedidos: number; dias: number }>> {
     const query = `
       SELECT n.ano, n.mes,
              SUM(n.valor_nota) AS faturamento,
-             COUNT(*) AS pedidos
+             COUNT(*) AS pedidos,
+             COUNT(DISTINCT n.dia) AS dias
       FROM (
         SELECT YEAR(v.dt_emissao_convertida) AS ano,
                MONTH(v.dt_emissao_convertida) AS mes,
                v.EMPRESA, v.SERIE, v.NFS,
-               MAX(v.TOTAL_NOTA) AS valor_nota
+               MAX(v.TOTAL_NOTA) AS valor_nota,
+               MAX(CAST(v.dt_emissao_convertida AS date)) AS dia
         FROM dbo.vw_analise_vendas v
         WHERE v.CLI_CODIGO = @cli
           AND v.DT_CANCELAMENTO IS NULL
