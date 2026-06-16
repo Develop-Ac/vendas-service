@@ -279,23 +279,30 @@ export class CarteirizacaoService {
     const janela = q.janelaDias ?? DEFAULT_JANELA_DIAS;
     const todos = await this.montar(janela);
 
+    // Escopo dos totais do cabeçalho: respeita o filtro de vendedor (totais por vendedor
+    // quando aplicado, ex.: modo vendedor). Os chips de status/qualidade são o detalhamento
+    // deste escopo, então não entram aqui.
+    const escopo =
+      q.rep_codigo != null
+        ? todos.filter((c) => c.rep_codigo === Number(q.rep_codigo))
+        : todos;
+
     const resumoGeral = {
-      total: todos.length,
-      ativos: todos.filter((c) => c.status === 'ATIVO').length,
-      inativos: todos.filter((c) => c.status === 'INATIVO').length,
-      sem_carteira: todos.filter((c) => c.status === 'SEM_CARTEIRA').length,
-      disponivel: todos.filter((c) => c.status === 'DISPONIVEL').length,
-      alto_faturamento: todos.filter((c) => c.alto_faturamento).length,
-      queda: todos.filter((c) => c.queda).length,
-      novos: todos.filter((c) => c.novo).length,
-      risco_inativacao: todos.filter((c) => c.risco_inativacao).length,
-      revisao: todos.filter((c) => c.revisao).length,
+      total: escopo.length,
+      ativos: escopo.filter((c) => c.status === 'ATIVO').length,
+      inativos: escopo.filter((c) => c.status === 'INATIVO').length,
+      sem_carteira: escopo.filter((c) => c.status === 'SEM_CARTEIRA').length,
+      disponivel: escopo.filter((c) => c.status === 'DISPONIVEL').length,
+      alto_faturamento: escopo.filter((c) => c.alto_faturamento).length,
+      queda: escopo.filter((c) => c.queda).length,
+      novos: escopo.filter((c) => c.novo).length,
+      risco_inativacao: escopo.filter((c) => c.risco_inativacao).length,
+      revisao: escopo.filter((c) => c.revisao).length,
     };
 
-    let lista = todos;
+    let lista = escopo; // filtro de vendedor já aplicado no escopo
     if (q.status) lista = lista.filter((c) => c.status === q.status);
     if (q.semVendedor) lista = lista.filter((c) => !c.em_carteira);
-    if (q.rep_codigo != null) lista = lista.filter((c) => c.rep_codigo === Number(q.rep_codigo));
     if (q.uf) lista = lista.filter((c) => (c.uf ?? '').toUpperCase() === q.uf!.toUpperCase());
     if (q.faturamentoMin != null) lista = lista.filter((c) => c.faturamento_total >= Number(q.faturamentoMin));
     if (q.faturamentoMax != null) lista = lista.filter((c) => c.faturamento_total <= Number(q.faturamentoMax));
