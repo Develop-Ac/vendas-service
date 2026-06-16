@@ -142,6 +142,7 @@ export class CarteirizacaoSqlServerRepository {
         SELECT CLI_CODIGO, SUM(VALOR - VALOR_LIQUIDO_PAGO) AS valor_em_aberto
         FROM dbo.Stage_ContasReceber_Titulos
         WHERE status = 0
+          AND DATA_PAGTO IS NULL          -- só títulos NÃO pagos
         GROUP BY CLI_CODIGO
       )
       SELECT a.cli_codigo, a.cli_nome, a.uf, a.cidade, a.fone, a.contato,
