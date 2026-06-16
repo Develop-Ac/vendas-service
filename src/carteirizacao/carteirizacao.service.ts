@@ -292,7 +292,9 @@ export class CarteirizacaoService {
       ativos: escopo.filter((c) => c.status === 'ATIVO').length,
       inativos: escopo.filter((c) => c.status === 'INATIVO').length,
       sem_carteira: escopo.filter((c) => c.status === 'SEM_CARTEIRA').length,
-      disponivel: escopo.filter((c) => c.status === 'DISPONIVEL').length,
+      // Disponível é um pool compartilhado (rep 316): conta SEMPRE o total global,
+      // independente do filtro de vendedor — todos os vendedores veem o mesmo número.
+      disponivel: todos.filter((c) => c.status === 'DISPONIVEL').length,
       alto_faturamento: escopo.filter((c) => c.alto_faturamento).length,
       queda: escopo.filter((c) => c.queda).length,
       novos: escopo.filter((c) => c.novo).length,
@@ -300,7 +302,8 @@ export class CarteirizacaoService {
       revisao: escopo.filter((c) => c.revisao).length,
     };
 
-    let lista = escopo; // filtro de vendedor já aplicado no escopo
+    // Filtrar Disponível ignora o vendedor (pool compartilhado): parte de `todos`.
+    let lista = q.status === 'DISPONIVEL' ? todos : escopo;
     if (q.status) lista = lista.filter((c) => c.status === q.status);
     if (q.semVendedor) lista = lista.filter((c) => !c.em_carteira);
     if (q.uf) lista = lista.filter((c) => (c.uf ?? '').toUpperCase() === q.uf!.toUpperCase());
