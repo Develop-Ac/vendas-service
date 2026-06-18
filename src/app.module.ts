@@ -16,7 +16,7 @@ import { BuscaPlacasModule } from './busca-placas/busca-placas.module';
     VendaCasadaModule,
     B2bModule,
     BuscaPlacasModule
-  ],
+  ], 
   controllers: [AppController],
   providers: [AppService],
 })
