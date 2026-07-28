@@ -367,11 +367,22 @@ export class CarteirizacaoSqlServerRepository {
   }
 
   /**
+   * Cadastro como fonte da equipe do atacado: representantes ativos marcados como
+   * "Vendedor (Atacado)" na tela de Representantes. Garante que rep recém-cadastrado
+   * (ainda sem venda no canal) apareça no painel do supervisor e em Metas & Performance.
+   */
+  private readonly cadastroAtacadoSel = `
+      SELECT cr.rep_codigo AS rep, LTRIM(RTRIM(UPPER(cr.nome))) AS nome
+      FROM dbo.ComissaoRepresentante cr
+      WHERE cr.inativo = 0 AND cr.papel = 'VENDEDOR_ATACADO' AND cr.nome IS NOT NULL`;
+
+  /**
    * Equipe do canal ATACADO para um período (data de início = dia 26).
-   * Base: vendedores com venda no canal atacado (12 meses). Ajustada pelo HISTÓRICO
-   * de canal (dbo.ComissaoRepresentanteCanal): o canal vigente de cada rep é a última
-   * mudança com `vigente_de <= dataInicio`. Remove quem saiu do atacado e inclui quem
-   * entrou no atacado naquele período. Se a tabela de histórico não existir, usa só a base.
+   * Base: quem tem venda no canal atacado (12 meses) UNIÃO quem está cadastrado como
+   * "Vendedor (Atacado)". Ajustada pelo HISTÓRICO de canal (dbo.ComissaoRepresentanteCanal):
+   * o canal vigente de cada rep é a última mudança com `vigente_de <= dataInicio`. Remove
+   * quem saiu do atacado e inclui quem entrou no atacado naquele período. Se a tabela de
+   * histórico não existir, usa só a base.
    */
   async equipeAtacado(dataInicio?: string): Promise<{ rep: number; nome: string }[]> {
     const base = `
@@ -379,7 +390,9 @@ export class CarteirizacaoSqlServerRepository {
       FROM dbo.vw_analise_vendas v
       WHERE v.local_venda = 'ATACADO' AND v.vendedor_venda IS NOT NULL
         AND v.nome_representante IS NOT NULL
-        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))`;
+        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))
+      UNION
+      ${this.cadastroAtacadoSel}`;
 
     const temHist =
       dataInicio &&
@@ -418,17 +431,20 @@ export class CarteirizacaoSqlServerRepository {
   }
 
   /**
-   * Nomes da equipe do atacado COM VENDA dentro do intervalo [ini, fim] (para o
-   * filtro de vendedor do supervisor). Respeita o histórico de canal (exclui quem
-   * saiu do atacado até o início do período).
+   * Nomes da equipe do atacado no intervalo [ini, fim] — filtro de vendedor do
+   * supervisor. Inclui quem vendeu no canal no período E quem está cadastrado como
+   * "Vendedor (Atacado)" (rep novo, ainda sem venda, também precisa ser filtrável).
+   * Respeita o histórico de canal (exclui quem saiu do atacado até o início do período).
    */
-  async equipeAtacadoNomesComVenda(ini: string, fim: string): Promise<string[]> {
+  async equipeAtacadoNomesPeriodo(ini: string, fim: string): Promise<string[]> {
     const baseSel = `
       SELECT DISTINCT v.vendedor_venda AS rep, LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome
       FROM dbo.vw_analise_vendas v
       WHERE v.local_venda = 'ATACADO' AND v.vendedor_venda IS NOT NULL
         AND v.nome_representante IS NOT NULL
-        AND v.dt_emissao_convertida BETWEEN @ini AND @fim`;
+        AND v.dt_emissao_convertida BETWEEN @ini AND @fim
+      UNION
+      ${this.cadastroAtacadoSel}`;
 
     const temHist =
       (await this.mssql.query<{ ok: number }>(

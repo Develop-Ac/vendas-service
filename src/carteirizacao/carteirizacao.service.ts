@@ -1306,9 +1306,9 @@ export class CarteirizacaoService {
     return { vendedores, data_inicio: periodo.data_inicio, data_fim: periodo.data_fim };
   }
 
-  /** Equipe do atacado com venda no período [ini, fim] (filtro de vendedor do supervisor). */
-  async equipeAtacadoComVenda(ini: string, fim: string) {
-    return this.sql.equipeAtacadoNomesComVenda(ini, fim);
+  /** Equipe do atacado no período [ini, fim] (filtro de vendedor do supervisor). */
+  async equipeAtacadoPeriodo(ini: string, fim: string) {
+    return this.sql.equipeAtacadoNomesPeriodo(ini, fim);
   }
 
   /**
