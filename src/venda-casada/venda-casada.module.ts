@@ -4,7 +4,6 @@ import { memoryStorage } from 'multer';
 import { VendaCasadaController } from './venda-casada.controller';
 import { VendaCasadaService } from './venda-casada.service';
 import { VendaCasadaRepository } from './venda-casada.repository';
-import { VendaCasadaFornecedoresService } from './venda-casada.fornecedores.service';
 import { VendaCasadaFornecedoresRepository } from './venda-casada.fornecedores.repository';
 import { MssqlService } from '../common/mssql/mssql.service';
 import { S3Module } from '../storage/s3.module';
@@ -18,7 +17,6 @@ import { S3Module } from '../storage/s3.module';
   providers: [
     VendaCasadaService,
     VendaCasadaRepository,
-    VendaCasadaFornecedoresService,
     VendaCasadaFornecedoresRepository,
     MssqlService,
   ],
