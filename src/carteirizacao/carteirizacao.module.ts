@@ -5,6 +5,7 @@ import { CarteirizacaoService } from './carteirizacao.service';
 import { CarteirizacaoSqlServerRepository } from './carteirizacao.sqlserver.repository';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { CarteirizacaoSyncScheduler } from './carteirizacao.sync.scheduler';
+import { MssqlService } from 'src/common/mssql/mssql.service';
 
 @Module({
   imports: [ScheduleModule.forRoot()],
@@ -14,6 +15,7 @@ import { CarteirizacaoSyncScheduler } from './carteirizacao.sync.scheduler';
     CarteirizacaoSqlServerRepository,
     CarteirizacaoPrismaRepository,
     CarteirizacaoSyncScheduler,
+    MssqlService
   ],
 })
 export class CarteirizacaoModule {}

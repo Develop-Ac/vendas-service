@@ -7,6 +7,7 @@ import { S3Module } from './storage/s3.module';
 import { VendaCasadaModule } from './venda-casada/venda-casada.module';
 import { B2bModule } from './b2b/b2b.module';
 import { BuscaPlacasModule } from './busca-placas/busca-placas.module';
+import { CarteirizacaoModule } from './carteirizacao/carteirizacao.module';
 
 @Module({
   imports: [
@@ -15,8 +16,9 @@ import { BuscaPlacasModule } from './busca-placas/busca-placas.module';
     S3Module,
     VendaCasadaModule,
     B2bModule,
-    BuscaPlacasModule
-  ],
+    BuscaPlacasModule,
+    CarteirizacaoModule
+  ], 
   controllers: [AppController],
   providers: [AppService],
 })
