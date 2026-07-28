@@ -1177,9 +1177,11 @@ export class CarteirizacaoService {
 
     // Filtro por canal (ex.: supervisão do atacado vê só a equipe do atacado,
     // já excluindo quem saiu do atacado antes do período).
+    // Casa por rep_codigo, não por nome: o nome do cadastro pode divergir do
+    // `nome_representante` do DW, e aí o rep sumia da aba.
     if (canal === 'atacado') {
-      const team = new Set((await this.sql.equipeAtacadoNomes(periodo.data_inicio)).map((n) => n.toUpperCase()));
-      linhas = linhas.filter((l) => team.has((l.rep_nome || '').toUpperCase()));
+      const team = new Set(await this.sql.equipeAtacadoReps(periodo.data_inicio));
+      linhas = linhas.filter((l) => team.has(l.rep_codigo));
     }
 
     linhas.sort((x, y) => {
