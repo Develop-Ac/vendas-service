@@ -20,13 +20,49 @@ import {
   ApiParam,
 } from '@nestjs/swagger';
 import { VendaCasadaService } from './venda-casada.service';
+import { VendaCasadaFornecedoresService } from './venda-casada.fornecedores.service';
 import { CreateVendaCasadaDto } from './dto/create-venda-casada.dto';
 import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
+import { FornecedoresPorProdutoDto } from './dto/fornecedor-subgrupo.dto';
 
 @ApiTags('Venda Casada')
 @Controller('venda-casada')
 export class VendaCasadaController {
-  constructor(private readonly service: VendaCasadaService) {}
+  constructor(
+    private readonly service: VendaCasadaService,
+    private readonly fornecedoresService: VendaCasadaFornecedoresService,
+  ) {}
+
+  @Get('fornecedores/:pro_codigo')
+  @ApiOperation({
+    summary: 'Lista os fornecedores do subgrupo de um produto',
+    description:
+      'A partir do PRO_CODIGO, resolve o subgrupo do produto (Stage_Produtos -> ' +
+      'Stage_ProdutosSubgrupos) e retorna, do ERP, todos os fornecedores que já ' +
+      'venderam produtos desse subgrupo, com métricas de compra (produtos, notas, ' +
+      'quantidade, valor total e datas da primeira/última compra). ' +
+      'Ordenado por valor total comprado (maior primeiro).',
+  })
+  @ApiParam({
+    name: 'pro_codigo',
+    type: Number,
+    description: 'Código do produto (PRO_CODIGO)',
+    example: 47386,
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Lista de fornecedores do subgrupo',
+    type: FornecedoresPorProdutoDto,
+  })
+  @ApiResponse({
+    status: 404,
+    description: 'Produto não encontrado ou sem subgrupo cadastrado',
+  })
+  fornecedoresPorProduto(
+    @Param('pro_codigo', ParseIntPipe) proCodigo: number,
+  ): Promise<FornecedoresPorProdutoDto> {
+    return this.fornecedoresService.porProduto(proCodigo);
+  }
 
   @Get()
   @ApiOperation({ summary: 'Lista todas as vendas casadas' })
