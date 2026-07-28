@@ -367,19 +367,47 @@ export class CarteirizacaoSqlServerRepository {
   }
 
   /**
+   * Cadastro como fonte da equipe do atacado: representantes ativos marcados como
+   * "Vendedor (Atacado)" na tela de Representantes. Garante que rep recém-cadastrado
+   * (ainda sem venda no canal) apareça no painel do supervisor e em Metas & Performance.
+   * `prio = 2`: o nome do cadastro só é usado quando o rep não tem nome no DW.
+   */
+  private readonly cadastroAtacadoSel = `
+      SELECT cr.rep_codigo AS rep, LTRIM(RTRIM(UPPER(cr.nome))) AS nome, 2 AS prio
+      FROM dbo.ComissaoRepresentante cr
+      WHERE cr.inativo = 0 AND cr.papel = 'VENDEDOR_ATACADO' AND cr.nome IS NOT NULL`;
+
+  /**
+   * 1 nome por rep_codigo, preferindo o nome do DW (`prio` menor) ao do cadastro:
+   * é por `nome_representante` que o filtro de vendedor do Metabase casa. Sem isso,
+   * um rep cujo nome diverge entre cadastro e DW apareceria duas vezes no dropdown,
+   * e a entrada com o nome do cadastro não bateria com venda nenhuma.
+   * Espera colunas (rep, nome, prio) na subquery.
+   */
+  private umNomePorRep(sel: string): string {
+    return `SELECT rep, nome FROM (
+        SELECT rep, nome, ROW_NUMBER() OVER (PARTITION BY rep ORDER BY prio, nome) AS rn
+        FROM (${sel}) t
+      ) z WHERE rn = 1`;
+  }
+
+  /**
    * Equipe do canal ATACADO para um período (data de início = dia 26).
-   * Base: vendedores com venda no canal atacado (12 meses). Ajustada pelo HISTÓRICO
-   * de canal (dbo.ComissaoRepresentanteCanal): o canal vigente de cada rep é a última
-   * mudança com `vigente_de <= dataInicio`. Remove quem saiu do atacado e inclui quem
-   * entrou no atacado naquele período. Se a tabela de histórico não existir, usa só a base.
+   * Base: quem tem venda no canal atacado (12 meses) UNIÃO quem está cadastrado como
+   * "Vendedor (Atacado)". Ajustada pelo HISTÓRICO de canal (dbo.ComissaoRepresentanteCanal):
+   * o canal vigente de cada rep é a última mudança com `vigente_de <= dataInicio`. Remove
+   * quem saiu do atacado e inclui quem entrou no atacado naquele período. Se a tabela de
+   * histórico não existir, usa só a base.
    */
   async equipeAtacado(dataInicio?: string): Promise<{ rep: number; nome: string }[]> {
     const base = `
-      SELECT DISTINCT v.vendedor_venda AS rep, LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome
+      SELECT DISTINCT v.vendedor_venda AS rep, LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome, 1 AS prio
       FROM dbo.vw_analise_vendas v
       WHERE v.local_venda = 'ATACADO' AND v.vendedor_venda IS NOT NULL
         AND v.nome_representante IS NOT NULL
-        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))`;
+        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))
+      UNION ALL
+      ${this.cadastroAtacadoSel}`;
 
     const temHist =
       dataInicio &&
@@ -388,7 +416,7 @@ export class CarteirizacaoSqlServerRepository {
       ))[0]?.ok === 1;
 
     if (!temHist) {
-      return this.mssql.query<{ rep: number; nome: string }>(base);
+      return this.mssql.query<{ rep: number; nome: string }>(this.umNomePorRep(base));
     }
 
     return this.mssql.query<{ rep: number; nome: string }>(
@@ -400,13 +428,16 @@ export class CarteirizacaoSqlServerRepository {
            FROM dbo.ComissaoRepresentanteCanal h
            WHERE h.vigente_de <= @ini
          ) z WHERE rn = 1
+       ),
+       elegiveis AS (
+         SELECT b.rep, b.nome, b.prio FROM base b
+         WHERE NOT EXISTS (SELECT 1 FROM hist h WHERE h.rep_codigo = b.rep AND h.canal <> 'ATACADO')
+         UNION ALL
+         SELECT cr.rep_codigo AS rep, LTRIM(RTRIM(UPPER(cr.nome))) AS nome, 2 AS prio
+         FROM hist h JOIN dbo.ComissaoRepresentante cr ON cr.rep_codigo = h.rep_codigo
+         WHERE h.canal = 'ATACADO' AND cr.nome IS NOT NULL
        )
-       SELECT b.rep, b.nome FROM base b
-       WHERE NOT EXISTS (SELECT 1 FROM hist h WHERE h.rep_codigo = b.rep AND h.canal <> 'ATACADO')
-       UNION
-       SELECT cr.rep_codigo AS rep, LTRIM(RTRIM(UPPER(cr.nome))) AS nome
-       FROM hist h JOIN dbo.ComissaoRepresentante cr ON cr.rep_codigo = h.rep_codigo
-       WHERE h.canal = 'ATACADO'`,
+       ${this.umNomePorRep('SELECT rep, nome, prio FROM elegiveis')}`,
       { ini: dataInicio },
     );
   }
@@ -418,17 +449,20 @@ export class CarteirizacaoSqlServerRepository {
   }
 
   /**
-   * Nomes da equipe do atacado COM VENDA dentro do intervalo [ini, fim] (para o
-   * filtro de vendedor do supervisor). Respeita o histórico de canal (exclui quem
-   * saiu do atacado até o início do período).
+   * Nomes da equipe do atacado no intervalo [ini, fim] — filtro de vendedor do
+   * supervisor. Inclui quem vendeu no canal no período E quem está cadastrado como
+   * "Vendedor (Atacado)" (rep novo, ainda sem venda, também precisa ser filtrável).
+   * Respeita o histórico de canal (exclui quem saiu do atacado até o início do período).
    */
-  async equipeAtacadoNomesComVenda(ini: string, fim: string): Promise<string[]> {
+  async equipeAtacadoNomesPeriodo(ini: string, fim: string): Promise<string[]> {
     const baseSel = `
-      SELECT DISTINCT v.vendedor_venda AS rep, LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome
+      SELECT DISTINCT v.vendedor_venda AS rep, LTRIM(RTRIM(UPPER(v.nome_representante))) AS nome, 1 AS prio
       FROM dbo.vw_analise_vendas v
       WHERE v.local_venda = 'ATACADO' AND v.vendedor_venda IS NOT NULL
         AND v.nome_representante IS NOT NULL
-        AND v.dt_emissao_convertida BETWEEN @ini AND @fim`;
+        AND v.dt_emissao_convertida BETWEEN @ini AND @fim
+      UNION ALL
+      ${this.cadastroAtacadoSel}`;
 
     const temHist =
       (await this.mssql.query<{ ok: number }>(
@@ -444,12 +478,15 @@ export class CarteirizacaoSqlServerRepository {
                       ROW_NUMBER() OVER (PARTITION BY h.rep_codigo ORDER BY h.vigente_de DESC, h.id DESC) rn
                FROM dbo.ComissaoRepresentanteCanal h WHERE h.vigente_de <= @ini
              ) z WHERE rn = 1
+           ),
+           elegiveis AS (
+             SELECT b.rep, b.nome, b.prio FROM base b
+             WHERE NOT EXISTS (SELECT 1 FROM hist h WHERE h.rep_codigo = b.rep AND h.canal <> 'ATACADO')
            )
-           SELECT b.nome FROM base b
-           WHERE NOT EXISTS (SELECT 1 FROM hist h WHERE h.rep_codigo = b.rep AND h.canal <> 'ATACADO')`,
+           ${this.umNomePorRep('SELECT rep, nome, prio FROM elegiveis')}`,
           { ini, fim },
         )
-      : await this.mssql.query<{ nome: string }>(baseSel, { ini, fim });
+      : await this.mssql.query<{ nome: string }>(this.umNomePorRep(baseSel), { ini, fim });
     return Array.from(new Set(rows.map((r) => r.nome).filter(Boolean)));
   }
 
