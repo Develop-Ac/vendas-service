@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { PrometheusModule } from '@willsoto/nestjs-prometheus';
+
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
@@ -17,7 +19,11 @@ import { CarteirizacaoModule } from './carteirizacao/carteirizacao.module';
     VendaCasadaModule,
     B2bModule,
     BuscaPlacasModule,
-    CarteirizacaoModule
+    CarteirizacaoModule,
+
+    PrometheusModule.register({
+      defaultMetrics: { enabled: true }, // CPU, memória, event loop, GC
+    }),
   ], 
   controllers: [AppController],
   providers: [AppService],
