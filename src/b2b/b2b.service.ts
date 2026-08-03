@@ -27,11 +27,13 @@ export class B2bService {
   async listarPedidos(): Promise<PedidoResumo[]> {
     const pedidos = await this.b2bRepository.listarPedidos();
 
+    console.log(pedidos[0].items)
+
     return pedidos.map((pedido) => ({
       orderNumber: pedido.orderNumber,
       createdAt: pedido.createdAt,
       items: pedido.items.map((item) => ({
-        pro_codigo: item.product?.pro_codigo,
+        pro_codigo: item.product?.proCodigo,
         quantidade: item.quantity,
       })),
       user: {

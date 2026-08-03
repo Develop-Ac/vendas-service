@@ -8,7 +8,7 @@ import { firstValueFrom } from 'rxjs';
 
 export interface PortalProduct {
   id: string;
-  pro_codigo: string;
+  proCodigo: string;
   name: string;
 }
 
