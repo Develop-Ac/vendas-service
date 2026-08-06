@@ -143,7 +143,7 @@ async function bootstrap() {
       },
       'appToken',
       )
-      .addServer(process.env.PUBLIC_URL ?? 'http://localhost:8000', 'Servidor de Desenvolvimento')
+      .addServer(process.env.PUBLIC_URL ?? `http://localhost:${process.env.PORT || 8000}`, 'Servidor de Desenvolvimento')
       .addServer('http://vendas-service.acacessorios.local', 'Servidor de Produção')
       .build();
 

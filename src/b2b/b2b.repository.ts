@@ -6,6 +6,16 @@ import {
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 
+export interface responsePedidoApi {
+  data: PortalOrder[];
+  pagination: {
+    page: number;
+    limit: number;
+    total: number;
+    pages: number;
+  };
+}
+
 export interface PortalProduct {
   id: string;
   proCodigo: string;
@@ -51,16 +61,19 @@ export class B2bRepository {
 
   constructor(private readonly httpService: HttpService) {}
 
-  async listarPedidos(): Promise<PortalOrder[]> {
+  async listarPedidos(): Promise<responsePedidoApi> {
     const baseUrl = process.env.PORTAL_B2B_URL ?? 'http://localhost:3000';
     const url = `${baseUrl}/api/pedidos`;
+    const authSecret = process.env.AUTH_SECRET ?? '';
 
     try {
       const res = await firstValueFrom(
-        this.httpService.get<PortalOrder[]>(url),
+        this.httpService.get<responsePedidoApi>(url, {
+          headers: { 'x-servico-token': authSecret },
+        }),
       );
       return res.data;
-    } catch (err) {
+    } catch (err: any) {
       const status = err?.response?.status;
       this.logger.error(
         `Erro ao consultar pedidos do portal B2B: ${status} - ${err.message}`,
