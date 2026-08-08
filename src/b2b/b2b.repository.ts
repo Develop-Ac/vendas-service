@@ -20,6 +20,11 @@ export interface PortalProduct {
   id: string;
   proCodigo: string;
   name: string;
+  promotion: PortalProductPromotion;
+}
+
+export interface PortalProductPromotion {
+  textoPromocional: string;
 }
 
 export interface PortalOrderItem {
@@ -66,11 +71,13 @@ export class B2bRepository {
     const url = `${baseUrl}/api/pedidos`;
     const authSecret = process.env.AUTH_SECRET ?? '';
 
+    console.log(baseUrl, url, authSecret)
+
     try {
       const res = await firstValueFrom(
         this.httpService.get<responsePedidoApi>(url, {
           headers: { 'x-servico-token': authSecret },
-        }),
+        }), 
       );
       return res.data;
     } catch (err: any) {

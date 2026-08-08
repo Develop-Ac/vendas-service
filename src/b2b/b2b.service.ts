@@ -34,6 +34,7 @@ export class B2bService {
       items: pedido.items.map((item) => ({
         pro_codigo: item.product?.proCodigo,
         quantidade: item.quantity,
+        promocao: item.product?.promotion?.textoPromocional || null,
       })),
       user: {
         id: pedido.user?.id,
