@@ -10,6 +10,7 @@ import { VendaCasadaModule } from './venda-casada/venda-casada.module';
 import { B2bModule } from './b2b/b2b.module';
 import { BuscaPlacasModule } from './busca-placas/busca-placas.module';
 import { CarteirizacaoModule } from './carteirizacao/carteirizacao.module';
+import { MaisVendidosModule } from './mais-vendidos/mais-vendidos.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { CarteirizacaoModule } from './carteirizacao/carteirizacao.module';
     B2bModule,
     BuscaPlacasModule,
     CarteirizacaoModule,
+    MaisVendidosModule,
 
     PrometheusModule.register({
       defaultMetrics: { enabled: true }, // CPU, memória, event loop, GC

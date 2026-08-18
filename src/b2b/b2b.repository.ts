@@ -71,7 +71,9 @@ export class B2bRepository {
     const url = `${baseUrl}/api/pedidos`;
     const authSecret = process.env.AUTH_SECRET ?? '';
 
-    console.log(baseUrl, url, authSecret)
+    // NÃO registrar `authSecret` em log: é o segredo de serviço, e ele
+    // trafega a cada chamada. Havia um `console.log` aqui imprimindo-o junto
+    // com a URL a cada consulta de pedidos.
 
     try {
       const res = await firstValueFrom(
