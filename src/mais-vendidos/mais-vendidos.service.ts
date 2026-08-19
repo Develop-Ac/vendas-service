@@ -9,11 +9,15 @@ import { MaisVendidosPortalRepository } from './mais-vendidos.portal.repository'
 /**
  * Quantos itens apurar e enviar.
  *
- * A vitrine do portal mostra 30, mas parte do ranking não tem correspondente
- * ativo no catálogo de lá (produto não importado, ou desativado) e cai na
- * leitura. Mandar 90 é o que faz a lista chegar cheia. O portal aceita até 200.
+ * Não é o tamanho da vitrine (30). O mesmo ranking ordena o **catálogo inteiro**
+ * do portal quando ele é navegado sem recorte, então precisa cobrir tudo o que
+ * vendeu na janela e tem estoque — hoje ~3.900 peças. Quem ficar de fora não
+ * some da listagem: vai para depois das que venderam, em ordem alfabética.
+ *
+ * 5.000 é o teto que o portal aceita, e a folga também é o que mantém a vitrine
+ * cheia (parte do ranking não tem correspondente ativo lá e cai na leitura).
  */
-const LIMITE = 90;
+const LIMITE = 5000;
 
 /** Janela de apuração, em meses. */
 const MESES_PADRAO = 12;
