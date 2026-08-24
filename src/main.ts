@@ -1,11 +1,14 @@
 // src/main.ts
 import { NestFactory } from '@nestjs/core';
+import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module';
-import helmet from 'helmet';
+import helmet from '@fastify/helmet';
+import cookie from '@fastify/cookie';
+import multipart from '@fastify/multipart';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
-import * as bodyParser from 'body-parser';
-// (opcional, mas recomendado quando usa cookies/autenticação)
-import cookieParser from 'cookie-parser';
+import type { FastifyReply, FastifyRequest } from 'fastify';
+
+const BODY_LIMIT = 25 * 1024 * 1024; // 25mb (equivale ao limit do body-parser anterior)
 
 function parseOrigins(env?: string): (string | RegExp)[] {
   if (!env) return [];
@@ -34,29 +37,43 @@ function isAllowedOrigin(origin: string | undefined, allowed: (string | RegExp)[
 }
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+  const adapter = new FastifyAdapter({ bodyLimit: BODY_LIMIT });
 
-  // Se estiver atrás de proxy reverso (Nginx/Traefik) e usar cookies Secure, habilite:
-  // app.set('trust proxy', 1);
+  const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
+    bufferLogs: true,
+  });
 
-  app.use(cookieParser());
+  // Se estiver atrás de proxy reverso (Nginx/Traefik) e usar cookies Secure, habilite
+  // `trustProxy: true` nas opções do FastifyAdapter acima.
 
-  app.use(
-    helmet({
-      contentSecurityPolicy: false,     // necessário para swagger-ui
-      crossOriginEmbedderPolicy: false, // evita bloqueio de assets
-    }),
-  );
+  await app.register(cookie);
 
-  app.use(['/docs', '/docs-json'], (req, res, next) => {
+  // bodyParser.json/urlencoded: o FastifyAdapter registra os parsers de application/json
+  // e application/x-www-form-urlencoded automaticamente, ambos honrando o bodyLimit acima.
+
+  // Substitui o MulterModule/memoryStorage: uploads multipart são lidos pelo
+  // FastifyFileInterceptor (src/common/interceptors/fastify-file.interceptor.ts).
+  await app.register(multipart, { limits: { fileSize: BODY_LIMIT } });
+
+  await app.register(helmet, {
+    contentSecurityPolicy: false,     // necessário para swagger-ui
+    crossOriginEmbedderPolicy: false, // evita bloqueio de assets
+  });
+
+  const fastify = app.getHttpAdapter().getInstance();
+
+  fastify.addHook('onRequest', (req: FastifyRequest, reply: FastifyReply, done: (err?: Error) => void) => {
+    const path = req.url.split('?')[0];
+    if (!path.startsWith('/docs')) return done();
+
     const authHeader = req.headers.authorization;
 
     const user = 'admin';
     const password = 'Ac@2025acesso';
 
     if (!authHeader || !authHeader.startsWith('Basic ')) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="Swagger"');
-      return res.status(401).send('Autenticação necessária');
+      reply.header('WWW-Authenticate', 'Basic realm="Swagger"');
+      return void reply.code(401).send('Autenticação necessária');
     }
 
     const base64Credentials = authHeader.split(' ')[1];
@@ -65,11 +82,11 @@ async function bootstrap() {
     const [inputUser, inputPassword] = credentials.split(':');
 
     if (inputUser !== user || inputPassword !== password) {
-      res.setHeader('WWW-Authenticate', 'Basic realm="Swagger"');
-      return res.status(401).send('Usuário ou senha inválidos');
+      reply.header('WWW-Authenticate', 'Basic realm="Swagger"');
+      return void reply.code(401).send('Usuário ou senha inválidos');
     }
 
-    next();
+    done();
   });
 
   const allowedOrigins = parseOrigins(process.env.CORS_ORIGIN);
@@ -97,13 +114,10 @@ async function bootstrap() {
   });
 
   // Garante Vary: Origin (útil se usar origin dinâmico/função)
-  app.use((req, res, next) => {
-    res.setHeader('Vary', 'Origin');
-    next();
+  fastify.addHook('onSend', (_req: FastifyRequest, reply: FastifyReply, payload: unknown, done: (err?: Error | null, payload?: unknown) => void) => {
+    reply.header('Vary', 'Origin');
+    done(null, payload);
   });
-
-  app.use(bodyParser.json({ limit: '25mb' }));
-  app.use(bodyParser.urlencoded({ limit: '25mb', extended: true }));
 
   // (opcional) prefixo global
   // app.setGlobalPrefix('api');

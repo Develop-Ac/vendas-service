@@ -6,6 +6,7 @@ import {
 import { S3Service } from '../storage/s3.service';
 import { CreateVendaCasadaDto } from './dto/create-venda-casada.dto';
 import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
+import { UploadedFileData } from '../common/types/uploaded-file';
 import { ven_venda_casada, ven_venda_casada_itens } from '@prisma/client';
 
 @Injectable()
@@ -31,7 +32,7 @@ export class VendaCasadaService {
 
   async create(
     dto: CreateVendaCasadaDto,
-    file?: Express.Multer.File,
+    file?: UploadedFileData,
   ): Promise<ven_venda_casada> {
     let imagemKey: string | null = null;
 

@@ -10,7 +10,8 @@ import {
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FastifyFileInterceptor } from '../common/interceptors/fastify-file.interceptor';
+import type { UploadedFileData } from '../common/types/uploaded-file';
 import {
   ApiTags,
   ApiOperation,
@@ -47,7 +48,7 @@ export class VendaCasadaController {
   }
 
   @Post()
-  @UseInterceptors(FileInterceptor('imagem'))
+  @UseInterceptors(FastifyFileInterceptor('imagem'))
   @ApiOperation({ summary: 'Cria uma nova venda casada (com imagem opcional)' })
   @ApiConsumes('multipart/form-data')
   @ApiBody({
@@ -69,7 +70,7 @@ export class VendaCasadaController {
   @ApiResponse({ status: 201, description: 'Venda casada criada com sucesso' })
   create(
     @Body() dto: CreateVendaCasadaDto,
-    @UploadedFile() file?: Express.Multer.File,
+    @UploadedFile() file?: UploadedFileData,
   ) {
     return this.service.create(dto, file);
   }

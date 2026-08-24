@@ -9,6 +9,7 @@ import {
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
 import * as https from 'https';
+import { UploadedFileData } from '../common/types/uploaded-file';
 
 type S3Opts = {
   endpoint: string;
@@ -135,7 +136,7 @@ export class S3Service {
   }
 
   // Métodos adicionais para compatibilidade com os testes
-  async uploadFile(file: Express.Multer.File, prefix: string = ''): Promise<any> {
+  async uploadFile(file: UploadedFileData, prefix: string = ''): Promise<any> {
     const key = `${prefix}${file.originalname}`;
     await this.putObject(key, file.buffer, file.mimetype);
     return {

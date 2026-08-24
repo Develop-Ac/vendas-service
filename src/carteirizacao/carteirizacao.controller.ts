@@ -9,7 +9,7 @@ import {
   Query,
   Res,
 } from '@nestjs/common';
-import type { Response } from 'express';
+import type { FastifyReply } from 'fastify';
 import { CarteirizacaoService } from './carteirizacao.service';
 import {
   ConfigVendedorDto,
@@ -34,10 +34,10 @@ export class CarteirizacaoController {
   }
 
   @Get('clientes/export')
-  async exportar(@Query() q: Record<string, string>, @Res() res: Response) {
+  async exportar(@Query() q: Record<string, string>, @Res() res: FastifyReply) {
     const csv = await this.service.exportarCsv(this.parseQuery(q));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader(
+    res.header('Content-Type', 'text/csv; charset=utf-8');
+    res.header(
       'Content-Disposition',
       `attachment; filename="carteirizacao_clientes.csv"`,
     );
