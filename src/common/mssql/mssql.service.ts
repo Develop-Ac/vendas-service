@@ -8,10 +8,18 @@ import * as sql from 'mssql';
 
 /**
  * Conexão de LEITURA ao SQL Server BI (DW). Read-only.
- * Variáveis de ambiente:
- *   BI_SQL_SERVER, BI_SQL_DATABASE, BI_SQL_USER, BI_SQL_PASSWORD, BI_SQL_PORT (opcional, default 1433)
- * Aceita também os nomes antigos MSSQL_HOST/MSSQL_DATABASE/MSSQL_USER/MSSQL_PASSWORD/MSSQL_PORT
- * como fallback, para ambientes que ainda não migraram o .env.
+ * Variáveis de ambiente (nome canônico primeiro, sinônimos aceitos em seguida):
+ *   servidor  BI_SQL_SERVER   | SQL_HOST     | MSSQL_HOST
+ *   base      BI_SQL_DATABASE | SQL_DATABASE | MSSQL_DATABASE
+ *   usuário   BI_SQL_USER     | SQL_USER     | MSSQL_USER
+ *   senha     BI_SQL_PASSWORD | SQL_PASSWORD | MSSQL_PASSWORD
+ *   porta     BI_SQL_PORT     | SQL_PORT     | MSSQL_PORT  (default 1433)
+ *
+ * Os três conjuntos existem porque ambientes diferentes nomearam a mesma conta de
+ * formas diferentes. Aceitar todos evita a falha silenciosa que motivou isto: com
+ * usuário/senha vazios o driver ainda tenta autenticar, o login falha por
+ * requisição, e a Carteirização responde 200 com lista vazia — indistinguível de
+ * "não há cliente atacado".
  */
 @Injectable()
 export class MssqlService implements OnModuleInit, OnModuleDestroy {
@@ -19,13 +27,22 @@ export class MssqlService implements OnModuleInit, OnModuleDestroy {
   private pool: sql.ConnectionPool | null = null;
   private connecting: Promise<sql.ConnectionPool> | null = null;
 
+  /** Primeiro valor não-vazio entre as variáveis, na ordem de precedência. */
+  private env(...nomes: string[]): string | undefined {
+    for (const nome of nomes) {
+      const v = process.env[nome];
+      if (v !== undefined && v !== '') return v;
+    }
+    return undefined;
+  }
+
   private buildConfig(): sql.config {
     return {
-      server: process.env.BI_SQL_SERVER ?? process.env.MSSQL_HOST ?? '192.168.1.146',
-      database: process.env.BI_SQL_DATABASE ?? process.env.MSSQL_DATABASE ?? 'BI',
-      user: process.env.BI_SQL_USER ?? process.env.MSSQL_USER ?? '',
-      password: process.env.BI_SQL_PASSWORD ?? process.env.MSSQL_PASSWORD ?? '',
-      port: parseInt(process.env.BI_SQL_PORT ?? process.env.MSSQL_PORT ?? '1433', 10),
+      server: this.env('BI_SQL_SERVER', 'SQL_HOST', 'MSSQL_HOST') ?? '192.168.1.146',
+      database: this.env('BI_SQL_DATABASE', 'SQL_DATABASE', 'MSSQL_DATABASE') ?? 'BI',
+      user: this.env('BI_SQL_USER', 'SQL_USER', 'MSSQL_USER') ?? '',
+      password: this.env('BI_SQL_PASSWORD', 'SQL_PASSWORD', 'MSSQL_PASSWORD') ?? '',
+      port: parseInt(this.env('BI_SQL_PORT', 'SQL_PORT', 'MSSQL_PORT') ?? '1433', 10),
       options: {
         encrypt: false,
         trustServerCertificate: true,
@@ -38,6 +55,14 @@ export class MssqlService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleInit() {
+    // Credencial ausente não é indisponibilidade temporária: reclamar alto no boot,
+    // senão o sintoma só aparece como tela vazia, longe da causa.
+    if (!this.buildConfig().user) {
+      this.logger.error(
+        'Nenhuma credencial do BI configurada (BI_SQL_USER / SQL_USER / MSSQL_USER). ' +
+          'A Carteirização vai responder vazia até isto ser corrigido no .env.',
+      );
+    }
     // Conexão preguiçosa — não derruba o boot se o BI estiver indisponível.
     try {
       await this.getPool();

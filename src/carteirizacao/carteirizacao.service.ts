@@ -6,6 +6,7 @@ import {
   VendaAposCarteiraRow,
 } from './carteirizacao.sqlserver.repository';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
+import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
 import {
   AtribuirDto,
   AtribuirLoteDto,
@@ -103,8 +104,29 @@ export class CarteirizacaoService {
 
   constructor(
     private readonly sql: CarteirizacaoSqlServerRepository,
+    private readonly erp: CarteirizacaoErpRepository,
     private readonly overlay: CarteirizacaoPrismaRepository,
   ) {}
+
+  /**
+   * De onde sai a base de clientes da Carteirização: do ERP (erp-firebird-api,
+   * padrão) ou do SQL Server BI (`CARTEIRIZACAO_FONTE=bi`).
+   *
+   * Só a base desta tela troca de fonte. Metas, período comissional, equipe do
+   * canal e mapa continuam vindo do BI em qualquer caso — são cálculo do DW e
+   * não existem no ERP. Por isso a chave é um getter e não uma injeção: o que
+   * comuta é este subconjunto, não o repositório inteiro.
+   */
+  private get fonte(): Pick<
+    CarteirizacaoSqlServerRepository,
+    | 'listarBaseAtacado'
+    | 'listarVendedoresAtacado'
+    | 'nomesRepresentantes'
+    | 'vendasAposCarteira'
+    | 'serieMensalCliente'
+  > {
+    return process.env.CARTEIRIZACAO_FONTE === 'bi' ? this.sql : this.erp;
+  }
 
   // ---------------------------------------------------------------- helpers
   private async getBase(force = false): Promise<ClienteBaseRow[]> {
@@ -112,7 +134,7 @@ export class CarteirizacaoService {
     if (!force && this.baseCache && now - this.baseCache.at < BASE_CACHE_TTL_MS) {
       return this.baseCache.rows;
     }
-    const rows = await this.sql.listarBaseAtacado();
+    const rows = await this.fonte.listarBaseAtacado();
     this.baseCache = { at: now, rows };
     return rows;
   }
@@ -351,7 +373,7 @@ export class CarteirizacaoService {
   // ------------------------------------------------------------- vendedores
   async listarVendedores() {
     const [base, carteira] = await Promise.all([
-      this.sql.listarVendedoresAtacado(),
+      this.fonte.listarVendedoresAtacado(),
       this.overlay.listarCarteira(),
     ]);
 
@@ -367,7 +389,7 @@ export class CarteirizacaoService {
     );
     const faltantes = [...repsOverlay].filter((r) => !nomeMap.has(r));
     if (faltantes.length) {
-      const nomes = await this.sql.nomesRepresentantes(faltantes);
+      const nomes = await this.fonte.nomesRepresentantes(faltantes);
       nomes.forEach((n) => {
         nomeMap.set(n.rep_codigo, n.rep_nome);
         this.vendedorNomeCache.set(n.rep_codigo, n.rep_nome);
@@ -397,7 +419,7 @@ export class CarteirizacaoService {
 
   private async resolverNomeRep(rep_codigo: number): Promise<string | null> {
     if (this.vendedorNomeCache.has(rep_codigo)) return this.vendedorNomeCache.get(rep_codigo)!;
-    const nomes = await this.sql.nomesRepresentantes([rep_codigo]);
+    const nomes = await this.fonte.nomesRepresentantes([rep_codigo]);
     const nome = nomes[0]?.rep_nome ?? null;
     if (nome) this.vendedorNomeCache.set(rep_codigo, nome);
     return nome;
@@ -768,7 +790,7 @@ export class CarteirizacaoService {
 
     const cortes = pool.map((c) => ({ cli_codigo: c.cli_codigo, cutoff: this.ymd(c.atribuido_em) }));
     const [vendas, base] = await Promise.all([
-      this.sql.vendasAposCarteira(cortes),
+      this.fonte.vendasAposCarteira(cortes),
       this.getBase(),
     ]);
     const baseMap = new Map(base.map((b) => [b.cli_codigo, b]));
@@ -872,7 +894,7 @@ export class CarteirizacaoService {
     if (!cliente) {
       throw new BadRequestException('Cliente não encontrado no universo atacado.');
     }
-    const serie = await this.sql.serieMensalCliente(cli_codigo, 12);
+    const serie = await this.fonte.serieMensalCliente(cli_codigo, 12);
     const mesesComCompra = serie.length;
     // Frequência mensal = média de DIAS por mês em que o cliente comprou (12 meses).
     const frequencia_mensal = serie.reduce((s, m) => s + Number(m.dias), 0) / 12;
