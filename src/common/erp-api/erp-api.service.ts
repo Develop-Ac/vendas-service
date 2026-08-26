@@ -126,6 +126,42 @@ export class ErpApiService {
     return r.dados;
   }
 
+  /**
+   * A mensagem de erro do `fetch` do Node é sempre "fetch failed" — o motivo
+   * real (DNS que não resolve, porta fechada, certificado recusado) fica em
+   * `error.cause`, uma camada abaixo. Sem desembrulhar, todo problema de rede
+   * chega ao log com o mesmo texto e não dá para distinguir "o serviço caiu" de
+   * "o endereço está errado".
+   */
+  private causaDeRede(e: Error): string {
+    const causa = (e as { cause?: unknown }).cause as
+      | { code?: string; message?: string; hostname?: string; port?: number }
+      | undefined;
+    if (!causa) return e.message;
+
+    const codigo = causa.code ?? '';
+    const onde = causa.hostname
+      ? ` (${causa.hostname}${causa.port ? ':' + causa.port : ''})`
+      : '';
+
+    // Traduz os quatro casos que aparecem de verdade num deploy de container.
+    const explicacao: Record<string, string> = {
+      ENOTFOUND: 'nome não resolve — confira o DNS interno do EasyPanel (<projeto>_<serviço>)',
+      EAI_AGAIN: 'DNS não respondeu — nome interno provavelmente inexistente',
+      ECONNREFUSED: 'porta fechada — o serviço existe mas não escuta nessa porta',
+      ETIMEDOUT: 'sem rota até o destino — rede entre os containers',
+      CERT_HAS_EXPIRED: 'certificado expirado',
+      DEPTH_ZERO_SELF_SIGNED_CERT: 'certificado interno não confiável neste container — falta a CA raiz .local',
+      UNABLE_TO_VERIFY_LEAF_SIGNATURE: 'certificado interno não confiável neste container — falta a CA raiz .local',
+      SELF_SIGNED_CERT_IN_CHAIN: 'certificado interno não confiável neste container — falta a CA raiz .local',
+    };
+
+    const detalhe = explicacao[codigo];
+    return detalhe
+      ? `${codigo}${onde}: ${detalhe}`
+      : `${e.message}${codigo ? ` (${codigo})` : ''}${onde}${causa.message ? ` — ${causa.message}` : ''}`;
+  }
+
   private async chamar<T>(rota: string, corpo: unknown): Promise<ResultadoErp<T>> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
@@ -167,8 +203,10 @@ export class ErpApiService {
       const motivo =
         e.name === 'AbortError'
           ? `sem resposta em ${this.timeoutMs}ms`
-          : e.message;
-      this.logger.error(`Falha em ${rota} após ${Date.now() - inicio}ms: ${motivo}`);
+          : this.causaDeRede(e);
+      this.logger.error(
+        `Falha em ${rota} após ${Date.now() - inicio}ms: ${motivo} [alvo: ${this.baseUrl}]`,
+      );
       throw new ServiceUnavailableException(
         `erp-firebird-api indisponível (${rota}): ${motivo}`,
       );
