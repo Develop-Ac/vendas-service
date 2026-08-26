@@ -4,6 +4,7 @@ import { CarteirizacaoController } from './carteirizacao.controller';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { CarteirizacaoSqlServerRepository } from './carteirizacao.sqlserver.repository';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
+import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
 import { CarteirizacaoSyncScheduler } from './carteirizacao.sync.scheduler';
 import { MssqlService } from 'src/common/mssql/mssql.service';
 
@@ -13,6 +14,7 @@ import { MssqlService } from 'src/common/mssql/mssql.service';
   providers: [
     CarteirizacaoService,
     CarteirizacaoSqlServerRepository,
+    CarteirizacaoErpRepository,
     CarteirizacaoPrismaRepository,
     CarteirizacaoSyncScheduler,
     MssqlService

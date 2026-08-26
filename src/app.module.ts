@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ErpApiModule } from './common/erp-api/erp-api.module';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
 
 import { AppController } from './app.controller';
@@ -14,6 +15,7 @@ import { MaisVendidosModule } from './mais-vendidos/mais-vendidos.module';
 
 @Module({
   imports: [
+    ErpApiModule,
     PrismaModule,
     BuscaItensModule,
     S3Module,
