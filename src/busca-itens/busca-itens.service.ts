@@ -3,6 +3,7 @@ import {
   BadRequestException,
   NotFoundException,
   InternalServerErrorException,
+  HttpException,
   Logger,
 } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
@@ -74,14 +75,26 @@ export class BuscaItensService {
       );
     }
 
-    const searchUrl = `http://smart-search-service.acacessorios.local/api/search?q=${encodeURIComponent(query.replace(/\+/g, ' '))}&limit=500`;
+    const searchUrl = `https://portal-b2b-smart-search-service.naayqg.easypanel.host/api/search?q=${encodeURIComponent(query.replace(/\+/g, ' '))}&limit=500`;
 
     try {
       const searchRes = await firstValueFrom(
         this.httpService.get<{ query: string; results: any[] }>(searchUrl),
       );
 
-      const results = searchRes.data.results;
+      const results = searchRes.data?.results;
+
+      // O host da busca pode responder 200 com HTML quando o proxy aponta para
+      // a aplicação errada. Sem esta checagem quebra num "filter is not a
+      // function" que não diz nada sobre a causa.
+      if (!Array.isArray(results)) {
+        this.logger.error(
+          `Resposta inesperada de ${searchUrl}: esperado { results: [] }, veio ${typeof searchRes.data}`,
+        );
+        throw new InternalServerErrorException(
+          'A API de busca respondeu em um formato inesperado.',
+        );
+      }
 
       if (!anoModeloFiltro) {
         return results;
@@ -97,13 +110,31 @@ export class BuscaItensService {
         return false;
       });
     } catch (err) {
-      const status = err?.response?.status;
-      this.logger.error(`Erro ao buscar itens com query "${query}": ${status} - ${err.message}`);
-      if (status === 404) {
+      // Não reembrulha o erro de formato levantado logo acima.
+      if (err instanceof HttpException) throw err;
+
+      const e: any = err;
+      const status = e?.response?.status;
+      const contentType = String(e?.response?.headers?.['content-type'] ?? '');
+      const respostaDaApi = contentType.includes('json');
+
+      this.logger.error(
+        `Erro ao buscar itens com query "${query}" em ${searchUrl}: ${status} (${contentType || 'sem content-type'}) - ${e?.message}`,
+      );
+
+      // 404 só significa "sem resultados" quando quem respondeu foi a própria
+      // API. Um 404 em HTML é rota inexistente no proxy — tratar isso como
+      // busca vazia esconde o serviço fora do ar.
+      if (status === 404 && respostaDaApi) {
         throw new NotFoundException(`Nenhum resultado encontrado para a busca.`);
       }
+      if (status === 404) {
+        throw new InternalServerErrorException(
+          'A API de busca não respondeu na rota esperada. Verifique o roteamento do smart-search-service.',
+        );
+      }
       throw new InternalServerErrorException(
-        `Erro ao consultar a API de busca: ${err.message}`,
+        `Erro ao consultar a API de busca: ${e?.message}`,
       );
     }
   }
