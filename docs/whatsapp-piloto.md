@@ -40,6 +40,18 @@ vendas-service e configurar o webhook (por sessão, no dashboard) com o header
 `x-webhook-token` de mesmo valor. Sem a variável o endpoint aceita qualquer
 chamada da rede interna.
 
+**LIDs (obrigatório para o casamento funcionar):** o WhatsApp esconde o número
+de boa parte dos contatos atrás de um Linked ID (`...@lid`) — no primeiro teste
+do piloto, 100% das mensagens chegaram assim e o casamento deu zero. O
+vendas-service resolve o número real pelo endpoint `/api/{sessao}/lids/{lid}`
+do WAHA; para isso, defina no **vendas-service**:
+
+- `WA_API_URL=http://<projeto>_waha:3000` (o mesmo endereço interno do WAHA)
+- `WA_API_KEY=<a API key do WAHA, se configurada>`
+
+Sem `WA_API_URL`, mensagens de contatos com LID caem inteiras na fila de
+vínculo manual (nada se perde, mas nada casa sozinho).
+
 ## 4. Semear o vínculo telefone → cliente
 
 ```bash

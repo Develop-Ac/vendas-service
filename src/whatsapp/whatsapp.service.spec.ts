@@ -123,6 +123,54 @@ describe('WhatsappService', () => {
     expect(gravadas[0].rep_codigo).toBeNull();
   });
 
+  it('contato atrás de LID: resolve o número real no WAHA e casa normalmente', async () => {
+    process.env.WA_API_URL = 'http://waha.local';
+    const fetchMock: jest.Mock = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ lid: '25099822457032@lid', pn: '556588887777@c.us' }),
+    });
+    (global as any).fetch = fetchMock;
+    try {
+      await service.processarWebhook({
+        event: 'message',
+        session: 'rep-999',
+        payload: { id: 'l1', from: '25099822457032@lid', fromMe: false, timestamp: 1756300000 },
+      });
+      // segunda mensagem do mesmo LID sai do cache — uma chamada só ao WAHA
+      await service.processarWebhook({
+        event: 'message',
+        session: 'rep-999',
+        payload: { id: 'l2', from: '25099822457032@lid', fromMe: false, timestamp: 1756300001 },
+      });
+      expect(gravadas[0]).toMatchObject({ chave: '6588887777', cli_codigo: 1 });
+      expect(gravadas[1]).toMatchObject({ chave: '6588887777', cli_codigo: 1 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0][0])).toBe(
+        'http://waha.local/api/rep-999/lids/25099822457032',
+      );
+    } finally {
+      delete process.env.WA_API_URL;
+      delete (global as any).fetch;
+    }
+  });
+
+  it('LID sem resolução (WAHA fora ou pn nulo) grava com os dígitos do LID como chave', async () => {
+    process.env.WA_API_URL = 'http://waha.local';
+    (global as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({ pn: null }) }));
+    try {
+      const r = await service.processarWebhook({
+        event: 'message',
+        session: 'rep-999',
+        payload: { id: 'l3', from: '91753520574651@lid', fromMe: false },
+      });
+      expect(r).toMatchObject({ casada: false });
+      expect(gravadas[0]).toMatchObject({ chave: '91753520574651', cli_codigo: null });
+    } finally {
+      delete process.env.WA_API_URL;
+      delete (global as any).fetch;
+    }
+  });
+
   it('message.ack atualiza o status sem criar linha', async () => {
     await service.processarWebhook({
       event: 'message.ack',

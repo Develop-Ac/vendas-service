@@ -56,6 +56,15 @@ interface WebhookWaha {
 export class WhatsappService {
   private readonly logger = new Logger(WhatsappService.name);
 
+  /**
+   * LID -> número real. O WhatsApp esconde o telefone de parte dos contatos
+   * atrás de um Linked ID (`...@lid`) — foi o que o piloto pegou no primeiro
+   * teste: 100% das mensagens chegando com LID e casamento zero. O WAHA resolve
+   * pelo endpoint `GET /api/{sessao}/lids/{lid}`; o cache evita uma chamada por
+   * mensagem. Precisa de WA_API_URL (e WA_API_KEY, se a API tiver chave).
+   */
+  private lidCache = new Map<string, string>();
+
   constructor(
     private readonly repo: WhatsappRepository,
     private readonly erp: ErpApiService,
@@ -64,6 +73,33 @@ export class WhatsappService {
   private repDaSessao(sessao: string): number | null {
     const m = /^rep-(\d+)$/.exec(sessao.trim());
     return m ? Number(m[1]) : null;
+  }
+
+  private async resolverLid(sessao: string, lid: string): Promise<string | null> {
+    const base = (process.env.WA_API_URL ?? '').replace(/\/+$/, '');
+    if (!base) return null;
+    const conhecido = this.lidCache.get(lid);
+    if (conhecido) return conhecido;
+    try {
+      const r = await fetch(
+        `${base}/api/${encodeURIComponent(sessao)}/lids/${encodeURIComponent(lid)}`,
+        {
+          headers: { 'X-Api-Key': process.env.WA_API_KEY ?? '' },
+          signal: AbortSignal.timeout(10_000),
+        },
+      );
+      if (!r.ok) return null;
+      const j = (await r.json()) as { pn?: string | null };
+      const pn = j?.pn ? String(j.pn).replace(/@.*$/, '').replace(/\D/g, '') : null;
+      if (pn) {
+        if (this.lidCache.size > 10_000) this.lidCache.clear();
+        this.lidCache.set(lid, pn);
+      }
+      return pn;
+    } catch (e) {
+      this.logger.warn(`LID não resolvido (${lid}): ${(e as Error).message}`);
+      return null;
+    }
   }
 
   // ------------------------------------------------------------- webhook
@@ -90,7 +126,13 @@ export class WhatsappService {
       return { ok: true, ignorado: 'grupo/broadcast' };
     }
 
-    const telefone = interlocutor.replace(/@.*$/, '').replace(/\D/g, '');
+    // Contato atrás de LID: pede ao WAHA o número real; sem resolução, os
+    // dígitos do LID viram a chave (a mensagem não se perde — cai na fila de
+    // vínculo e o vínculo manual conserta o histórico depois).
+    let telefone = interlocutor.replace(/@.*$/, '').replace(/\D/g, '');
+    if (interlocutor.endsWith('@lid')) {
+      telefone = (await this.resolverLid(sessao, telefone)) ?? telefone;
+    }
     const chave = chaveTelefone(telefone);
     const cli_codigo = chave ? await this.repo.resolverChave(chave) : null;
 
