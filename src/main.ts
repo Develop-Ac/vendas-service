@@ -1,4 +1,9 @@
 // src/main.ts
+// Precisa ser o primeiro import: carrega o .env em process.env antes que
+// qualquer módulo seja avaliado (o @prisma/client não lê o .env em runtime —
+// só a CLI do Prisma lê). Em produção as variáveis vêm do ambiente do
+// container e o dotenv não sobrescreve o que já está definido.
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, NestFastifyApplication } from '@nestjs/platform-fastify';
 import { AppModule } from './app.module';
