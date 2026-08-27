@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { CarteirizacaoService } from './carteirizacao.service';
+import { FilaService } from './fila.service';
 
 /**
  * Carga diária automática da carteirização: reconcilia o overlay com o ERP
@@ -12,7 +13,10 @@ import { CarteirizacaoService } from './carteirizacao.service';
 export class CarteirizacaoSyncScheduler {
   private readonly logger = new Logger(CarteirizacaoSyncScheduler.name);
 
-  constructor(private readonly service: CarteirizacaoService) {}
+  constructor(
+    private readonly service: CarteirizacaoService,
+    private readonly fila: FilaService,
+  ) {}
 
   @Cron(process.env.CARTEIRIZACAO_SYNC_CRON ?? '0 5 * * *', {
     name: 'carteirizacao-sync',
@@ -34,6 +38,19 @@ export class CarteirizacaoSyncScheduler {
         `Falha na carga diária da carteirização: ${(e as Error).message}`,
         (e as Error).stack,
       );
+    }
+
+    // Fila do dia na sequência da carga: a régua trabalha sobre a carteira
+    // recém-reconciliada. Falha aqui não derruba a carga — a geração também
+    // roda em POST /carteirizacao/fila/gerar.
+    try {
+      const f = await this.fila.gerar();
+      this.logger.log(
+        `Fila do dia: ${f.geradas} novas (${f.resgates} resgates), ` +
+          `${f.canceladas} canceladas, ${f.ja_em_andamento} já em andamento.`,
+      );
+    } catch (e) {
+      this.logger.error(`Falha na geração da fila do dia: ${(e as Error).message}`);
     }
   }
 }

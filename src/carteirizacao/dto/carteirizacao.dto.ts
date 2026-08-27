@@ -57,6 +57,24 @@ export class RemoverDto {
   usuario_nome?: string;
 }
 
+/**
+ * Desfecho de um orçamento sem venda — a única digitação nova do vendedor na
+ * fase 1 (1 toque, 6 motivos). Os dados do orçamento vêm da própria fila
+ * (cópia do ERP na hora do clique); o motivo é validado no FilaService.
+ */
+export class DesfechoOrcamentoDto {
+  motivo: string; // PRECO | PRAZO_FRETE | SEM_ESTOQUE | CONCORRENTE | CLIENTE_ADIOU | CREDITO_BLOQUEADO
+  cli_codigo: number;
+  cli_nome?: string;
+  rep_codigo?: number;
+  rep_nome?: string;
+  emissao?: string;
+  total?: number;
+  observacao?: string;
+  usuario_id?: string;
+  usuario_nome?: string;
+}
+
 export class SeedDto {
   // 'rep_codigo' (default) = só cadastro; 'hibrido' = rep_codigo + vendedor dominante; 'vendas' = só vendas
   estrategia?: 'rep_codigo' | 'hibrido' | 'vendas';

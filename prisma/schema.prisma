@@ -908,3 +908,59 @@ model ven_meta_vendedor {
 
   @@unique([rep_codigo, ano, mes], map: "uq_ven_meta_vendedor_periodo")
 }
+
+// CRM do Atacado (fase 1) — fila do dia gerada pela régua por curva. A tarefa
+// fecha SOZINHA por sinal observado (orçamento/venda do cliente após gerada_em);
+// prazo estourado sem sinal vira ESCALADA (visível ao supervisor). O unique
+// parcial "1 tarefa em andamento por cliente" mora no SQL manual
+// (uq_ven_fila_tarefa_andamento) — o Prisma não expressa índice parcial.
+model ven_fila_tarefa {
+  id              String    @id @default(cuid())
+  tipo            String // CONTATO | RESGATE
+  cli_codigo      Int
+  cli_nome        String?
+  rep_codigo      Int?
+  rep_nome        String?
+  curva           String?
+  motivo_geracao  String?
+  gerada_em       DateTime  @default(now()) @db.Timestamptz(6)
+  prazo_em        DateTime  @db.Timestamptz(6)
+  status          String    @default("ABERTA") // ABERTA | ESCALADA | CONCLUIDA | CANCELADA
+  escalada_em     DateTime? @db.Timestamptz(6)
+  concluida_em    DateTime? @db.Timestamptz(6)
+  conclusao_sinal String? // VENDA | ORCAMENTO | (futuro) MENSAGEM
+  conclusao_obs   String?
+  created_at      DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([rep_codigo, status], map: "idx_ven_fila_tarefa_rep_status")
+  @@index([status, prazo_em], map: "idx_ven_fila_tarefa_status_prazo")
+  @@index([cli_codigo], map: "idx_ven_fila_tarefa_cli")
+  @@index([gerada_em], map: "idx_ven_fila_tarefa_gerada")
+}
+
+// Desfecho do orçamento que não fechou — a única digitação nova do vendedor
+// (1 toque, 6 motivos). É a pesquisa de motivo de perda da fase 1.
+model ven_orcamento_desfecho {
+  id           String   @id @default(cuid())
+  empresa      Int      @default(3)
+  orcamento    Int
+  emissao      DateTime? @db.Date
+  cli_codigo   Int
+  cli_nome     String?
+  rep_codigo   Int?
+  rep_nome     String?
+  total        Decimal  @default(0) @db.Decimal(15, 2)
+  motivo       String // PRECO | PRAZO_FRETE | SEM_ESTOQUE | CONCORRENTE | CLIENTE_ADIOU | CREDITO_BLOQUEADO
+  observacao   String?
+  usuario_id   String?
+  usuario_nome String?
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([empresa, orcamento], map: "uq_ven_orc_desfecho_orcamento")
+  @@index([cli_codigo], map: "idx_ven_orc_desfecho_cli")
+  @@index([rep_codigo], map: "idx_ven_orc_desfecho_rep")
+  @@index([motivo], map: "idx_ven_orc_desfecho_motivo")
+  @@index([created_at], map: "idx_ven_orc_desfecho_created")
+}

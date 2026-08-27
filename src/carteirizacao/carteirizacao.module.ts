@@ -6,6 +6,7 @@ import { CarteirizacaoSqlServerRepository } from './carteirizacao.sqlserver.repo
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
 import { CarteirizacaoSyncScheduler } from './carteirizacao.sync.scheduler';
+import { FilaService } from './fila.service';
 import { MssqlService } from 'src/common/mssql/mssql.service';
 
 @Module({
@@ -17,6 +18,7 @@ import { MssqlService } from 'src/common/mssql/mssql.service';
     CarteirizacaoErpRepository,
     CarteirizacaoPrismaRepository,
     CarteirizacaoSyncScheduler,
+    FilaService,
     MssqlService
   ],
 })

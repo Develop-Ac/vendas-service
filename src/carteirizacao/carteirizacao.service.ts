@@ -360,6 +360,15 @@ export class CarteirizacaoService {
     });
   }
 
+  /**
+   * Fotografia da carteira montada (métricas + quadrantes) — é o que a fila do
+   * dia (FilaService) lê para gerar pela régua e constatar sinais. Mesmo cache
+   * de 60s da listagem: as duas telas enxergam o mesmo estado.
+   */
+  async snapshotCarteira(janelaDias = DEFAULT_JANELA_DIAS): Promise<ClienteCarteira[]> {
+    return this.montar(janelaDias);
+  }
+
   // ----------------------------------------------------------------- listar
   async listarClientes(q: ListarClientesQuery) {
     const janela = q.janelaDias ?? DEFAULT_JANELA_DIAS;
@@ -463,19 +472,33 @@ export class CarteirizacaoService {
       itens = itens.filter((o) => o.rep_codigo === Number(params.rep_codigo));
     }
 
-    const reps = [...new Set(itens.map((o) => o.rep_codigo).filter((r): r is number => r != null))];
-    const nomes = new Map(
-      (await this.fonte.nomesRepresentantes(reps)).map((n) => [n.rep_codigo, n.rep_nome]),
-    );
+    // Orçamento com motivo já registrado sai da fila — a pesquisa não cobra duas
+    // vezes. E o placar de motivos (30d) volta junto: é a resposta acumulando.
+    const registrados = await this.overlay.orcamentosComDesfecho();
+    itens = itens.filter((o) => !registrados.has(o.orcamento));
+    const corte30d = new Date(Date.now() - 30 * 86_400_000);
+    const motivos30d = await this.overlay.resumoMotivosDesde(corte30d, params.rep_codigo);
+
+    const [nomesLista, base] = await Promise.all([
+      this.fonte.nomesRepresentantes(
+        [...new Set(itens.map((o) => o.rep_codigo).filter((r): r is number => r != null))],
+      ),
+      this.getBase(),
+    ]);
+    const nomes = new Map(nomesLista.map((n) => [n.rep_codigo, n.rep_nome]));
+    // Fone do cadastro atual: habilita o botão "conversar" direto na fila.
+    const foneMap = new Map(base.map((b) => [b.cli_codigo, b.fone]));
 
     return {
       carencia_dias: carencia,
       janela_dias: janela,
       total: itens.length,
       valor_total: itens.reduce((soma, o) => soma + o.total, 0),
+      motivos_30d: motivos30d,
       itens: itens.map((o) => ({
         ...o,
         rep_nome: o.rep_codigo != null ? (nomes.get(o.rep_codigo) ?? null) : null,
+        fone: foneMap.get(o.cli_codigo) ?? null,
       })),
     };
   }

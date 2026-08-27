@@ -11,9 +11,11 @@ import {
 } from '@nestjs/common';
 import type { FastifyReply } from 'fastify';
 import { CarteirizacaoService } from './carteirizacao.service';
+import { FilaService } from './fila.service';
 import {
   ConfigVendedorDto,
   ConfirmarExclusaoDto,
+  DesfechoOrcamentoDto,
   ListarClientesQuery,
   MetaVendedorDto,
   SincronizarDto,
@@ -26,7 +28,10 @@ const toNum = (v: unknown) =>
 
 @Controller('carteirizacao')
 export class CarteirizacaoController {
-  constructor(private readonly service: CarteirizacaoService) {}
+  constructor(
+    private readonly service: CarteirizacaoService,
+    private readonly fila: FilaService,
+  ) {}
 
   @Get('clientes')
   listarClientes(@Query() q: Record<string, string>) {
@@ -77,6 +82,32 @@ export class CarteirizacaoController {
     @Body() dto: ConfirmarExclusaoDto,
   ) {
     return this.service.confirmarExclusao(cli, dto ?? {});
+  }
+
+  // ------------------------------------------------- Fila do dia (fase 1)
+  // A fila do vendedor: gerada pela régua por curva, fecha SOZINHA por sinal
+  // observado (orçamento/venda depois da geração), escala ao supervisor no
+  // prazo estourado. A leitura já reconcilia — o que a tela mostra é o
+  // constatado agora.
+  @Get('fila')
+  filaDoDia(@Query('rep') rep?: string) {
+    return this.fila.listar({ rep_codigo: toNum(rep) });
+  }
+
+  // Geração manual/agendada (a carga diária também chama). Idempotente.
+  @Post('fila/gerar')
+  gerarFila() {
+    return this.fila.gerar();
+  }
+
+  // A única digitação nova do vendedor: motivo do orçamento que não fechou
+  // (1 toque, 6 opções). Upsert — remarcar corrige o motivo.
+  @Post('orcamentos/:orcamento/desfecho')
+  registrarDesfecho(
+    @Param('orcamento', ParseIntPipe) orcamento: number,
+    @Body() dto: DesfechoOrcamentoDto,
+  ) {
+    return this.fila.registrarDesfecho(orcamento, dto);
   }
 
   // Fila "orçamentos sem desfecho" (CRM do Atacado, fase 1): emitidos há mais de

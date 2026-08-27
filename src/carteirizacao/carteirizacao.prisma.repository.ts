@@ -198,4 +198,122 @@ export class CarteirizacaoPrismaRepository {
       skipDuplicates: true,
     });
   }
+
+  // ================================================== fila do dia (fase 1)
+  /** Tarefas em andamento (ABERTA/ESCALADA), opcionalmente de um vendedor. */
+  async tarefasEmAndamento(rep_codigo?: number) {
+    return this.prisma.ven_fila_tarefa.findMany({
+      where: {
+        status: { in: ['ABERTA', 'ESCALADA'] },
+        ...(rep_codigo != null ? { rep_codigo } : {}),
+      },
+      orderBy: { prazo_em: 'asc' },
+    });
+  }
+
+  /** Tarefas concluídas a partir de um corte (feedback "fechou sozinha" na tela). */
+  async tarefasConcluidasDesde(desde: Date, rep_codigo?: number) {
+    return this.prisma.ven_fila_tarefa.findMany({
+      where: {
+        status: 'CONCLUIDA',
+        concluida_em: { gte: desde },
+        ...(rep_codigo != null ? { rep_codigo } : {}),
+      },
+      orderBy: { concluida_em: 'desc' },
+    });
+  }
+
+  /**
+   * Cria as tarefas geradas pela régua. O unique parcial do banco
+   * (uq_ven_fila_tarefa_andamento) barra duplicata de cliente em andamento em
+   * corrida; aqui o skipDuplicates não cobre índice parcial, então a geração
+   * filtra antes por `tarefasEmAndamento`.
+   */
+  async criarTarefas(
+    rows: Array<{
+      tipo: string;
+      cli_codigo: number;
+      cli_nome: string | null;
+      rep_codigo: number | null;
+      rep_nome: string | null;
+      curva: string | null;
+      motivo_geracao: string;
+      prazo_em: Date;
+    }>,
+  ) {
+    if (!rows.length) return { count: 0 };
+    return this.prisma.ven_fila_tarefa.createMany({ data: rows });
+  }
+
+  async concluirTarefa(id: string, sinal: string, quando: Date) {
+    return this.prisma.ven_fila_tarefa.update({
+      where: { id },
+      data: { status: 'CONCLUIDA', concluida_em: quando, conclusao_sinal: sinal },
+    });
+  }
+
+  async escalarTarefa(id: string) {
+    return this.prisma.ven_fila_tarefa.update({
+      where: { id },
+      data: { status: 'ESCALADA', escalada_em: new Date() },
+    });
+  }
+
+  async cancelarTarefa(id: string, obs: string) {
+    return this.prisma.ven_fila_tarefa.update({
+      where: { id },
+      data: { status: 'CANCELADA', concluida_em: new Date(), conclusao_obs: obs },
+    });
+  }
+
+  // ============================================ desfecho do orçamento (fase 1)
+  /** Números de orçamento que JÁ têm motivo registrado (para filtrar a fila). */
+  async orcamentosComDesfecho(empresa = 3): Promise<Set<number>> {
+    const rows = await this.prisma.ven_orcamento_desfecho.findMany({
+      where: { empresa },
+      select: { orcamento: true },
+    });
+    return new Set(rows.map((r) => r.orcamento));
+  }
+
+  /** Marcar de novo corrige o motivo do mesmo orçamento — nunca duplica. */
+  async upsertDesfecho(params: {
+    empresa?: number;
+    orcamento: number;
+    emissao?: Date | null;
+    cli_codigo: number;
+    cli_nome?: string | null;
+    rep_codigo?: number | null;
+    rep_nome?: string | null;
+    total?: number;
+    motivo: string;
+    observacao?: string | null;
+    usuario_id?: string | null;
+    usuario_nome?: string | null;
+  }) {
+    const { empresa = 3, orcamento, ...rest } = params;
+    return this.prisma.ven_orcamento_desfecho.upsert({
+      where: { empresa_orcamento: { empresa, orcamento } },
+      create: { empresa, orcamento, ...rest },
+      update: { ...rest, updated_at: new Date() },
+    });
+  }
+
+  /** Contagem por motivo desde um corte — o placar da pesquisa de perda. */
+  async resumoMotivosDesde(desde: Date, rep_codigo?: number) {
+    const rows = await this.prisma.ven_orcamento_desfecho.groupBy({
+      by: ['motivo'],
+      where: {
+        created_at: { gte: desde },
+        ...(rep_codigo != null ? { rep_codigo } : {}),
+      },
+      _count: { _all: true },
+      _sum: { total: true },
+    });
+    return rows.map((r) => ({
+      motivo: r.motivo,
+      quantidade: r._count._all,
+      valor: Number(r._sum.total ?? 0),
+    }));
+  }
 }
