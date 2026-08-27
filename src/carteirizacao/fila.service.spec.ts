@@ -67,9 +67,11 @@ describe('FilaService', () => {
   let concluidas: Array<{ id: string; sinal: string }>;
   let escaladas: string[];
   let canceladas: Array<{ id: string; obs: string }>;
+  let msgEnviadaPorCliente: Map<number, Date>;
 
   const repo = {
     tarefasEmAndamento: jest.fn(async () => tarefasEmAndamento),
+    ultimaMensagemEnviadaPorCliente: jest.fn(async () => msgEnviadaPorCliente),
     tarefasConcluidasDesde: jest.fn(async () => []),
     criarTarefas: jest.fn(async (rows: any[]) => {
       criadas.push(...rows);
@@ -102,6 +104,7 @@ describe('FilaService', () => {
     concluidas = [];
     escaladas = [];
     canceladas = [];
+    msgEnviadaPorCliente = new Map();
     jest.clearAllMocks();
   });
 
@@ -186,6 +189,29 @@ describe('FilaService', () => {
       { id: 't2', sinal: 'VENDA' },
     ]);
     expect(escaladas).toEqual(['t3']);
+  });
+
+  it('mensagem enviada (sensor WAHA) é o terceiro sinal: conclui e evita gerar', async () => {
+    const gerada = new Date(Date.now() - 5 * DIA_MS);
+    clientes = [
+      // sem compra nem orçamento, mas o vendedor mandou mensagem ONTEM
+      cliente({ cli_codigo: 1, curva_abc: 'A', dias_sem_compra: 40, dias_sem_orcamento: 40 }),
+      // e este outro estaria na régua, mas a mensagem de 3d atrás é contato
+      cliente({ cli_codigo: 2, curva_abc: 'A', dias_sem_compra: 30, dias_sem_orcamento: 30 }),
+    ];
+    msgEnviadaPorCliente = new Map([
+      [1, new Date(Date.now() - 1 * DIA_MS)],
+      [2, new Date(Date.now() - 3 * DIA_MS)],
+    ]);
+    tarefasEmAndamento = [
+      { id: 't1', cli_codigo: 1, status: 'ABERTA', gerada_em: gerada, prazo_em: new Date(Date.now() + DIA_MS) },
+    ];
+    await service.listar({});
+    expect(concluidas).toEqual([{ id: 't1', sinal: 'MENSAGEM' }]);
+
+    tarefasEmAndamento = [];
+    await service.gerar();
+    expect(criadas).toHaveLength(0); // mensagem recente = contato houve, ninguém entra
   });
 
   it('NÃO conclui por sinal anterior à geração', async () => {

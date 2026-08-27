@@ -12,6 +12,7 @@ import { B2bModule } from './b2b/b2b.module';
 import { BuscaPlacasModule } from './busca-placas/busca-placas.module';
 import { CarteirizacaoModule } from './carteirizacao/carteirizacao.module';
 import { MaisVendidosModule } from './mais-vendidos/mais-vendidos.module';
+import { WhatsappModule } from './whatsapp/whatsapp.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { MaisVendidosModule } from './mais-vendidos/mais-vendidos.module';
     BuscaPlacasModule,
     CarteirizacaoModule,
     MaisVendidosModule,
+    WhatsappModule,
 
     PrometheusModule.register({
       defaultMetrics: { enabled: true }, // CPU, memória, event loop, GC

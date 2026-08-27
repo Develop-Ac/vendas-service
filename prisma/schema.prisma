@@ -964,3 +964,41 @@ model ven_orcamento_desfecho {
   @@index([motivo], map: "idx_ven_orc_desfecho_motivo")
   @@index([created_at], map: "idx_ven_orc_desfecho_created")
 }
+
+// Sensor WhatsApp (piloto WAHA) — vínculo telefone -> cliente. Casamento pela
+// chave DDD + últimos 8 dígitos (sobrevive ao 9º dígito). N números -> 1 cliente.
+model ven_wa_contato {
+  id         String   @id @default(cuid())
+  chave      String   @unique(map: "uq_ven_wa_contato_chave")
+  telefone   String
+  cli_codigo Int
+  cli_nome   String?
+  origem     String   @default("SEED_ERP") // SEED_ERP | MANUAL
+  criado_por String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  updated_at DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([cli_codigo], map: "idx_ven_wa_contato_cli")
+}
+
+// Sensor WhatsApp — SÓ METADADOS (decisão do plano: nenhum corpo de mensagem).
+// Uma linha por evento de mensagem, deduplicada por (sessao, message_id).
+model ven_wa_mensagem {
+  id            String   @id @default(cuid())
+  message_id    String
+  sessao        String // sessão WAHA (convenção: rep-<codigo>)
+  rep_codigo    Int?
+  chat_telefone String
+  chave         String
+  cli_codigo    Int? // resolvido via ven_wa_contato; NULL = fila de vínculo
+  direcao       String // ENVIADA | RECEBIDA
+  tipo          String?
+  timestamp     DateTime @db.Timestamptz(6)
+  ack           Int?
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([sessao, message_id], map: "uq_ven_wa_msg_sessao_id")
+  @@index([cli_codigo, direcao, timestamp], map: "idx_ven_wa_msg_cli_dir_ts")
+  @@index([chave], map: "idx_ven_wa_msg_chave")
+  @@index([sessao, timestamp], map: "idx_ven_wa_msg_sessao_ts")
+}

@@ -88,7 +88,12 @@ export class FilaService {
     }
 
     const mapa = new Map(clientes.map((c) => [c.cli_codigo, c]));
-    const emAndamento = await this.repo.tarefasEmAndamento();
+    const [emAndamento, msgEnviada] = await Promise.all([
+      this.repo.tarefasEmAndamento(),
+      // Terceiro sinal (sensor WAHA): mensagem enviada também é contato — sem o
+      // piloto no ar o mapa vem vazio e a régua segue só com compra/orçamento.
+      this.repo.ultimaMensagemEnviadaPorCliente(),
+    ]);
 
     // 1) Cancela tarefas órfãs (a fila segue a carteira, que é do ERP).
     let canceladas = 0;
@@ -122,7 +127,11 @@ export class FilaService {
 
       const diasCompra = cli.dias_sem_compra ?? Infinity;
       const diasOrc = cli.dias_sem_orcamento ?? Infinity;
-      const diasSemContato = Math.min(diasCompra, diasOrc);
+      const ultimaMsg = msgEnviada.get(cli.cli_codigo);
+      const diasMsg = ultimaMsg
+        ? Math.floor((agora - ultimaMsg.getTime()) / DIA_MS)
+        : Infinity;
+      const diasSemContato = Math.min(diasCompra, diasOrc, diasMsg);
       const limite = regua[cli.curva_abc];
 
       // Resgate: curva A entrando na zona de inativação — prioridade com prazo curto.
@@ -181,24 +190,26 @@ export class FilaService {
    */
   private async reconciliar(clientes: ClienteCarteira[]) {
     const mapa = new Map(clientes.map((c) => [c.cli_codigo, c]));
-    const emAndamento = await this.repo.tarefasEmAndamento();
+    const [emAndamento, msgEnviada] = await Promise.all([
+      this.repo.tarefasEmAndamento(),
+      this.repo.ultimaMensagemEnviadaPorCliente(),
+    ]);
     const agora = new Date();
 
     for (const t of emAndamento) {
       const cli = mapa.get(t.cli_codigo);
       if (cli) {
         const gerada = new Date(t.gerada_em).getTime();
-        const compra =
-          cli.data_ult_compra && new Date(cli.data_ult_compra).getTime() > gerada
-            ? new Date(cli.data_ult_compra)
-            : null;
-        const orc =
-          cli.ult_orcamento && new Date(cli.ult_orcamento).getTime() > gerada
-            ? new Date(cli.ult_orcamento)
-            : null;
-        if (compra || orc) {
-          // Venda fala mais alto que orçamento no rótulo (é o resultado).
-          await this.repo.concluirTarefa(t.id, compra ? 'VENDA' : 'ORCAMENTO', compra ?? orc!);
+        const depois = (d: Date | null | undefined) =>
+          d && new Date(d).getTime() > gerada ? new Date(d) : null;
+        const compra = depois(cli.data_ult_compra);
+        const orc = depois(cli.ult_orcamento);
+        const msg = depois(msgEnviada.get(t.cli_codigo));
+        if (compra || orc || msg) {
+          // No rótulo, o sinal mais forte vence: venda (resultado) > orçamento
+          // (proposta) > mensagem (contato, via sensor WAHA).
+          const sinal = compra ? 'VENDA' : orc ? 'ORCAMENTO' : 'MENSAGEM';
+          await this.repo.concluirTarefa(t.id, sinal, compra ?? orc ?? msg!);
           continue;
         }
       }

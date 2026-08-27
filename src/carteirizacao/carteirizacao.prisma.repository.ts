@@ -266,6 +266,30 @@ export class CarteirizacaoPrismaRepository {
     });
   }
 
+  // ================================== sensor WhatsApp (terceiro sinal da fila)
+  /**
+   * Última mensagem ENVIADA por cliente — o sensor WAHA alimentando a fila:
+   * mensagem depois da geração conclui a tarefa como os outros dois sinais
+   * (orçamento/venda). Sem a tabela (DDL do piloto ainda não aplicado) ou sem
+   * dados, devolve vazio e a fila segue só com os sinais do ERP.
+   */
+  async ultimaMensagemEnviadaPorCliente(): Promise<Map<number, Date>> {
+    try {
+      const grupos = await this.prisma.ven_wa_mensagem.groupBy({
+        by: ['cli_codigo'],
+        where: { direcao: 'ENVIADA', cli_codigo: { not: null } },
+        _max: { timestamp: true },
+      });
+      return new Map(
+        grupos
+          .filter((g) => g.cli_codigo != null && g._max.timestamp != null)
+          .map((g) => [g.cli_codigo as number, g._max.timestamp as Date]),
+      );
+    } catch {
+      return new Map();
+    }
+  }
+
   // ============================================ desfecho do orçamento (fase 1)
   /** Números de orçamento que JÁ têm motivo registrado (para filtrar a fila). */
   async orcamentosComDesfecho(empresa = 3): Promise<Set<number>> {

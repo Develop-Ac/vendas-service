@@ -225,6 +225,7 @@ export class CarteirizacaoErpRepository {
         'UF',
         'CIDADE',
         'FONE',
+        'CELULAR',
         'CONTATO',
         'DATA_ULT_COMPRA',
         'REP_CODIGO',
@@ -366,7 +367,9 @@ export class CarteirizacaoErpRepository {
         cli_nome: c.CLI_NOME ?? null,
         uf: c.UF ?? null,
         cidade: c.CIDADE ?? null,
-        fone: c.FONE ?? null,
+        // Celular na frente do fixo: é o número que o botão "conversar" (WhatsApp)
+        // e o casamento do sensor usam — o fixo raramente tem WhatsApp.
+        fone: (String(c.CELULAR ?? '').trim() || String(c.FONE ?? '').trim()) || null,
         contato: c.CONTATO ?? null,
         data_ult_compra: c.DATA_ULT_COMPRA ? new Date(c.DATA_ULT_COMPRA) : null,
         rep_codigo: c.REP_CODIGO != null ? Number(c.REP_CODIGO) : null,
