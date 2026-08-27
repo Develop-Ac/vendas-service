@@ -79,6 +79,22 @@ export class CarteirizacaoController {
     return this.service.confirmarExclusao(cli, dto ?? {});
   }
 
+  // Fila "orçamentos sem desfecho" (CRM do Atacado, fase 1): emitidos há mais de
+  // `carenciaDias` sem nenhuma venda do cliente na carência — a população da
+  // pesquisa de motivo de perda. Fonte: sempre a erp-firebird-api.
+  @Get('orcamentos-sem-desfecho')
+  orcamentosSemDesfecho(
+    @Query('rep') rep?: string,
+    @Query('carenciaDias') carenciaDias?: string,
+    @Query('janelaDias') janelaDias?: string,
+  ) {
+    return this.service.orcamentosSemDesfecho({
+      rep_codigo: toNum(rep),
+      carenciaDias: toNum(carenciaDias),
+      janelaDias: toNum(janelaDias),
+    });
+  }
+
   // -------------------------------------------------- Fase 2: acompanhamento
   @Get('indicadores/vendedores')
   indicadoresVendedores(@Query('janelaDias') janelaDias?: string) {
@@ -205,6 +221,7 @@ export class CarteirizacaoController {
       risco: q.risco != null ? toBool(q.risco) : undefined,
       revisao: q.revisao != null ? toBool(q.revisao) : undefined,
       curvaAbc: (q.curvaAbc as 'A' | 'B' | 'C') || undefined,
+      quadrante: (q.quadrante as ListarClientesQuery['quadrante']) || undefined,
       scoreFaixa: (q.scoreFaixa as 'A' | 'B' | 'C' | 'D') || undefined,
       ordenarPor: q.ordenarPor || undefined,
       ordem: q.ordem === 'asc' ? 'asc' : q.ordem === 'desc' ? 'desc' : undefined,

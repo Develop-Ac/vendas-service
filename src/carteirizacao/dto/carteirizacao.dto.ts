@@ -1,3 +1,4 @@
+import type { QuadranteCliente } from '../carteirizacao.service';
 export type StatusCliente = 'ATIVO' | 'INATIVO' | 'SEM_CARTEIRA' | 'DISPONIVEL';
 
 export interface ListarClientesQuery {
@@ -16,6 +17,7 @@ export interface ListarClientesQuery {
   risco?: boolean;
   revisao?: boolean;
   curvaAbc?: 'A' | 'B' | 'C';
+  quadrante?: QuadranteCliente;
   scoreFaixa?: 'A' | 'B' | 'C' | 'D';
   ordenarPor?: string;
   ordem?: 'asc' | 'desc';

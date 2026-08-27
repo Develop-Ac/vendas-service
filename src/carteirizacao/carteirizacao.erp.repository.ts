@@ -86,6 +86,27 @@ interface LinhaAgregada {
   DESCONTO_NOTA?: number;
 }
 
+/** Agregado de orçamentos de um cliente do atacado (janela de 90 dias). */
+export interface OrcamentoResumoCliente {
+  cli_codigo: number;
+  orcamentos_90d: number;
+  valor_orcado_90d: number;
+  /** Último orçamento em até 24 meses — de qualquer janela, não só 90d. */
+  ult_orcamento: Date | null;
+}
+
+/** Orçamento emitido que NÃO virou venda do cliente dentro da carência. */
+export interface OrcamentoSemDesfecho {
+  orcamento: number;
+  emissao: Date;
+  cli_codigo: number;
+  /** Nome gravado NO orçamento (cópia da época). */
+  cli_nome: string | null;
+  rep_codigo: number | null;
+  total: number;
+  dias_desde_emissao: number;
+}
+
 interface LinhaItens {
   CLI_CODIGO: number;
   BRUTO: number;
@@ -379,6 +400,154 @@ export class CarteirizacaoErpRepository {
       `Base atacado do ERP: ${linhas.length} clientes em ${Date.now() - inicio}ms (13 consultas).`,
     );
     return linhas;
+  }
+
+  /* ------------------------------------------------------------ orçamentos */
+
+  /**
+   * Agregado de orçamentos por cliente do atacado — o sinal de ESFORÇO.
+   *
+   * Duas consultas: a janela de 90 dias (contagem, valor, último) e uma janela
+   * longa de 24 meses só para a data do último orçamento de quem não orçou no
+   * trimestre — a tabela exige filtro de EMISSAO (guarda o histórico inteiro),
+   * então "último de todos os tempos" é deliberadamente aproximado para 24m.
+   *
+   * A conversão NÃO sai daqui: o vínculo NFS do ERP fica vazio em ~99% dos
+   * orçamentos. Fechamento se infere em `orcamentosSemDesfecho`.
+   */
+  async resumoOrcamentosAtacado(): Promise<OrcamentoResumoCliente[]> {
+    const ATAC = { campo: 'cliente.TABELA_PRECO', op: 'em' as const, valor: TABELAS_ATACADO };
+    const [curto, longo] = await Promise.all([
+      this.erp.consultar<{ CLI_CODIGO: number; ORCS: number; VALOR: number; ULT: string }>(
+        'orcamentos',
+        {
+          empresa: EMPRESA,
+          filtros: [{ campo: 'EMISSAO', op: 'maior_igual', valor: this.mesesAtras(3) }, ATAC],
+          agrupar: ['CLI_CODIGO'],
+          agregar: [
+            { fn: 'contar', campo: 'ORCAMENTO', como: 'ORCS' },
+            { fn: 'somar', campo: 'TOTAL', como: 'VALOR' },
+            { fn: 'maximo', campo: 'EMISSAO', como: 'ULT' },
+          ],
+          limite: 20_000,
+        },
+      ),
+      this.erp.consultar<{ CLI_CODIGO: number; ULT: string }>('orcamentos', {
+        empresa: EMPRESA,
+        filtros: [{ campo: 'EMISSAO', op: 'maior_igual', valor: this.mesesAtras(24) }, ATAC],
+        agrupar: ['CLI_CODIGO'],
+        agregar: [{ fn: 'maximo', campo: 'EMISSAO', como: 'ULT' }],
+        limite: 20_000,
+      }),
+    ]);
+
+    const porCliente = new Map<number, OrcamentoResumoCliente>();
+    for (const l of longo) {
+      porCliente.set(Number(l.CLI_CODIGO), {
+        cli_codigo: Number(l.CLI_CODIGO),
+        orcamentos_90d: 0,
+        valor_orcado_90d: 0,
+        ult_orcamento: l.ULT ? new Date(l.ULT) : null,
+      });
+    }
+    for (const c of curto) {
+      const cli = Number(c.CLI_CODIGO);
+      const linha = porCliente.get(cli) ?? {
+        cli_codigo: cli,
+        orcamentos_90d: 0,
+        valor_orcado_90d: 0,
+        ult_orcamento: null,
+      };
+      linha.orcamentos_90d = Number(c.ORCS ?? 0);
+      linha.valor_orcado_90d = Number(c.VALOR ?? 0);
+      if (c.ULT) {
+        const d = new Date(c.ULT);
+        if (!linha.ult_orcamento || d > linha.ult_orcamento) linha.ult_orcamento = d;
+      }
+      porCliente.set(cli, linha);
+    }
+    return [...porCliente.values()];
+  }
+
+  /**
+   * Orçamentos do atacado SEM desfecho: emitidos há mais de `carenciaDias` e
+   * sem NENHUMA venda do mesmo cliente dentro da carência.
+   *
+   * O desfecho é inferido, não lido: o vínculo NFS fica vazio em ~99% dos
+   * orçamentos, e a inferência por venda em até 7 dias bateu 65% de conversão
+   * na medição. O corte por CLIENTE (qualquer venda no prazo) e não por item é
+   * deliberado: superestima levemente o fechamento, o que deixa a fila de
+   * motivo MENOR — melhor perder um caso ambíguo que cobrar motivo de venda
+   * fechada.
+   */
+  async orcamentosSemDesfecho(
+    carenciaDias = 7,
+    janelaDias = 60,
+  ): Promise<OrcamentoSemDesfecho[]> {
+    const hoje = new Date();
+    const ymd = (d: Date) => d.toISOString().slice(0, 10);
+    const desde = new Date(hoje);
+    desde.setDate(desde.getDate() - janelaDias);
+    const ateEmissao = new Date(hoje);
+    ateEmissao.setDate(ateEmissao.getDate() - carenciaDias);
+    if (ateEmissao < desde) return [];
+
+    const [orcs, vendas] = await Promise.all([
+      this.erp.consultar<Record<string, any>>('orcamentos', {
+        empresa: EMPRESA,
+        campos: ['ORCAMENTO', 'EMISSAO', 'CLI_CODIGO', 'CLI_NOME', 'REP_CODIGO', 'TOTAL'],
+        filtros: [
+          { campo: 'EMISSAO', op: 'entre', valor: [ymd(desde), ymd(ateEmissao)] },
+          { campo: 'cliente.TABELA_PRECO', op: 'em', valor: TABELAS_ATACADO },
+        ],
+        limite: 20_000,
+      }),
+      // Pares (cliente, dia) com venda no período — o suficiente para casar a
+      // carência de cada orçamento sem trazer nota a nota.
+      this.erp.consultar<{ CLI_CODIGO: number; DT_EMISSAO: string }>('nf-saida', {
+        empresa: EMPRESA,
+        filtros: [
+          { campo: 'DT_EMISSAO', op: 'maior_igual', valor: ymd(desde) },
+          { campo: 'DT_CANCELAMENTO', op: 'nulo' },
+          { campo: 'OPF_CODIGO', op: 'em', valor: OPERACOES_VENDA },
+          { campo: 'cliente.TABELA_PRECO', op: 'em', valor: TABELAS_ATACADO },
+        ],
+        agrupar: ['CLI_CODIGO', 'DT_EMISSAO'],
+        agregar: [{ fn: 'contar', campo: 'NFS', como: 'N' }],
+        // Teto de NF_SAIDA na API é 20k — sobra: são pares DISTINTOS cliente×dia
+        // do atacado (~369 compradores × poucos dias cada na janela).
+        limite: 20_000,
+      }),
+    ]);
+
+    const diasComVenda = new Map<number, string[]>();
+    for (const v of vendas) {
+      const cli = Number(v.CLI_CODIGO);
+      const dia = String(v.DT_EMISSAO).slice(0, 10);
+      (diasComVenda.get(cli) ?? diasComVenda.set(cli, []).get(cli)!).push(dia);
+    }
+
+    const semDesfecho: OrcamentoSemDesfecho[] = [];
+    for (const o of orcs) {
+      const emissao = String(o.EMISSAO).slice(0, 10);
+      const limite = new Date(emissao);
+      limite.setDate(limite.getDate() + carenciaDias);
+      const limiteYmd = ymd(limite);
+      const fechou = (diasComVenda.get(Number(o.CLI_CODIGO)) ?? []).some(
+        (dia) => dia >= emissao && dia <= limiteYmd,
+      );
+      if (fechou) continue;
+      semDesfecho.push({
+        orcamento: Number(o.ORCAMENTO),
+        emissao: new Date(o.EMISSAO),
+        cli_codigo: Number(o.CLI_CODIGO),
+        cli_nome: o.CLI_NOME ?? null,
+        rep_codigo: o.REP_CODIGO != null ? Number(o.REP_CODIGO) : null,
+        total: Number(o.TOTAL ?? 0),
+        dias_desde_emissao: Math.floor((hoje.getTime() - new Date(emissao).getTime()) / 86_400_000),
+      });
+    }
+    return semDesfecho.sort((a, b) => b.total - a.total);
   }
 
   /**

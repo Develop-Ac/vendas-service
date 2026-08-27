@@ -6,7 +6,10 @@ import {
   VendaAposCarteiraRow,
 } from './carteirizacao.sqlserver.repository';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
-import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
+import {
+  CarteirizacaoErpRepository,
+  OrcamentoResumoCliente,
+} from './carteirizacao.erp.repository';
 import {
   AtribuirDto,
   AtribuirLoteDto,
@@ -69,7 +72,25 @@ export interface ClienteCarteira {
   risco_inativacao: boolean; // ativo, mas 45–60 dias sem compra
   revisao: boolean; // saiu do atacado: sem vendedor, aguardando confirmação de exclusão
   revisao_motivo: string | null;
+  // esforço (orçamentos do Celta — CRM do Atacado, fase 1)
+  ult_orcamento: Date | null;
+  dias_sem_orcamento: number | null;
+  orcamentos_90d: number;
+  valor_orcado_90d: number;
+  quadrante: QuadranteCliente | null; // null = dados de orçamento indisponíveis
 }
+
+/**
+ * Quadrante esforço × resultado (janela de 90 dias):
+ *   compra × orçamento. É a leitura central da fase 1 do plano diretor —
+ *   PERDA_SILENCIOSA = ninguém compra E ninguém tenta (49% da base na medição
+ *   de ago/2026).
+ */
+export type QuadranteCliente =
+  | 'TRABALHADA' // comprou e foi orçado
+  | 'COMPRA_SEM_ORCAMENTO' // compra sem proposta registrada (raro: 6 na medição)
+  | 'PROPOSTA_VIVA' // orçado mas não comprou — disputa aberta
+  | 'PERDA_SILENCIOSA'; // nem compra, nem orçamento
 
 // Inativação: cliente em carteira sem compra há mais de 60 dias vira INATIVO.
 const DEFAULT_JANELA_DIAS = 60;
@@ -100,6 +121,7 @@ export class CarteirizacaoService {
   private readonly logger = new Logger(CarteirizacaoService.name);
 
   private baseCache: { at: number; rows: ClienteBaseRow[] } | null = null;
+  private orcCache: { at: number; rows: OrcamentoResumoCliente[] } | null = null;
   private vendedorNomeCache = new Map<number, string>();
 
   constructor(
@@ -139,6 +161,29 @@ export class CarteirizacaoService {
     return rows;
   }
 
+  /**
+   * Orçamentos vêm SEMPRE da erp-firebird-api, independente de
+   * CARTEIRIZACAO_FONTE: o BI não tem essa leitura (Stage_Orcamentos está
+   * parado desde out/2025). Falha aqui NÃO derruba a tela — a lista degrada
+   * para quadrante nulo, porque cadastro e faturamento continuam válidos.
+   */
+  private async getOrcamentos(): Promise<Map<number, OrcamentoResumoCliente> | null> {
+    const now = Date.now();
+    if (this.orcCache && now - this.orcCache.at < BASE_CACHE_TTL_MS) {
+      return new Map(this.orcCache.rows.map((r) => [r.cli_codigo, r]));
+    }
+    try {
+      const rows = await this.erp.resumoOrcamentosAtacado();
+      this.orcCache = { at: now, rows };
+      return new Map(rows.map((r) => [r.cli_codigo, r]));
+    } catch (err) {
+      this.logger.warn(
+        `Orçamentos indisponíveis (${(err as Error).message}); a lista segue sem quadrantes.`,
+      );
+      return null;
+    }
+  }
+
   private num(v: unknown): number {
     const n = Number(v ?? 0);
     return Number.isFinite(n) ? n : 0;
@@ -158,9 +203,10 @@ export class CarteirizacaoService {
 
   /** Monta a lista mesclada (base atacado x overlay) com métricas e classificação. */
   private async montar(janelaDias: number): Promise<ClienteCarteira[]> {
-    const [base, carteira] = await Promise.all([
+    const [base, carteira, orcamentos] = await Promise.all([
       this.getBase(),
       this.overlay.listarCarteira(),
+      this.getOrcamentos(),
     ]);
 
     const carteiraMap = new Map(carteira.map((c) => [c.cli_codigo, c]));
@@ -242,6 +288,19 @@ export class CarteirizacaoService {
       );
       const score_faixa: 'A' | 'B' | 'C' | 'D' = score >= 75 ? 'A' : score >= 50 ? 'B' : score >= 25 ? 'C' : 'D';
 
+      // ---- Quadrante esforço × resultado (90 dias): compra × orçamento ----
+      // compra ~ faturamento_3m > 0 (mesma janela das métricas da tela);
+      // esforço ~ orçamento no trimestre. Sem dados de orçamento, quadrante nulo.
+      const orc = orcamentos?.get(b.cli_codigo) ?? null;
+      const comprou90 = fat3m > 0;
+      const orcou90 = (orc?.orcamentos_90d ?? 0) > 0;
+      const quadrante: QuadranteCliente | null =
+        orcamentos == null
+          ? null
+          : comprou90
+            ? orcou90 ? 'TRABALHADA' : 'COMPRA_SEM_ORCAMENTO'
+            : orcou90 ? 'PROPOSTA_VIVA' : 'PERDA_SILENCIOSA';
+
       return {
         cli_codigo: b.cli_codigo,
         cli_nome: b.cli_nome,
@@ -292,6 +351,11 @@ export class CarteirizacaoService {
         risco_inativacao: riscoInativacao,
         revisao: !!ov && ov.revisao === 1,
         revisao_motivo: ov?.revisao_motivo ?? null,
+        ult_orcamento: orc?.ult_orcamento ?? null,
+        dias_sem_orcamento: this.diasDesde(orc?.ult_orcamento ?? null),
+        orcamentos_90d: orc?.orcamentos_90d ?? 0,
+        valor_orcado_90d: orc?.valor_orcado_90d ?? 0,
+        quadrante,
       };
     });
   }
@@ -322,6 +386,16 @@ export class CarteirizacaoService {
       novos: escopo.filter((c) => c.novo).length,
       risco_inativacao: escopo.filter((c) => c.risco_inativacao).length,
       revisao: escopo.filter((c) => c.revisao).length,
+      // Quadrantes esforço × resultado (CRM do Atacado, fase 1). Nulos quando a
+      // erp-firebird-api está fora — a tela esconde os cards nesse caso.
+      quadrantes: escopo.some((c) => c.quadrante != null)
+        ? {
+            trabalhada: escopo.filter((c) => c.quadrante === 'TRABALHADA').length,
+            compra_sem_orcamento: escopo.filter((c) => c.quadrante === 'COMPRA_SEM_ORCAMENTO').length,
+            proposta_viva: escopo.filter((c) => c.quadrante === 'PROPOSTA_VIVA').length,
+            perda_silenciosa: escopo.filter((c) => c.quadrante === 'PERDA_SILENCIOSA').length,
+          }
+        : null,
     };
 
     // Filtrar Disponível ignora o vendedor (pool compartilhado): parte de `todos`.
@@ -337,6 +411,7 @@ export class CarteirizacaoService {
     if (q.risco) lista = lista.filter((c) => c.risco_inativacao);
     if (q.revisao) lista = lista.filter((c) => c.revisao);
     if (q.curvaAbc) lista = lista.filter((c) => c.curva_abc === q.curvaAbc);
+    if (q.quadrante) lista = lista.filter((c) => c.quadrante === q.quadrante);
     if (q.scoreFaixa) lista = lista.filter((c) => c.score_faixa === q.scoreFaixa);
     if (q.busca) {
       const termo = q.busca.trim().toLowerCase();
@@ -368,6 +443,41 @@ export class CarteirizacaoService {
     const itens = lista.slice(inicio, inicio + pageSize);
 
     return { itens, page, pageSize, total, totalPaginas: Math.ceil(total / pageSize), resumoGeral };
+  }
+
+  // ----------------------------------------------------- orçamentos (fase 1)
+  /**
+   * Fila "orçamentos sem desfecho": emitidos há mais de `carenciaDias` sem
+   * NENHUMA venda do cliente na carência. É a população da pesquisa de motivo
+   * de perda — ~1.200/mês na medição. Sempre via ERP (o BI não tem orçamentos).
+   */
+  async orcamentosSemDesfecho(params: {
+    rep_codigo?: number;
+    carenciaDias?: number;
+    janelaDias?: number;
+  }) {
+    const carencia = Math.max(1, Math.min(30, params.carenciaDias ?? 7));
+    const janela = Math.max(carencia + 1, Math.min(180, params.janelaDias ?? 60));
+    let itens = await this.erp.orcamentosSemDesfecho(carencia, janela);
+    if (params.rep_codigo != null) {
+      itens = itens.filter((o) => o.rep_codigo === Number(params.rep_codigo));
+    }
+
+    const reps = [...new Set(itens.map((o) => o.rep_codigo).filter((r): r is number => r != null))];
+    const nomes = new Map(
+      (await this.fonte.nomesRepresentantes(reps)).map((n) => [n.rep_codigo, n.rep_nome]),
+    );
+
+    return {
+      carencia_dias: carencia,
+      janela_dias: janela,
+      total: itens.length,
+      valor_total: itens.reduce((soma, o) => soma + o.total, 0),
+      itens: itens.map((o) => ({
+        ...o,
+        rep_nome: o.rep_codigo != null ? (nomes.get(o.rep_codigo) ?? null) : null,
+      })),
+    };
   }
 
   // ------------------------------------------------------------- vendedores
