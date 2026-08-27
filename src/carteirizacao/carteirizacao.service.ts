@@ -496,8 +496,9 @@ export class CarteirizacaoService {
       this.getBase(),
     ]);
     const nomes = new Map(nomesLista.map((n) => [n.rep_codigo, n.rep_nome]));
-    // Fone do cadastro atual: habilita o botão "conversar" direto na fila.
-    const foneMap = new Map(base.map((b) => [b.cli_codigo, b.fone]));
+    // Do cadastro atual: fone (habilita o "conversar") e nome do cliente — o
+    // CLI_NOME gravado no orçamento é cópia da época e vem vazio no Celta.
+    const cadastro = new Map(base.map((b) => [b.cli_codigo, b]));
 
     return {
       carencia_dias: carencia,
@@ -508,8 +509,9 @@ export class CarteirizacaoService {
       motivos_30d: motivos30d,
       itens: itens.map((o) => ({
         ...o,
+        cli_nome: cadastro.get(o.cli_codigo)?.cli_nome ?? o.cli_nome ?? `Cliente ${o.cli_codigo}`,
         rep_nome: o.rep_codigo != null ? (nomes.get(o.rep_codigo) ?? null) : null,
-        fone: foneMap.get(o.cli_codigo) ?? null,
+        fone: cadastro.get(o.cli_codigo)?.fone ?? null,
       })),
     };
   }
