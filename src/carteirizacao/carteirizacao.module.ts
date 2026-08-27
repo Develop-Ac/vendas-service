@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ScheduleModule } from '@nestjs/schedule';
+import { WhatsappModule } from '../whatsapp/whatsapp.module';
 import { CarteirizacaoController } from './carteirizacao.controller';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { CarteirizacaoSqlServerRepository } from './carteirizacao.sqlserver.repository';
@@ -10,7 +11,7 @@ import { FilaService } from './fila.service';
 import { MssqlService } from 'src/common/mssql/mssql.service';
 
 @Module({
-  imports: [ScheduleModule.forRoot()],
+  imports: [ScheduleModule.forRoot(), WhatsappModule],
   controllers: [CarteirizacaoController],
   providers: [
     CarteirizacaoService,

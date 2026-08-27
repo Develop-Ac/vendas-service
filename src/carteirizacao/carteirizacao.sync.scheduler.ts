@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 
 /**
  * Carga diária automática da carteirização: reconcilia o overlay com o ERP
@@ -16,6 +17,7 @@ export class CarteirizacaoSyncScheduler {
   constructor(
     private readonly service: CarteirizacaoService,
     private readonly fila: FilaService,
+    private readonly whatsapp: WhatsappService,
   ) {}
 
   @Cron(process.env.CARTEIRIZACAO_SYNC_CRON ?? '0 5 * * *', {
@@ -38,6 +40,18 @@ export class CarteirizacaoSyncScheduler {
         `Falha na carga diária da carteirização: ${(e as Error).message}`,
         (e as Error).stack,
       );
+    }
+
+    // Contatos do sensor WhatsApp na sequência da carga: cliente novo (ou fone
+    // atualizado) no ERP entra em ven_wa_contato e adota o histórico pendente
+    // do número — sem esperar seed manual.
+    try {
+      const s = await this.whatsapp.seedContatos();
+      this.logger.log(
+        `Contatos WhatsApp: ${s.inseridas} chaves novas, ${s.mensagens_religadas} mensagens religadas.`,
+      );
+    } catch (e) {
+      this.logger.error(`Falha na semente de contatos WhatsApp: ${(e as Error).message}`);
     }
 
     // Fila do dia na sequência da carga: a régua trabalha sobre a carteira

@@ -12,6 +12,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
+import { WhatsappService } from '../whatsapp/whatsapp.service';
 import {
   ConfigVendedorDto,
   ConfirmarExclusaoDto,
@@ -31,6 +32,7 @@ export class CarteirizacaoController {
   constructor(
     private readonly service: CarteirizacaoService,
     private readonly fila: FilaService,
+    private readonly whatsapp: WhatsappService,
   ) {}
 
   @Get('clientes')
@@ -70,8 +72,18 @@ export class CarteirizacaoController {
   // e pela carga diária automática. A manutenção manual da carteira foi desabilitada:
   // o ERP é a única origem de atribuição/movimentação.
   @Post('sincronizar')
-  sincronizar(@Body() dto: SincronizarDto) {
-    return this.service.sincronizar(dto ?? {});
+  async sincronizar(@Body() dto: SincronizarDto) {
+    const r = await this.service.sincronizar(dto ?? {});
+    // Cliente novo/alterado na carga também entra no vínculo do sensor WhatsApp
+    // (e adota o histórico pendente do número). Falha aqui não derruba a carga.
+    if (!r.dryRun) {
+      try {
+        await this.whatsapp.seedContatos();
+      } catch {
+        /* sensor fora do ar não impede a carga da carteira */
+      }
+    }
+    return r;
   }
 
   // Única escrita manual restante: confirmar a exclusão de um cliente em revisão

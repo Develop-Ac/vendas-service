@@ -97,7 +97,12 @@ export class WhatsappService {
       }
       return pn;
     } catch (e) {
-      this.logger.warn(`LID não resolvido (${lid}): ${(e as Error).message}`);
+      // "fetch failed" esconde o motivo real (DNS, porta, timeout) em e.cause.
+      const causa = (e as { cause?: { code?: string; hostname?: string; port?: number } }).cause;
+      const detalhe = causa?.code
+        ? `${causa.code}${causa.hostname ? ` (${causa.hostname}${causa.port ? ':' + causa.port : ''})` : ''}`
+        : (e as Error).message;
+      this.logger.warn(`LID não resolvido (${lid}): ${detalhe} [alvo: ${base}]`);
       return null;
     }
   }
@@ -188,10 +193,19 @@ export class WhatsappService {
         origem: 'SEED_ERP',
       })),
     );
+    // Chave nova adotando conversa antiga: cliente cadastrado DEPOIS de já ter
+    // trocado mensagem ganha o histórico retroativo.
+    const religadas = await this.repo.religarPendentes();
     this.logger.log(
-      `Semente de contatos: ${porChave.size} chaves no ERP, ${r.count} inseridas (o resto já existia).`,
+      `Semente de contatos: ${porChave.size} chaves no ERP, ${r.count} inseridas, ` +
+        `${religadas} mensagens pendentes religadas.`,
     );
-    return { clientes: clientes.length, chaves: porChave.size, inseridas: r.count };
+    return {
+      clientes: clientes.length,
+      chaves: porChave.size,
+      inseridas: r.count,
+      mensagens_religadas: religadas,
+    };
   }
 
   // ----------------------------------------------------- vínculo manual

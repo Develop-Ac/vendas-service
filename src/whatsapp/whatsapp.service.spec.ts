@@ -40,6 +40,7 @@ describe('WhatsappService', () => {
       return { count: 1 };
     }),
     semearContatos: jest.fn(async (rows: any[]) => ({ count: rows.length })),
+    religarPendentes: jest.fn(async () => 2),
     vincular: jest.fn(async (p: any) => ({ contato: p, mensagens_resolvidas: 2 })),
     pendentesVinculo: jest.fn(async () => []),
     contarContatos: jest.fn(async () => 0),
@@ -181,9 +182,10 @@ describe('WhatsappService', () => {
     expect(gravadas).toHaveLength(0);
   });
 
-  it('semente: celular vence o fixo e cliente sem telefone fica de fora', async () => {
+  it('semente: celular vence o fixo, cliente sem telefone fica de fora e pendentes são religadas', async () => {
     const r = await service.seedContatos();
-    expect(r).toMatchObject({ clientes: 3, chaves: 3 }); // A: celular + fixo, B: celular
+    // A: celular + fixo, B: celular; e o histórico pendente adota as chaves novas
+    expect(r).toMatchObject({ clientes: 3, chaves: 3, mensagens_religadas: 2 });
     const rows = (repo.semearContatos as jest.Mock).mock.calls[0][0];
     const chaves = rows.map((x: any) => x.chave).sort();
     expect(chaves).toEqual(['6533334444', '6588887777', '6699996666']);

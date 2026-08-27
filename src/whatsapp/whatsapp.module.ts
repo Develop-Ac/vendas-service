@@ -6,6 +6,6 @@ import { WhatsappRepository } from './whatsapp.repository';
 @Module({
   controllers: [WhatsappController],
   providers: [WhatsappService, WhatsappRepository],
-  exports: [WhatsappRepository],
+  exports: [WhatsappRepository, WhatsappService],
 })
 export class WhatsappModule {}

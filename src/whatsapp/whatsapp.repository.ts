@@ -67,6 +67,30 @@ export class WhatsappRepository {
     return this.prisma.ven_wa_contato.count();
   }
 
+  /**
+   * Religa mensagens pendentes cujas chaves passaram a existir — cliente novo
+   * no ERP (ou vínculo criado depois da conversa) ganha o histórico retroativo.
+   */
+  async religarPendentes(): Promise<number> {
+    const pendentes = await this.prisma.ven_wa_mensagem.groupBy({
+      by: ['chave'],
+      where: { cli_codigo: null },
+    });
+    if (!pendentes.length) return 0;
+    const contatos = await this.prisma.ven_wa_contato.findMany({
+      where: { chave: { in: pendentes.map((p) => p.chave) } },
+    });
+    let religadas = 0;
+    for (const c of contatos) {
+      const r = await this.prisma.ven_wa_mensagem.updateMany({
+        where: { chave: c.chave, cli_codigo: null },
+        data: { cli_codigo: c.cli_codigo },
+      });
+      religadas += r.count;
+    }
+    return religadas;
+  }
+
   // ------------------------------------------------------------ mensagens
   /** Grava um evento; reentrega do mesmo id (sessao+message_id) é ignorada. */
   async gravarMensagem(row: MensagemRow): Promise<boolean> {
