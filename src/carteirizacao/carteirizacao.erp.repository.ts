@@ -547,7 +547,11 @@ export class CarteirizacaoErpRepository {
         dias_desde_emissao: Math.floor((hoje.getTime() - new Date(emissao).getTime()) / 86_400_000),
       });
     }
-    return semDesfecho.sort((a, b) => b.total - a.total);
+    // Mais novo primeiro: o vendedor ainda lembra do orçamento recente — é onde
+    // o motivo marcado tem qualidade; o rabo antigo fica para o fim da lista.
+    return semDesfecho.sort(
+      (a, b) => b.emissao.getTime() - a.emissao.getTime() || b.total - a.total,
+    );
   }
 
   /**

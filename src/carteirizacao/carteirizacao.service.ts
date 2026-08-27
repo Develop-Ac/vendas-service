@@ -472,6 +472,16 @@ export class CarteirizacaoService {
       itens = itens.filter((o) => o.rep_codigo === Number(params.rep_codigo));
     }
 
+    // Corte de implantação: com FILA_DESFECHO_INICIO (yyyy-mm-dd) definida, a
+    // pesquisa só cobra orçamentos emitidos a partir dessa data — o time começa
+    // do zero no dia em que a tela for liberada, sem herdar o passivo antigo.
+    const inicioEnv = process.env.FILA_DESFECHO_INICIO;
+    const inicio =
+      inicioEnv && !Number.isNaN(Date.parse(inicioEnv)) ? new Date(inicioEnv) : null;
+    if (inicio) {
+      itens = itens.filter((o) => new Date(o.emissao) >= inicio);
+    }
+
     // Orçamento com motivo já registrado sai da fila — a pesquisa não cobra duas
     // vezes. E o placar de motivos (30d) volta junto: é a resposta acumulando.
     const registrados = await this.overlay.orcamentosComDesfecho();
@@ -492,6 +502,7 @@ export class CarteirizacaoService {
     return {
       carencia_dias: carencia,
       janela_dias: janela,
+      inicio_apontamento: inicio ? inicio.toISOString().slice(0, 10) : null,
       total: itens.length,
       valor_total: itens.reduce((soma, o) => soma + o.total, 0),
       motivos_30d: motivos30d,
