@@ -135,6 +135,19 @@ export class WhatsappRepository {
       .slice(0, limite);
   }
 
+  /** Mensagens na janela, por vendedor e direção — o painel esforço×resultado. */
+  async mensagensPorRepDesde(desde: Date) {
+    try {
+      return await this.prisma.ven_wa_mensagem.groupBy({
+        by: ['rep_codigo', 'direcao'],
+        where: { timestamp: { gte: desde }, rep_codigo: { not: null } },
+        _count: { _all: true },
+      });
+    } catch {
+      return []; // sensor ainda sem tabela/piloto — painel segue sem WhatsApp
+    }
+  }
+
   /** Medições do piloto: volumes, taxa de casamento e atividade por sessão. */
   async medicoes() {
     const [total, casadas, porSessao] = await Promise.all([

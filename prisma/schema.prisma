@@ -1002,3 +1002,32 @@ model ven_wa_mensagem {
   @@index([chave], map: "idx_ven_wa_msg_chave")
   @@index([sessao, timestamp], map: "idx_ven_wa_msg_sessao_ts")
 }
+
+// Esteira de resgate (fase 1): um episódio por entrada em risco de inativação,
+// acompanhado até RECUPERADO/PERDIDO. Estágio avança SOZINHO por sinal
+// observado (mensagem/orçamento/venda) — nenhum card é arrastado à mão. O
+// unique parcial "1 episódio aberto por cliente" mora no SQL manual
+// (uq_ven_resgate_aberto).
+model ven_resgate {
+  id                       String    @id @default(cuid())
+  cli_codigo               Int
+  cli_nome                 String?
+  rep_codigo               Int?
+  rep_nome                 String?
+  curva                    String?
+  faturamento_total        Decimal   @default(0) @db.Decimal(15, 2)
+  dias_sem_compra_abertura Int?
+  aberto_em                DateTime  @default(now()) @db.Timestamptz(6)
+  estagio                  String    @default("A_CONTATAR") // A_CONTATAR | CONTATADO | PROPOSTA | RECUPERADO | PERDIDO
+  contatado_em             DateTime? @db.Timestamptz(6)
+  proposta_em              DateTime? @db.Timestamptz(6)
+  fechado_em               DateTime? @db.Timestamptz(6)
+  sla_em                   DateTime? @db.Timestamptz(6)
+  sla_cumprido             Boolean?
+  created_at               DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at               DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@index([rep_codigo, estagio], map: "idx_ven_resgate_rep_estagio")
+  @@index([fechado_em], map: "idx_ven_resgate_fechado")
+  @@index([cli_codigo], map: "idx_ven_resgate_cli")
+}

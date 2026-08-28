@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
+import { ResgateService } from './resgate.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 
 /**
@@ -17,6 +18,7 @@ export class CarteirizacaoSyncScheduler {
   constructor(
     private readonly service: CarteirizacaoService,
     private readonly fila: FilaService,
+    private readonly resgate: ResgateService,
     private readonly whatsapp: WhatsappService,
   ) {}
 
@@ -65,6 +67,15 @@ export class CarteirizacaoSyncScheduler {
       );
     } catch (e) {
       this.logger.error(`Falha na geração da fila do dia: ${(e as Error).message}`);
+    }
+
+    // Esteira de resgate na sequência: abre episódios de quem entrou em risco
+    // e avança/fecha os existentes pelos sinais do dia.
+    try {
+      const r = await this.resgate.reconciliar();
+      this.logger.log(`Esteira de resgate: ${r.novos} episódios novos, ${r.abertos} em andamento.`);
+    } catch (e) {
+      this.logger.error(`Falha na esteira de resgate: ${(e as Error).message}`);
     }
   }
 }

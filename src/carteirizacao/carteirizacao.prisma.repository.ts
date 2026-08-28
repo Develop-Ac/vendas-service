@@ -266,6 +266,94 @@ export class CarteirizacaoPrismaRepository {
     });
   }
 
+  // ===================================== esteira de resgate (fase 1, S3)
+  /** Episódios em andamento (tudo que não é RECUPERADO/PERDIDO). */
+  async resgatesAbertos() {
+    return this.prisma.ven_resgate.findMany({
+      where: { estagio: { notIn: ['RECUPERADO', 'PERDIDO'] } },
+    });
+  }
+
+  async abrirResgates(
+    rows: Array<{
+      cli_codigo: number;
+      cli_nome: string | null;
+      rep_codigo: number | null;
+      rep_nome: string | null;
+      curva: string | null;
+      faturamento_total: number;
+      dias_sem_compra_abertura: number | null;
+      sla_em: Date | null;
+    }>,
+  ) {
+    if (!rows.length) return { count: 0 };
+    return this.prisma.ven_resgate.createMany({ data: rows });
+  }
+
+  async atualizarResgate(
+    id: string,
+    data: {
+      estagio?: string;
+      contatado_em?: Date;
+      proposta_em?: Date;
+      fechado_em?: Date;
+      sla_cumprido?: boolean;
+      rep_codigo?: number | null;
+      rep_nome?: string | null;
+    },
+  ) {
+    return this.prisma.ven_resgate.update({ where: { id }, data });
+  }
+
+  /** Fechados a partir de um corte — as colunas Recuperado/Perdido da esteira. */
+  async resgatesFechadosDesde(desde: Date, rep_codigo?: number) {
+    return this.prisma.ven_resgate.findMany({
+      where: {
+        estagio: { in: ['RECUPERADO', 'PERDIDO'] },
+        fechado_em: { gte: desde },
+        ...(rep_codigo != null ? { rep_codigo } : {}),
+      },
+      orderBy: { fechado_em: 'desc' },
+    });
+  }
+
+  // ============================== painel esforço × resultado (fase 1, S3)
+  /** Tarefas concluídas na janela, por vendedor e sinal que as fechou. */
+  async tarefasConcluidasPorRepDesde(desde: Date) {
+    return this.prisma.ven_fila_tarefa.groupBy({
+      by: ['rep_codigo', 'conclusao_sinal'],
+      where: { status: 'CONCLUIDA', concluida_em: { gte: desde } },
+      _count: { _all: true },
+    });
+  }
+
+  /** Escaladas em aberto agora, por vendedor — a pauta viva do supervisor. */
+  async escaladasPorRep() {
+    return this.prisma.ven_fila_tarefa.groupBy({
+      by: ['rep_codigo'],
+      where: { status: 'ESCALADA' },
+      _count: { _all: true },
+    });
+  }
+
+  /** SLA do resgate: episódios com prazo avaliado, abertos na janela. */
+  async slaResgatePorRepDesde(desde: Date) {
+    return this.prisma.ven_resgate.groupBy({
+      by: ['rep_codigo', 'sla_cumprido'],
+      where: { sla_em: { not: null }, sla_cumprido: { not: null }, aberto_em: { gte: desde } },
+      _count: { _all: true },
+    });
+  }
+
+  /** Desfechos por vendedor na janela (esforço da pesquisa de perda). */
+  async desfechosPorRepDesde(desde: Date) {
+    return this.prisma.ven_orcamento_desfecho.groupBy({
+      by: ['rep_codigo'],
+      where: { created_at: { gte: desde } },
+      _count: { _all: true },
+    });
+  }
+
   // ================================== sensor WhatsApp (terceiro sinal da fila)
   /**
    * Última mensagem ENVIADA por cliente — o sensor WAHA alimentando a fila:

@@ -483,6 +483,36 @@ export class CarteirizacaoErpRepository {
    * motivo MENOR — melhor perder um caso ambíguo que cobrar motivo de venda
    * fechada.
    */
+  /**
+   * Orçamentos emitidos na janela, por vendedor — o "esforço bruto" do painel
+   * esforço × resultado do supervisor (fase 1, S3).
+   */
+  async orcamentosPorRep(
+    desdeYmd: string,
+  ): Promise<Array<{ rep_codigo: number | null; qtd: number; valor: number }>> {
+    const rows = await this.erp.consultar<{ REP_CODIGO: number; QTD: number; VALOR: number }>(
+      'orcamentos',
+      {
+        empresa: EMPRESA,
+        filtros: [
+          { campo: 'EMISSAO', op: 'maior_igual', valor: desdeYmd },
+          { campo: 'cliente.TABELA_PRECO', op: 'em', valor: TABELAS_ATACADO },
+        ],
+        agrupar: ['REP_CODIGO'],
+        agregar: [
+          { fn: 'contar', campo: 'ORCAMENTO', como: 'QTD' },
+          { fn: 'somar', campo: 'TOTAL', como: 'VALOR' },
+        ],
+        limite: 1000,
+      },
+    );
+    return rows.map((r) => ({
+      rep_codigo: r.REP_CODIGO != null ? Number(r.REP_CODIGO) : null,
+      qtd: Number(r.QTD ?? 0),
+      valor: Number(r.VALOR ?? 0),
+    }));
+  }
+
   async orcamentosSemDesfecho(
     carenciaDias = 7,
     janelaDias = 60,

@@ -12,6 +12,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
+import { ResgateService } from './resgate.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import {
   ConfigVendedorDto,
@@ -32,6 +33,7 @@ export class CarteirizacaoController {
   constructor(
     private readonly service: CarteirizacaoService,
     private readonly fila: FilaService,
+    private readonly resgate: ResgateService,
     private readonly whatsapp: WhatsappService,
   ) {}
 
@@ -110,6 +112,23 @@ export class CarteirizacaoController {
   @Post('fila/gerar')
   gerarFila() {
     return this.fila.gerar();
+  }
+
+  // ---------------------------------------- Esteira de resgate (fase 1, S3)
+  // Colunas: a contatar -> contatado -> proposta -> recuperado | perdido. O
+  // card avança SOZINHO por sinal observado (mensagem/orçamento/venda) — a
+  // leitura já reconcilia, ninguém arrasta nada.
+  @Get('resgate')
+  esteiraResgate(@Query('rep') rep?: string, @Query('janelaDias') janelaDias?: string) {
+    return this.resgate.listar({ rep_codigo: toNum(rep), janelaDias: toNum(janelaDias) });
+  }
+
+  // Painel esforço × resultado do supervisor: por vendedor, na janela —
+  // orçamentos, mensagens, conclusões por sinal, escaladas, resgates, SLA e
+  // motivos de perda. É a pauta da reunião semanal de 30 min.
+  @Get('painel-esforco')
+  painelEsforco(@Query('dias') dias?: string) {
+    return this.resgate.painelEsforco(toNum(dias) ?? 7);
   }
 
   // A única digitação nova do vendedor: motivo do orçamento que não fechou
