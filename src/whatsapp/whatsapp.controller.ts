@@ -55,4 +55,13 @@ export class WhatsappController {
   medicoes() {
     return this.service.medicoes();
   }
+
+  // A conversa em pauta da sessão do vendedor — o cabeçalho da estação segue
+  // o WhatsApp por aqui (polling leve; nulo sem sensor/mensagens).
+  @Get('conversa-ativa')
+  conversaAtiva(@Query('rep') rep?: string) {
+    const n = Number(rep);
+    if (!Number.isInteger(n)) return null;
+    return this.service.conversaAtiva(n);
+  }
 }

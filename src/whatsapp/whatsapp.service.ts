@@ -234,6 +234,16 @@ export class WhatsappService {
     });
   }
 
+  // ------------------------------------------- conversa ativa (estação)
+  /**
+   * A conversa "em pauta" da sessão do vendedor — a estação consulta em
+   * polling leve e faz o cabeçalho seguir o WhatsApp (caminho A: pelo sensor;
+   * atualiza quando há mensagem, não no mero clique de leitura).
+   */
+  conversaAtiva(rep_codigo: number) {
+    return this.repo.ultimaConversaDaSessao(`rep-${rep_codigo}`);
+  }
+
   // ------------------------------------------------- medições do piloto
   /** Taxa de casamento e atividade por sessão — os números que o piloto valida. */
   async medicoes() {

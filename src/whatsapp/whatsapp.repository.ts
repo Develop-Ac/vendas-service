@@ -135,6 +135,35 @@ export class WhatsappRepository {
       .slice(0, limite);
   }
 
+  /**
+   * A última mensagem (qualquer direção) de uma sessão — é o que faz o
+   * cabeçalho da estação SEGUIR a conversa: quem escreveu ou recebeu por
+   * último é o cliente em pauta. Traz o nome do vínculo quando existe.
+   */
+  async ultimaConversaDaSessao(sessao: string) {
+    try {
+      const m = await this.prisma.ven_wa_mensagem.findFirst({
+        where: { sessao },
+        orderBy: { timestamp: 'desc' },
+      });
+      if (!m) return null;
+      const contato =
+        m.cli_codigo != null
+          ? await this.prisma.ven_wa_contato.findFirst({ where: { cli_codigo: m.cli_codigo } })
+          : null;
+      return {
+        chat_telefone: m.chat_telefone,
+        chave: m.chave,
+        cli_codigo: m.cli_codigo,
+        cli_nome: contato?.cli_nome ?? null,
+        direcao: m.direcao,
+        timestamp: m.timestamp,
+      };
+    } catch {
+      return null; // tabela do piloto ainda ausente — a estação segue sem o sensor
+    }
+  }
+
   /** Mensagens na janela, por vendedor e direção — o painel esforço×resultado. */
   async mensagensPorRepDesde(desde: Date) {
     try {
