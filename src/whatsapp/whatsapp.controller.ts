@@ -64,4 +64,11 @@ export class WhatsappController {
     if (!Number.isInteger(n)) return null;
     return this.service.conversaAtiva(n);
   }
+
+  // Número (ou dígitos de LID) -> cliente vinculado — o caminho de volta da
+  // estação quando o vendedor clica numa conversa dentro do WhatsApp.
+  @Get('resolver-contato')
+  resolverContato(@Query('numero') numero?: string) {
+    return this.service.resolverContato(numero ?? '');
+  }
 }

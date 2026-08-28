@@ -67,6 +67,14 @@ export class WhatsappRepository {
     return this.prisma.ven_wa_contato.count();
   }
 
+  async contatoPorChave(chave: string) {
+    try {
+      return await this.prisma.ven_wa_contato.findUnique({ where: { chave } });
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Religa mensagens pendentes cujas chaves passaram a existir — cliente novo
    * no ERP (ou vínculo criado depois da conversa) ganha o histórico retroativo.

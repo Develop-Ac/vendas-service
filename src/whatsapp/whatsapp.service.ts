@@ -236,6 +236,19 @@ export class WhatsappService {
 
   // ------------------------------------------- conversa ativa (estação)
   /**
+   * Resolve um número (ou os dígitos de um LID) para o cliente vinculado — é o
+   * caminho de volta da estação: o vendedor clica numa conversa no WhatsApp e
+   * o cabeçalho descobre de quem é. LIDs vinculados manualmente vivem na mesma
+   * tabela com a chave crua, então a busca cobre os dois formatos.
+   */
+  async resolverContato(numero: string) {
+    const digitos = String(numero ?? '').replace(/\D/g, '');
+    if (!digitos) return null;
+    const chave = chaveTelefone(digitos) ?? digitos;
+    const c = await this.repo.contatoPorChave(chave);
+    return c ? { cli_codigo: c.cli_codigo, cli_nome: c.cli_nome, telefone: c.telefone } : null;
+  }
+  /**
    * A conversa "em pauta" da sessão do vendedor — a estação consulta em
    * polling leve e faz o cabeçalho seguir o WhatsApp (caminho A: pelo sensor;
    * atualiza quando há mensagem, não no mero clique de leitura).
