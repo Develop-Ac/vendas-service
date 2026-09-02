@@ -25,6 +25,7 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 | Bolsa de desconto do vendedor | BI | `vw_analise_vendas` no mês comissional (26→25), canal ATACADO: bruto, desconto, MIX1 |
 | Crédito do cliente | BI + ERP | limite (ERP) − títulos em aberto (`Stage_ContasReceber_Titulos`), bloqueio de crediário |
 | Último preço pago pelo cliente | BI | última nota do cliente com o item |
+| Promoção | ERP `PROMOCOES` + `PROMOCOES_ITENS` | vigente (ATIVA, período) **e com preço na tabela do cliente** (`PROM_VALOR2`/`PROM_VALOR5`; zero = não vale). O preço passa a ser o promocional, sem desconto por cima. `PROM_VALOR` (balcão) nunca vale para cliente 2/5 |
 
 ## Regra do preço mínimo (a que o vendedor decide sozinho)
 
@@ -54,6 +55,11 @@ saldo p/ teto  = 6% × bruto − desconto     (> 6%  → −0,15 p.p.)
 A tela projeta o "% depois" com o orçamento em edição e mostra o semáforo
 (verde ≤3%, amarelo ≤6%, vermelho >6%). Também mostra a participação MIX1 e o degrau
 da escada (22/26/30% → ×1,25/×1,5/×2,0) — e quanto falta para o próximo.
+
+## Validade
+
+Sempre **hoje + 7 dias** (`ORCAMENTO_VALIDADE_DIAS`). Com item em promoção, encolhe para a
+`DATA_FINAL` da promoção mais próxima de vencer entre os itens. A tela não escolhe validade.
 
 ## Ciclo do orçamento
 

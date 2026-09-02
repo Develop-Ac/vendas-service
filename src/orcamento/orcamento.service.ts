@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { OrcamentoErpRepository, ProdutoErp, ClienteErp } from './orcamento.erp.repository';
+import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional } from './orcamento.bi.repository';
 import { OrcamentoPrismaRepository, GiroItem } from './orcamento.prisma.repository';
 import {
@@ -53,6 +53,8 @@ export interface ProdutoOrcamento {
   giro: Omit<GiroItem, 'pro_codigo'> | null;
   ultimo_preco_cliente: { dt_emissao: string; unitario: number; quantidade: number } | null;
   tem_equivalente: boolean;
+  /** Promoção vigente na tabela do cliente: o preço é o promocional e não há desconto por cima. */
+  promocao: { codigo: number; descricao: string; data_final: string; somente_avista: boolean } | null;
 }
 
 export interface ClienteOrcamento {
@@ -225,7 +227,7 @@ export class OrcamentoService {
   private async enriquecer(produtos: ProdutoErp[], tabelaPreco: string | null, cli?: number): Promise<ProdutoOrcamento[]> {
     if (!produtos.length) return [];
     const codigos = produtos.map((p) => p.PRO_CODIGO);
-    const [regua, volume, excecoes, giro, ultimos, comGrupo] = await Promise.all([
+    const [regua, volume, excecoes, giro, ultimos, comGrupo, promos] = await Promise.all([
       this.db.regua(),
       this.db.volume(),
       this.db.excecoes(codigos),
@@ -237,9 +239,15 @@ export class OrcamentoService {
         ? this.bi.ultimosPrecosCliente(cli, codigos).catch(() => [])
         : Promise.resolve([] as Awaited<ReturnType<OrcamentoBiRepository['ultimosPrecosCliente']>>),
       this.db.temGrupo(codigos),
+      this.erp.promocoesVigentes(codigos, tabelaPreco).catch((e) => {
+        this.logger.warn(`Promoções indisponíveis: ${(e as Error).message}`);
+        return new Map<number, PromocaoItem>();
+      }),
     ]);
     const ultimoPor = new Map(ultimos.map((u) => [u.pro_codigo, u]));
-    return produtos.map((p) => this.montarProduto(p, tabelaPreco, regua, volume, excecoes.get(p.PRO_CODIGO) ?? null, giro.get(p.PRO_CODIGO) ?? null, ultimoPor.get(p.PRO_CODIGO) ?? null, comGrupo.has(p.PRO_CODIGO)));
+    return produtos.map((p) =>
+      this.montarProduto(p, tabelaPreco, regua, volume, excecoes.get(p.PRO_CODIGO) ?? null, giro.get(p.PRO_CODIGO) ?? null, ultimoPor.get(p.PRO_CODIGO) ?? null, comGrupo.has(p.PRO_CODIGO), promos.get(p.PRO_CODIGO) ?? null),
+    );
   }
 
   private montarProduto(
@@ -251,10 +259,14 @@ export class OrcamentoService {
     giro: GiroItem | null,
     ultimo: { dt_emissao: string; unitario: number; quantidade: number } | null,
     temEquivalente: boolean,
+    promo: PromocaoItem | null,
   ): ProdutoOrcamento {
-    const preco = precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
+    const tabela = precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
+    // Item em promoção vigente na tabela do cliente: o preço É o promocional e
+    // não há desconto por cima dele — o mínimo é o próprio preço.
+    const preco = promo ? { coluna: 'PROMOCAO', preco: promo.valor, fallback: false } : tabela;
     const custo = p.PRECO_CUSTO > 0 ? p.PRECO_CUSTO : null;
-    const avaliacao = avaliarItem({
+    let avaliacao = avaliarItem({
       custo,
       preco_tabela: preco.preco,
       subgrp_codigo: p.SUBGRP_CODIGO,
@@ -263,6 +275,18 @@ export class OrcamentoService {
       regua,
       volume,
     });
+    if (promo) {
+      const fim = promo.data_final.split('-').reverse().join('/');
+      avaliacao = {
+        ...avaliacao,
+        desc_max_pct: 0,
+        desc_max_efetivo_pct: 0,
+        preco_minimo: promo.valor,
+        fracao_volume: 0,
+        escala_volume: avaliacao.escala_volume.map((d) => ({ ...d, desc_max_pct: 0, desc_max_efetivo_pct: 0, preco_minimo: promo.valor })),
+        motivo: `Promoção "${promo.descricao}" até ${fim}: preço fechado, sem desconto.`,
+      };
+    }
     return {
       pro_codigo: p.PRO_CODIGO,
       descricao: p.PRO_DESCRICAO,
@@ -284,6 +308,7 @@ export class OrcamentoService {
       giro: giro ? { curva_abc: giro.curva_abc, categoria_saldo_atual: giro.categoria_saldo_atual, tempo_medio_saldo_atual: giro.tempo_medio_saldo_atual, tendencia_label: giro.tendencia_label, group_id: giro.group_id } : null,
       ultimo_preco_cliente: ultimo ? { dt_emissao: ultimo.dt_emissao, unitario: ultimo.unitario, quantidade: ultimo.quantidade } : null,
       tem_equivalente: temEquivalente,
+      promocao: promo ? { codigo: promo.prom_codigo, descricao: promo.descricao, data_final: promo.data_final, somente_avista: promo.somente_avista } : null,
     };
   }
 
@@ -430,6 +455,8 @@ export class OrcamentoService {
         estoque_disponivel: p.estoque_disponivel,
         substituto_de: i.substituto_de ?? null,
         observacao: i.observacao ?? null,
+        promocao_codigo: p.promocao?.codigo ?? null,
+        promocao_fim: p.promocao ? new Date(`${p.promocao.data_final}T00:00:00`) : null,
       });
     });
     if (erros.length) throw new BadRequestException(erros);
@@ -446,11 +473,21 @@ export class OrcamentoService {
     };
   }
 
-  private validadePadrao(v?: string) {
-    if (v) return new Date(`${v}T00:00:00`);
-    const d = new Date();
+  /**
+   * Validade da proposta: SEMPRE hoje + ORCAMENTO_VALIDADE_DIAS (7). Com item em
+   * promoção, encolhe para a DATA_FINAL da promoção mais próxima de vencer
+   * entre os itens do orçamento — o preço prometido não existe depois dela.
+   * Nada vem da tela.
+   */
+  private validade(linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[]) {
+    const d = new Date(`${hojeYmd()}T00:00:00`);
     d.setDate(d.getDate() + this.parametros().validade_dias);
-    return d;
+    let v = d;
+    for (const l of linhas) {
+      const fim = l.promocao_fim instanceof Date ? l.promocao_fim : l.promocao_fim ? new Date(l.promocao_fim as string) : null;
+      if (fim && fim.getTime() >= new Date(`${hojeYmd()}T00:00:00`).getTime() && fim.getTime() < v.getTime()) v = fim;
+    }
+    return v;
   }
 
   private async bolsaSnapshot(rep: number, subtotal: number, desconto: number) {
@@ -476,7 +513,7 @@ export class OrcamentoService {
         rep_codigo: dto.rep_codigo,
         rep_nome: dto.rep_nome ?? null,
         status: 'RASCUNHO',
-        validade: this.validadePadrao(dto.validade),
+        validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
         subtotal: m.subtotal,
         desconto_total: m.desconto_total,
@@ -511,7 +548,7 @@ export class OrcamentoService {
         rep_codigo: dto.rep_codigo,
         rep_nome: dto.rep_nome ?? atual.rep_nome,
         status: 'RASCUNHO',
-        validade: this.validadePadrao(dto.validade ?? atual.validade ?? undefined),
+        validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
         subtotal: m.subtotal,
         desconto_total: m.desconto_total,

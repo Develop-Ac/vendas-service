@@ -231,6 +231,8 @@ export class OrcamentoPrismaRepository {
       estoque_disponivel: nn(i.estoque_disponivel),
       substituto_de: i.substituto_de,
       observacao: i.observacao,
+      promocao_codigo: i.promocao_codigo ?? null,
+      promocao_fim: i.promocao_fim ? new Date(i.promocao_fim).toISOString().slice(0, 10) : null,
     };
   }
 

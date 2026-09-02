@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ErpApiService, FiltroErp } from '../common/erp-api/erp-api.service';
+import { colunaTabela } from './regua';
 
 /* =============================================================================
    ORÇAMENTO — leitura AO VIVO no ERP (Celta) via erp-firebird-api.
@@ -70,6 +71,28 @@ const CAMPOS_CLIENTE = [
 ];
 
 const num = (v: unknown) => (v == null || v === '' ? 0 : Number(v));
+
+/** `YYYY-MM-DD` de um valor de data vindo da API (string ISO ou Date), sem deslocar o dia. */
+export function ymdDe(v: unknown): string | null {
+  if (v == null || v === '') return null;
+  const s = String(v);
+  if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export const hojeYmd = () => ymdDe(new Date()) as string;
+
+export interface PromocaoItem {
+  pro_codigo: number;
+  prom_codigo: number;
+  descricao: string;
+  data_final: string;
+  somente_avista: boolean;
+  durar_estoque: boolean;
+  valor: number;
+}
 
 /**
  * A erp-firebird-api considera a resposta TRUNCADA quando o número de linhas
@@ -158,6 +181,71 @@ export class OrcamentoErpRepository {
         semCache: true, // saldo é a pergunta — nunca servir de cache
       });
       saida.push(...r.map((x) => this.normalizarProduto(x)));
+    }
+    return saida;
+  }
+
+  /**
+   * Promoções VIGENTES (ATIVA = 'S' e hoje dentro do período) que valem para a
+   * TABELA DO CLIENTE: o preço promocional é por tabela (PROM_VALOR2 para a 2,
+   * PROM_VALOR5 para a 5…) e coluna zerada significa "não vale para esta
+   * tabela". Quase toda promoção do Celta é do balcão (PROM_VALOR); a do
+   * atacado é exceção — por isso PROM_VALOR nunca é usado para cliente 2/5.
+   * Produto em mais de uma promoção: fica a de menor preço.
+   */
+  async promocoesVigentes(codigos: number[], tabelaPreco: string | null): Promise<Map<number, PromocaoItem>> {
+    const saida = new Map<number, PromocaoItem>();
+    const unicos = [...new Set(codigos.filter((c) => Number.isFinite(c)))];
+    if (!unicos.length) return saida;
+    const col = colunaTabela(tabelaPreco);
+    const colPromo = col === 'PRECO_VENDA' ? 'PROM_VALOR' : col.replace('PRECO', 'PROM_VALOR');
+    const hoje = hojeYmd();
+
+    const promos = await this.erp.consultar<Record<string, any>>('promocoes', {
+      empresa: EMPRESA,
+      campos: ['PROM_CODIGO', 'PROM_DESCRICAO', 'DATA_FINAL', 'SOMENTE_AVISTA', 'DURAR_ESTOQUE'],
+      filtros: [
+        { campo: 'ATIVA', op: 'igual', valor: 'S' },
+        { campo: 'DATA_INICIAL', op: 'menor_igual', valor: hoje },
+        { campo: 'DATA_FINAL', op: 'maior_igual', valor: hoje },
+      ],
+      limite: 500 + FOLGA,
+    });
+    if (!promos.length) return saida;
+    const cab = new Map(promos.map((p) => [Number(p.PROM_CODIGO), p]));
+
+    const itens: Record<string, any>[] = [];
+    for (let i = 0; i < unicos.length; i += 500) {
+      const lote = unicos.slice(i, i + 500);
+      const r = await this.erp.consultar<Record<string, any>>('promocoes-itens', {
+        empresa: EMPRESA,
+        campos: ['PRO_CODIGO', 'PROM_CODIGO', colPromo],
+        filtros: [
+          { campo: 'PROM_CODIGO', op: 'em', valor: [...cab.keys()] },
+          { campo: 'PRO_CODIGO', op: 'em', valor: lote },
+        ],
+        limite: 5000 + FOLGA,
+        semCache: true,
+      });
+      itens.push(...r);
+    }
+    for (const it of itens) {
+      const valor = num(it[colPromo]);
+      if (!(valor > 0)) continue;
+      const p = cab.get(Number(it.PROM_CODIGO));
+      if (!p) continue;
+      const pro = Number(it.PRO_CODIGO);
+      const atual = saida.get(pro);
+      if (atual && atual.valor <= valor) continue;
+      saida.set(pro, {
+        pro_codigo: pro,
+        prom_codigo: Number(it.PROM_CODIGO),
+        descricao: String(p.PROM_DESCRICAO ?? '').trim(),
+        data_final: ymdDe(p.DATA_FINAL) ?? hoje,
+        somente_avista: String(p.SOMENTE_AVISTA ?? '').trim() === 'S',
+        durar_estoque: String(p.DURAR_ESTOQUE ?? '').trim() === 'S',
+        valor: Math.round(valor * 100) / 100,
+      });
     }
     return saida;
   }

@@ -128,6 +128,9 @@ CREATE TABLE IF NOT EXISTS ven_orcamento_item (
   substituto_de      INTEGER,                       -- pro_codigo sem saldo que este item substitui
   observacao         TEXT
 );
+-- Item em promoção vigente na tabela do cliente (preço fechado; define a validade).
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS promocao_codigo INTEGER;
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS promocao_fim    DATE;
 CREATE INDEX IF NOT EXISTS idx_ven_orcamento_item_orc ON ven_orcamento_item (orcamento_id);
 CREATE INDEX IF NOT EXISTS idx_ven_orcamento_item_pro ON ven_orcamento_item (pro_codigo);
 

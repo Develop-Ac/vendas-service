@@ -66,7 +66,7 @@ export class SalvarOrcamentoDto {
   @MaxLength(2000)
   observacao?: string;
 
-  @ApiProperty({ description: 'YYYY-MM-DD. Ausente = hoje + ORCAMENTO_VALIDADE_DIAS.', required: false })
+  @ApiProperty({ description: 'IGNORADO: a validade é sempre hoje + ORCAMENTO_VALIDADE_DIAS, encolhida para a promoção mais próxima de vencer.', required: false })
   @IsOptional()
   @IsString()
   validade?: string;

@@ -1128,6 +1128,8 @@ model ven_orcamento_item {
   estoque_disponivel Decimal?      @db.Decimal(15, 3)
   substituto_de      Int?
   observacao         String?
+  promocao_codigo    Int?
+  promocao_fim       DateTime?     @db.Date
   orcamento          ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade)
 
   @@index([orcamento_id], map: "idx_ven_orcamento_item_orc")
