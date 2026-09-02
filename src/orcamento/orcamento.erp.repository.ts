@@ -28,6 +28,16 @@ export interface ProdutoErp {
   MAR_CODIGO: number | null;
   ESTOQUE_DISPONIVEL: number;
   ESTOQUE_RESERVADO: number;
+  ESTOQUE_FORA_ESTABELECIMENTO: number;
+  ESTOQUE_EM_TERCEIROS: number;
+  REF_FABRICANTE: string | null;
+  REF_FORNECEDOR: string | null;
+  NCM: string | null;
+  LOCALIZACAO: string | null;
+  COMERCIALIZAVEL: string | null;
+  MARCA: string | null;
+  SUBGRUPO: string | null;
+  GRUPO: string | null;
   PRECO_VENDA: number;
   PRECO1: number; PRECO2: number; PRECO3: number; PRECO4: number; PRECO5: number;
   PRECO6: number; PRECO7: number; PRECO8: number; PRECO9: number; PRECO10: number;
@@ -38,13 +48,30 @@ export interface ProdutoErp {
   DT_ULTIMA_COMPRA: string | null;
 }
 
-const CAMPOS_PRODUTO = [
-  'PRO_CODIGO', 'PRO_DESCRICAO', 'REFERENCIA', 'UNIDADE', 'APLICACOES',
-  'SUBGRP_CODIGO', 'MAR_CODIGO', 'ESTOQUE_DISPONIVEL', 'ESTOQUE_RESERVADO',
+/** Marca, subgrupo e grupo chegam por JOIN (catálogo: `marca`, `subgrupo`, `grupo` via subgrupo). */
+const CAMPOS_PRODUTO: Array<string | { campo: string; como: string }> = [
+  'PRO_CODIGO', 'PRO_DESCRICAO', 'REFERENCIA', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'UNIDADE', 'APLICACOES',
+  'SUBGRP_CODIGO', 'MAR_CODIGO', 'NCM', 'LOCALIZACAO', 'COMERCIALIZAVEL',
+  'ESTOQUE_DISPONIVEL', 'ESTOQUE_RESERVADO', 'ESTOQUE_FORA_ESTABELECIMENTO', 'ESTOQUE_EM_TERCEIROS',
   'PRECO_VENDA', 'PRECO1', 'PRECO2', 'PRECO3', 'PRECO4', 'PRECO5',
   'PRECO6', 'PRECO7', 'PRECO8', 'PRECO9', 'PRECO10',
   'PRECO_CUSTO', 'CUSTO_NOTA', 'DESCTO_MAXIMO', 'INATIVO', 'DT_ULTIMA_COMPRA',
+  { campo: 'marca.MAR_DESCRICAO', como: 'MARCA' },
+  { campo: 'subgrupo.SUBGRP_DESCRICAO', como: 'SUBGRUPO' },
+  { campo: 'grupo.GRP_DESCRICAO', como: 'GRUPO' },
 ];
+const INCLUIR_PRODUTO = ['marca', 'subgrupo', 'grupo'];
+
+export type ModoBusca = 'comeca' | 'contem';
+export type CampoBusca = 'descricao' | 'codigo' | 'referencia';
+export interface OpcoesBusca {
+  modo?: ModoBusca;
+  campo?: CampoBusca;
+  comEstoque?: boolean;
+  inativos?: boolean;
+  comercializavel?: boolean;
+  limite?: number;
+}
 
 export interface ClienteErp {
   CLI_CODIGO: number;
@@ -108,7 +135,7 @@ export class OrcamentoErpRepository {
 
   private normalizarProduto(r: Record<string, any>): ProdutoErp {
     const p: any = { ...r };
-    for (const k of ['ESTOQUE_DISPONIVEL', 'ESTOQUE_RESERVADO', 'PRECO_VENDA', 'PRECO_CUSTO',
+    for (const k of ['ESTOQUE_DISPONIVEL', 'ESTOQUE_RESERVADO', 'ESTOQUE_FORA_ESTABELECIMENTO', 'ESTOQUE_EM_TERCEIROS', 'PRECO_VENDA', 'PRECO_CUSTO',
       'PRECO1', 'PRECO2', 'PRECO3', 'PRECO4', 'PRECO5', 'PRECO6', 'PRECO7', 'PRECO8', 'PRECO9', 'PRECO10']) {
       p[k] = num(r[k]);
     }
@@ -117,22 +144,35 @@ export class OrcamentoErpRepository {
     p.CUSTO_NOTA = r.CUSTO_NOTA == null ? null : Number(r.CUSTO_NOTA);
     p.DESCTO_MAXIMO = r.DESCTO_MAXIMO == null ? null : Number(r.DESCTO_MAXIMO);
     p.INATIVO = (r.INATIVO ?? '').toString().trim() || null;
+    p.COMERCIALIZAVEL = (r.COMERCIALIZAVEL ?? '').toString().trim() || null;
     p.PRO_DESCRICAO = (r.PRO_DESCRICAO ?? '').toString().trim();
+    for (const k of ['MARCA', 'SUBGRUPO', 'GRUPO', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'NCM', 'LOCALIZACAO', 'REFERENCIA', 'UNIDADE']) {
+      p[k] = (r[k] ?? '').toString().trim() || null;
+    }
     return p as ProdutoErp;
   }
 
   /**
-   * Busca de produto para a tela: código exato quando o termo é numérico;
-   * senão TODAS as palavras do termo na descrição (o montador só combina
-   * filtros com AND — cada palavra vira um `contem`). Sem resultado na
-   * descrição, tenta a referência.
+   * Busca de produto no padrão da pesquisa do Celta (EST012): "Localizar por"
+   * descrição/código ou referência, "Que começa com" ou "Contém", com os
+   * filtros da tela (só com estoque, listar inativos, só comercializável).
+   * O `%` no termo é curinga, como lá: "P/BRISA%AMAROK". Termo numérico em
+   * descrição/código é o código exato. Sem `%` no modo "contém", cada palavra
+   * vira um "contém" (E) — acha "amarok brisa" em qualquer ordem.
    */
-  async buscarProdutos(termo: string, limite = 30): Promise<ProdutoErp[]> {
+  async buscarProdutos(termo: string, o: OpcoesBusca = {}): Promise<ProdutoErp[]> {
     const t = termo.trim();
     if (!t) return [];
-    const base = { empresa: EMPRESA, campos: CAMPOS_PRODUTO, limite: limite + FOLGA };
+    const limite = o.limite ?? 60;
+    const modo: ModoBusca = o.modo ?? 'comeca';
+    const campo: CampoBusca = o.campo ?? 'descricao';
+    const base = { empresa: EMPRESA, campos: CAMPOS_PRODUTO, incluir: INCLUIR_PRODUTO, limite: limite + FOLGA };
+    const comuns: FiltroErp[] = [];
+    if (!o.inativos) comuns.push({ campo: 'INATIVO', op: 'diferente', valor: 'S' });
+    if (o.comEstoque) comuns.push({ campo: 'ESTOQUE_DISPONIVEL', op: 'maior', valor: 0 });
+    if (o.comercializavel) comuns.push({ campo: 'COMERCIALIZAVEL', op: 'igual', valor: 'S' });
 
-    if (/^\d+$/.test(t)) {
+    if (campo !== 'referencia' && /^\d+$/.test(t)) {
       const r = await this.erp.consultar<Record<string, any>>('produtos', {
         ...base,
         filtros: [{ campo: 'PRO_CODIGO', op: 'igual', valor: Number(t) }],
@@ -141,29 +181,22 @@ export class OrcamentoErpRepository {
       return r.slice(0, 1).map((x) => this.normalizarProduto(x));
     }
 
-    // Com "%" no termo, a busca é a do balcão no Celta: "P/BRISA%AMAROK" = começa
-    // com P/BRISA e depois tem AMAROK; "%AMAROK" = contém AMAROK. O curinga
-    // final é implícito, como lá. Sem "%", cada palavra vira um "contém" (E).
-    const filtroDescricao: FiltroErp[] = t.includes('%')
-      ? [{ campo: 'PRO_DESCRICAO', op: 'parecido', valor: t.toUpperCase().endsWith('%') ? t.toUpperCase() : `${t.toUpperCase()}%` }]
-      : t.toUpperCase().split(/\s+/).filter((p) => p.length >= 3).slice(0, 6)
-          .map<FiltroErp>((p) => ({ campo: 'PRO_DESCRICAO', op: 'contem', valor: p }));
-    if (!filtroDescricao.length) return [];
-    const porDescricao = await this.erp.consultar<Record<string, any>>('produtos', {
+    const coluna = campo === 'referencia' ? 'REFERENCIA' : 'PRO_DESCRICAO';
+    const T = t.toUpperCase();
+    let filtros: FiltroErp[];
+    if (T.includes('%') || modo === 'comeca' || campo === 'referencia') {
+      const padrao = modo === 'comeca' ? (T.endsWith('%') ? T : `${T}%`) : `%${T.replace(/^%+|%+$/g, '')}%`;
+      filtros = [{ campo: coluna, op: 'parecido', valor: padrao }];
+    } else {
+      filtros = T.split(/\s+/).filter((p) => p.length >= 3).slice(0, 6).map<FiltroErp>((p) => ({ campo: coluna, op: 'contem', valor: p }));
+      if (!filtros.length) return [];
+    }
+    const r = await this.erp.consultar<Record<string, any>>('produtos', {
       ...base,
-      filtros: [...filtroDescricao, { campo: 'INATIVO', op: 'diferente', valor: 'S' }],
+      filtros: [...filtros, ...comuns],
       ordenar: [{ campo: 'PRO_DESCRICAO', dir: 'asc' }],
     });
-    if (porDescricao.length > 0) return porDescricao.slice(0, limite).map((x) => this.normalizarProduto(x));
-
-    const porReferencia = await this.erp.consultar<Record<string, any>>('produtos', {
-      ...base,
-      filtros: [
-        { campo: 'REFERENCIA', op: 'contem', valor: t.toUpperCase().replace(/[%_]/g, '') },
-        { campo: 'INATIVO', op: 'diferente', valor: 'S' },
-      ],
-    });
-    return porReferencia.slice(0, limite).map((x) => this.normalizarProduto(x));
+    return r.slice(0, limite).map((x) => this.normalizarProduto(x));
   }
 
   /** Produtos por código, em lote (máx. 500 por chamada — teto do filtro `em`). */
@@ -176,6 +209,7 @@ export class OrcamentoErpRepository {
       const r = await this.erp.consultar<Record<string, any>>('produtos', {
         empresa: EMPRESA,
         campos: CAMPOS_PRODUTO,
+        incluir: INCLUIR_PRODUTO,
         filtros: [{ campo: 'PRO_CODIGO', op: 'em', valor: lote }],
         limite: lote.length + FOLGA,
         semCache: true, // saldo é a pergunta — nunca servir de cache
@@ -248,6 +282,18 @@ export class OrcamentoErpRepository {
       });
     }
     return saida;
+  }
+
+  /* ------------------------------------------------------------ imagens */
+
+  /** IDs das fotos do produto (ordem 0 = produto, 1 = veículo). */
+  imagensDoProduto(codigo: number): Promise<Array<{ id_imagem: number; ordem: number }>> {
+    return this.erp.obterJson(`/erp/produtos/${codigo}/imagens?empresa=${EMPRESA}`);
+  }
+
+  /** Binário da foto, repassado como veio (Content-Type sniffado pela API). */
+  imagem(id: number) {
+    return this.erp.obterBinario(`/erp/imagens/${id}`);
   }
 
   private normalizarCliente(r: Record<string, any>): ClienteErp {

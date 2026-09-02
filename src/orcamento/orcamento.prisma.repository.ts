@@ -124,6 +124,30 @@ export class OrcamentoPrismaRepository {
     return rows.map((r) => Number(r.pro_codigo)).filter((c) => Number.isFinite(c));
   }
 
+  /**
+   * Grupo de similares de cada código (mesma regra de `equivalentes`) e todos
+   * os membros desses grupos, numa consulta só — para a pesquisa mostrar o
+   * principal com os similares encadeados abaixo. `chave` identifica o grupo.
+   */
+  async gruposDe(codigos: number[]): Promise<Array<{ pro_codigo: number; chave: string }>> {
+    if (!codigos.length) return [];
+    const rows = await this.prisma.$queryRaw<Array<{ pro_codigo: string; chave: string }>>`
+      WITH ult AS (SELECT MAX(data_processamento) AS d FROM com_fifo_completo),
+      eu AS (
+        SELECT DISTINCT f.group_id, UPPER(TRIM(f.pro_descricao)) AS descr, COALESCE(f.marca_linha, 2) AS linha
+        FROM com_fifo_completo f, ult
+        WHERE f.data_processamento = ult.d AND f.pro_codigo IN (${Prisma.join(codigos.map(String))})
+      )
+      SELECT f.pro_codigo, (eu.group_id || '|' || eu.descr || '|' || eu.linha) AS chave
+      FROM com_fifo_completo f, ult
+      JOIN eu ON eu.group_id = f.group_id
+             AND UPPER(TRIM(f.pro_descricao)) = eu.descr
+             AND COALESCE(f.marca_linha, 2) = eu.linha
+      WHERE f.data_processamento = ult.d
+    `;
+    return rows.map((r) => ({ pro_codigo: Number(r.pro_codigo), chave: r.chave })).filter((r) => Number.isFinite(r.pro_codigo));
+  }
+
   /** Quais destes códigos têm ao menos um equivalente (mesma regra de `equivalentes`). */
   async temGrupo(codigos: number[]): Promise<Set<number>> {
     if (!codigos.length) return new Set();

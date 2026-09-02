@@ -1,6 +1,6 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd } from './orcamento.erp.repository';
+import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional } from './orcamento.bi.repository';
 import { OrcamentoPrismaRepository, GiroItem } from './orcamento.prisma.repository';
 import {
@@ -36,18 +36,34 @@ export interface ProdutoOrcamento {
   pro_codigo: number;
   descricao: string;
   referencia: string | null;
+  ref_fabricante: string | null;
+  ref_fornecedor: string | null;
   unidade: string | null;
   aplicacoes: string | null;
+  ncm: string | null;
+  localizacao: string | null;
+  marca: string | null;
+  grupo: string | null;
+  subgrupo: string | null;
   subgrp_codigo: number | null;
   inativo: boolean;
+  comercializavel: boolean;
   estoque_disponivel: number;
   estoque_reservado: number;
+  estoque_fora: number;
+  estoque_terceiros: number;
   custo: number | null;
   preco_tabela: number;
+  /** Preço da tabela do cliente ANTES da promoção (o "de:" da EST012). */
+  preco_original: number;
   tabela_coluna: string;
   preco_fallback: boolean;
+  preco_venda: number;
   preco_tabela_5: number;
   preco_tabela_2: number;
+  /** Grupo de similares (pesquisa): mesma chave = mesma cadeia; `principal` = o cabeça. */
+  grupo_chave: string | null;
+  principal: boolean;
   avaliacao: Avaliacao;
   excecao_motivo: string | null;
   giro: Omit<GiroItem, 'pro_codigo'> | null;
@@ -291,18 +307,32 @@ export class OrcamentoService {
       pro_codigo: p.PRO_CODIGO,
       descricao: p.PRO_DESCRICAO,
       referencia: p.REFERENCIA,
+      ref_fabricante: p.REF_FABRICANTE,
+      ref_fornecedor: p.REF_FORNECEDOR,
       unidade: p.UNIDADE,
       aplicacoes: p.APLICACOES,
+      ncm: p.NCM,
+      localizacao: p.LOCALIZACAO,
+      marca: p.MARCA,
+      grupo: p.GRUPO,
+      subgrupo: p.SUBGRUPO,
       subgrp_codigo: p.SUBGRP_CODIGO,
       inativo: p.INATIVO === 'S',
+      comercializavel: p.COMERCIALIZAVEL !== 'N',
       estoque_disponivel: p.ESTOQUE_DISPONIVEL,
       estoque_reservado: p.ESTOQUE_RESERVADO,
+      estoque_fora: p.ESTOQUE_FORA_ESTABELECIMENTO,
+      estoque_terceiros: p.ESTOQUE_EM_TERCEIROS,
       custo,
       preco_tabela: preco.preco,
+      preco_original: tabela.preco,
       tabela_coluna: preco.coluna,
       preco_fallback: preco.fallback,
+      preco_venda: p.PRECO_VENDA,
       preco_tabela_2: p.PRECO2,
       preco_tabela_5: p.PRECO5,
+      grupo_chave: null,
+      principal: false,
       avaliacao,
       excecao_motivo: excecao?.motivo ?? null,
       giro: giro ? { curva_abc: giro.curva_abc, categoria_saldo_atual: giro.categoria_saldo_atual, tempo_medio_saldo_atual: giro.tempo_medio_saldo_atual, tendencia_label: giro.tendencia_label, group_id: giro.group_id } : null,
@@ -313,8 +343,54 @@ export class OrcamentoService {
   }
 
   async buscarProdutos(q: string, tabelaPreco: string | null, cli?: number, limite = 30) {
-    const r = await this.erp.buscarProdutos(q, limite);
+    const r = await this.erp.buscarProdutos(q, { modo: q.includes('%') ? 'comeca' : 'contem', limite });
     return this.enriquecer(r, tabelaPreco, cli);
+  }
+
+  /**
+   * Pesquisa no padrão da EST012: filtros da tela + os SIMILARES encadeados.
+   * Cada resultado é agrupado com os membros do seu grupo de similares (mesma
+   * descrição e linha de marca); o `principal` é o de maior saldo do grupo, e
+   * os demais vêm logo abaixo dele, em ordem de saldo. Itens sem grupo são
+   * grupos de um só.
+   */
+  async pesquisar(q: string, tabelaPreco: string | null, cli: number | undefined, o: OpcoesBusca & { equivalentes?: boolean }) {
+    const achados = await this.erp.buscarProdutos(q, o);
+    if (!achados.length) return [];
+    const codigos = achados.map((p) => p.PRO_CODIGO);
+    const grupos = o.equivalentes === false ? [] : await this.db.gruposDe(codigos).catch((e) => {
+      this.logger.warn(`Grupos de similares indisponíveis: ${(e as Error).message}`);
+      return [] as Array<{ pro_codigo: number; chave: string }>;
+    });
+    const chavePor = new Map(grupos.map((g) => [g.pro_codigo, g.chave]));
+    const extras = grupos.map((g) => g.pro_codigo).filter((c) => !codigos.includes(c));
+    const extrasErp = extras.length ? await this.erp.produtosPorCodigo(extras) : [];
+    // Similar que não passou nos filtros da tela (inativo / sem saldo) não entra.
+    const extrasOk = extrasErp.filter((p) => (o.inativos || p.INATIVO !== 'S') && (!o.comEstoque || p.ESTOQUE_DISPONIVEL > 0) && (!o.comercializavel || p.COMERCIALIZAVEL !== 'N'));
+    const todos = await this.enriquecer([...achados, ...extrasOk], tabelaPreco, cli);
+    for (const p of todos) p.grupo_chave = chavePor.get(p.pro_codigo) ?? `solo:${p.pro_codigo}`;
+
+    // Ordem: grupos na ordem em que apareceram na busca; dentro do grupo, o
+    // principal (maior saldo; empate = menor código) e depois os similares por saldo.
+    const ordemGrupo = new Map<string, number>();
+    for (const p of todos) if (!ordemGrupo.has(p.grupo_chave!)) ordemGrupo.set(p.grupo_chave!, ordemGrupo.size);
+    const porGrupo = new Map<string, ProdutoOrcamento[]>();
+    for (const p of todos) porGrupo.set(p.grupo_chave!, [...(porGrupo.get(p.grupo_chave!) ?? []), p]);
+    const saida: ProdutoOrcamento[] = [];
+    for (const [chave] of [...ordemGrupo.entries()].sort((a, b) => a[1] - b[1])) {
+      const membros = (porGrupo.get(chave) ?? []).sort((a, b) => b.estoque_disponivel - a.estoque_disponivel || a.pro_codigo - b.pro_codigo);
+      membros.forEach((m, i) => { m.principal = i === 0; });
+      saida.push(...membros);
+    }
+    return saida;
+  }
+
+  imagensDoProduto(codigo: number) {
+    return this.erp.imagensDoProduto(codigo);
+  }
+
+  imagem(id: number) {
+    return this.erp.imagem(id);
   }
 
   async produtosPorCodigo(codigos: number[], tabelaPreco: string | null, cli?: number) {

@@ -8,9 +8,11 @@ import {
   Post,
   Put,
   Query,
+  Res,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
+import type { FastifyReply } from 'fastify';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { OrcamentoService } from './orcamento.service';
 import {
@@ -101,6 +103,59 @@ export class OrcamentoController {
     @Query('limite') limite?: string,
   ) {
     return this.service.buscarProdutos(q ?? '', tabela ?? null, toNum(cli), Math.min(100, toNum(limite) ?? 30));
+  }
+
+  @Get('produtos/pesquisa')
+  @ApiOperation({
+    summary: 'Pesquisa no padrão da EST012 do Celta: campo, modo, filtros e os similares encadeados (principal + grupo).',
+  })
+  @ApiQuery({ name: 'q', required: true })
+  @ApiQuery({ name: 'campo', required: false, enum: ['descricao', 'codigo', 'referencia'] })
+  @ApiQuery({ name: 'modo', required: false, enum: ['comeca', 'contem'] })
+  @ApiQuery({ name: 'estoque', required: false, description: '1 = só com saldo disponível' })
+  @ApiQuery({ name: 'inativos', required: false, description: '1 = listar inativos' })
+  @ApiQuery({ name: 'comercializavel', required: false, description: '1 = só comercializável' })
+  @ApiQuery({ name: 'equivalentes', required: false, description: '0 = não encadear similares' })
+  @ApiQuery({ name: 'tabela', required: false })
+  @ApiQuery({ name: 'cli', required: false })
+  pesquisa(
+    @Query('q') q: string,
+    @Query('campo') campo?: string,
+    @Query('modo') modo?: string,
+    @Query('estoque') estoque?: string,
+    @Query('inativos') inativos?: string,
+    @Query('comercializavel') comercializavel?: string,
+    @Query('equivalentes') equivalentes?: string,
+    @Query('tabela') tabela?: string,
+    @Query('cli') cli?: string,
+    @Query('limite') limite?: string,
+  ) {
+    const on = (v?: string, padrao = false) => (v == null || v === '' ? padrao : v === '1' || v === 'true');
+    return this.service.pesquisar(q ?? '', tabela ?? null, toNum(cli), {
+      campo: campo === 'codigo' || campo === 'referencia' ? campo : 'descricao',
+      modo: modo === 'contem' ? 'contem' : 'comeca',
+      comEstoque: on(estoque, true),
+      inativos: on(inativos, false),
+      comercializavel: on(comercializavel, true),
+      equivalentes: on(equivalentes, true),
+      limite: Math.min(200, toNum(limite) ?? 60),
+    });
+  }
+
+  @Get('produtos/:codigo/imagens')
+  @ApiOperation({ summary: 'IDs das fotos do produto (0 = produto, 1 = veículo).' })
+  imagens(@Param('codigo', ParseIntPipe) codigo: number) {
+    return this.service.imagensDoProduto(codigo);
+  }
+
+  @Get('imagens/:id')
+  @ApiOperation({ summary: 'Binário da foto (repasse da erp-firebird-api → CELTAAUXILIAR.FDB).' })
+  async imagem(@Param('id', ParseIntPipe) id: number, @Res() res: FastifyReply) {
+    const img = await this.service.imagem(id);
+    res.header('Content-Type', img.contentType);
+    res.header('Cache-Control', 'public, max-age=86400');
+    if (img.etag) res.header('ETag', img.etag);
+    return res.send(img.dados);
   }
 
   @Get('produtos/:codigo')

@@ -56,6 +56,22 @@ A tela projeta o "% depois" com o orçamento em edição e mostra o semáforo
 (verde ≤3%, amarelo ≤6%, vermelho >6%). Também mostra a participação MIX1 e o degrau
 da escada (22/26/30% → ×1,25/×1,5/×2,0) — e quanto falta para o próximo.
 
+## Pesquisa de produtos (a EST012 do Celta na intranet)
+
+`GET /orcamento/produtos/pesquisa?q=&campo=descricao|referencia&modo=comeca|contem&estoque=1&inativos=0&comercializavel=1&equivalentes=1&tabela=&cli=`
+reproduz a tela de pesquisa que o vendedor já usa: "Localizar por", "Que começa com / Contém"
+(`%` é curinga, como lá), filtros da tela e o painel do item (reservado, venda fora, em
+terceiros, referências, NCM, grupo, subgrupo, localização — marca/grupo/subgrupo vêm por JOIN
+da erp-firebird-api). Os SIMILARES vêm encadeados: `grupo_chave` agrupa e `principal` marca o
+cabeça (maior saldo); os demais do grupo seguem abaixo, em ordem de saldo. Similar que não
+passa nos filtros da tela (inativo / sem saldo) não entra.
+
+**Imagens**: `GET /orcamento/produtos/:codigo/imagens` (ids; ordem 0 = produto, 1 = veículo) e
+`GET /orcamento/imagens/:id` (binário, repasse da erp-firebird-api). Na API: `PRODUTOS_IMAGEM`
+no CELTA.FDB + `IMAGENS` no **CELTAAUXILIAR.FDB** (segunda conexão, `FB_DATABASE_AUX`).
+Pré-requisito no banco auxiliar: `GRANT SELECT ON IMAGENS TO USER_CONSULTA;`
+(erp-firebird-api/docs/grant-celtaauxiliar.sql).
+
 ## Validade
 
 Sempre **hoje + 7 dias** (`ORCAMENTO_VALIDADE_DIAS`). Com item em promoção, encolhe para a
