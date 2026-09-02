@@ -60,11 +60,11 @@ export class OrcamentoController {
   /* ----------------------------------------------------------- clientes */
 
   @Get('clientes')
-  @ApiOperation({ summary: 'Busca de cliente (código, CNPJ/CPF ou nome). Padrão: só atacado (tabela 2/5).' })
+  @ApiOperation({ summary: 'Busca de cliente (código, CNPJ/CPF ou nome) na base inteira; o preço segue a tabela de cada um.' })
   @ApiQuery({ name: 'q', required: true })
-  @ApiQuery({ name: 'todos', required: false, description: '1 = base inteira' })
+  @ApiQuery({ name: 'todos', required: false, description: '0 = só atacado (tabela 2/5). Padrão: base inteira.' })
   clientes(@Query('q') q: string, @Query('todos') todos?: string) {
-    return this.service.buscarClientes(q ?? '', todos === '1' || todos === 'true');
+    return this.service.buscarClientes(q ?? '', !(todos === '0' || todos === 'false'));
   }
 
   @Get('clientes/:cli')
@@ -110,7 +110,7 @@ export class OrcamentoController {
     summary: 'Pesquisa no padrão da EST012 do Celta: campo, modo, filtros e os similares encadeados (principal + grupo).',
   })
   @ApiQuery({ name: 'q', required: true })
-  @ApiQuery({ name: 'campo', required: false, enum: ['descricao', 'codigo', 'referencia'] })
+  @ApiQuery({ name: 'campo', required: false, enum: ['descricao', 'codigo', 'so_descricao', 'referencia', 'ref_fabricante', 'ref_fornecedor', 'codigo_barras', 'aplicacao', 'subgrupo', 'localizacao', 'todas_referencias', 'marca', 'generica'] })
   @ApiQuery({ name: 'modo', required: false, enum: ['comeca', 'contem'] })
   @ApiQuery({ name: 'estoque', required: false, description: '1 = só com saldo disponível' })
   @ApiQuery({ name: 'inativos', required: false, description: '1 = listar inativos' })
@@ -132,7 +132,7 @@ export class OrcamentoController {
   ) {
     const on = (v?: string, padrao = false) => (v == null || v === '' ? padrao : v === '1' || v === 'true');
     return this.service.pesquisar(q ?? '', tabela ?? null, toNum(cli), {
-      campo: campo === 'codigo' || campo === 'referencia' ? campo : 'descricao',
+      campo: (['descricao', 'codigo', 'so_descricao', 'referencia', 'ref_fabricante', 'ref_fornecedor', 'codigo_barras', 'aplicacao', 'subgrupo', 'localizacao', 'todas_referencias', 'marca', 'generica'] as const).find((c) => c === campo) ?? 'descricao',
       modo: modo === 'contem' ? 'contem' : 'comeca',
       comEstoque: on(estoque, true),
       inativos: on(inativos, false),
@@ -154,6 +154,10 @@ export class OrcamentoController {
     const img = await this.service.imagem(id);
     res.header('Content-Type', img.contentType);
     res.header('Cache-Control', 'public, max-age=86400');
+    // O helmet marca toda resposta como Cross-Origin-Resource-Policy: same-origin;
+    // a intranet (outro host) carrega a foto num <img> e o navegador bloqueia
+    // (ERR_BLOCKED_BY_RESPONSE.NotSameOrigin). Foto de produto pode ser pública na rede.
+    res.header('Cross-Origin-Resource-Policy', 'cross-origin');
     if (img.etag) res.header('ETag', img.etag);
     return res.send(img.dados);
   }

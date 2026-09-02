@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ErpApiService, FiltroErp } from '../common/erp-api/erp-api.service';
 import { colunaTabela } from './regua';
 
@@ -32,6 +32,7 @@ export interface ProdutoErp {
   ESTOQUE_EM_TERCEIROS: number;
   REF_FABRICANTE: string | null;
   REF_FORNECEDOR: string | null;
+  CODIGO_BARRAS: string | null;
   NCM: string | null;
   LOCALIZACAO: string | null;
   COMERCIALIZAVEL: string | null;
@@ -51,7 +52,7 @@ export interface ProdutoErp {
 /** Marca, subgrupo e grupo chegam por JOIN (catálogo: `marca`, `subgrupo`, `grupo` via subgrupo). */
 const CAMPOS_PRODUTO: Array<string | { campo: string; como: string }> = [
   'PRO_CODIGO', 'PRO_DESCRICAO', 'REFERENCIA', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'UNIDADE', 'APLICACOES',
-  'SUBGRP_CODIGO', 'MAR_CODIGO', 'NCM', 'LOCALIZACAO', 'COMERCIALIZAVEL',
+  'SUBGRP_CODIGO', 'MAR_CODIGO', 'NCM', 'LOCALIZACAO', 'CODIGO_BARRAS', 'COMERCIALIZAVEL',
   'ESTOQUE_DISPONIVEL', 'ESTOQUE_RESERVADO', 'ESTOQUE_FORA_ESTABELECIMENTO', 'ESTOQUE_EM_TERCEIROS',
   'PRECO_VENDA', 'PRECO1', 'PRECO2', 'PRECO3', 'PRECO4', 'PRECO5',
   'PRECO6', 'PRECO7', 'PRECO8', 'PRECO9', 'PRECO10',
@@ -63,7 +64,21 @@ const CAMPOS_PRODUTO: Array<string | { campo: string; como: string }> = [
 const INCLUIR_PRODUTO = ['marca', 'subgrupo', 'grupo'];
 
 export type ModoBusca = 'comeca' | 'contem';
-export type CampoBusca = 'descricao' | 'codigo' | 'referencia';
+/** Os "Localizar por" da EST012 do Celta. */
+export type CampoBusca =
+  | 'descricao'          // Descrição / Código (numérico = código)
+  | 'codigo'
+  | 'so_descricao'
+  | 'referencia'
+  | 'ref_fabricante'
+  | 'ref_fornecedor'
+  | 'codigo_barras'
+  | 'aplicacao'
+  | 'subgrupo'
+  | 'localizacao'
+  | 'todas_referencias' // referência OU fabricante OU fornecedor
+  | 'marca'
+  | 'generica';         // descrição (palavras em qualquer ordem) OU qualquer referência
 export interface OpcoesBusca {
   modo?: ModoBusca;
   campo?: CampoBusca;
@@ -118,7 +133,10 @@ export interface PromocaoItem {
   data_final: string;
   somente_avista: boolean;
   durar_estoque: boolean;
-  valor: number;
+  /** Preço promocional NA TABELA DO CLIENTE; null = a promoção não vale para essa tabela. */
+  valor: number | null;
+  /** Preço promocional do balcão (PROM_VALOR, tabela 1) — informativo, como a EST012 mostra. */
+  valor_balcao: number | null;
 }
 
 /**
@@ -131,6 +149,8 @@ const FOLGA = 1;
 
 @Injectable()
 export class OrcamentoErpRepository {
+  private readonly logger = new Logger(OrcamentoErpRepository.name);
+
   constructor(private readonly erp: ErpApiService) {}
 
   private normalizarProduto(r: Record<string, any>): ProdutoErp {
@@ -146,19 +166,20 @@ export class OrcamentoErpRepository {
     p.INATIVO = (r.INATIVO ?? '').toString().trim() || null;
     p.COMERCIALIZAVEL = (r.COMERCIALIZAVEL ?? '').toString().trim() || null;
     p.PRO_DESCRICAO = (r.PRO_DESCRICAO ?? '').toString().trim();
-    for (const k of ['MARCA', 'SUBGRUPO', 'GRUPO', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'NCM', 'LOCALIZACAO', 'REFERENCIA', 'UNIDADE']) {
+    for (const k of ['MARCA', 'SUBGRUPO', 'GRUPO', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'CODIGO_BARRAS', 'NCM', 'LOCALIZACAO', 'REFERENCIA', 'UNIDADE']) {
       p[k] = (r[k] ?? '').toString().trim() || null;
     }
     return p as ProdutoErp;
   }
 
   /**
-   * Busca de produto no padrão da pesquisa do Celta (EST012): "Localizar por"
-   * descrição/código ou referência, "Que começa com" ou "Contém", com os
-   * filtros da tela (só com estoque, listar inativos, só comercializável).
-   * O `%` no termo é curinga, como lá: "P/BRISA%AMAROK". Termo numérico em
-   * descrição/código é o código exato. Sem `%` no modo "contém", cada palavra
-   * vira um "contém" (E) — acha "amarok brisa" em qualquer ordem.
+   * Busca de produto no padrão da pesquisa do Celta (EST012): todos os
+   * "Localizar por" da tela, "Que começa com" ou "Contém", e os filtros (só
+   * com estoque, listar inativos, só comercializável). O `%` no termo é
+   * curinga, como lá. Em "Descrição / Código" e "Código", termo numérico é o
+   * código exato. "Todas as referências" e "Pesquisa genérica" são OU entre
+   * colunas — o montador da API só combina filtros com E, então viram
+   * consultas paralelas com o resultado unido (sem repetir código).
    */
   async buscarProdutos(termo: string, o: OpcoesBusca = {}): Promise<ProdutoErp[]> {
     const t = termo.trim();
@@ -172,7 +193,14 @@ export class OrcamentoErpRepository {
     if (o.comEstoque) comuns.push({ campo: 'ESTOQUE_DISPONIVEL', op: 'maior', valor: 0 });
     if (o.comercializavel) comuns.push({ campo: 'COMERCIALIZAVEL', op: 'igual', valor: 'S' });
 
-    if (campo !== 'referencia' && /^\d+$/.test(t)) {
+    const consultar = async (filtros: FiltroErp[]) =>
+      this.erp.consultar<Record<string, any>>('produtos', {
+        ...base,
+        filtros: [...filtros, ...comuns],
+        ordenar: [{ campo: 'PRO_DESCRICAO', dir: 'asc' }],
+      });
+
+    if ((campo === 'descricao' || campo === 'codigo') && /^\d+$/.test(t)) {
       const r = await this.erp.consultar<Record<string, any>>('produtos', {
         ...base,
         filtros: [{ campo: 'PRO_CODIGO', op: 'igual', valor: Number(t) }],
@@ -180,23 +208,54 @@ export class OrcamentoErpRepository {
       });
       return r.slice(0, 1).map((x) => this.normalizarProduto(x));
     }
+    if (campo === 'codigo') return [];
 
-    const coluna = campo === 'referencia' ? 'REFERENCIA' : 'PRO_DESCRICAO';
     const T = t.toUpperCase();
-    let filtros: FiltroErp[];
-    if (T.includes('%') || modo === 'comeca' || campo === 'referencia') {
-      const padrao = modo === 'comeca' ? (T.endsWith('%') ? T : `${T}%`) : `%${T.replace(/^%+|%+$/g, '')}%`;
-      filtros = [{ campo: coluna, op: 'parecido', valor: padrao }];
+    const padrao = modo === 'comeca' ? (T.endsWith('%') ? T : `${T}%`) : `%${T.replace(/^%+|%+$/g, '')}%`;
+    const parecido = (coluna: string): FiltroErp[] => [{ campo: coluna, op: 'parecido', valor: padrao }];
+    // Sem "%" e no modo "contém", cada palavra vira um "contém" (E): acha "amarok brisa" em qualquer ordem.
+    const palavras = (coluna: string): FiltroErp[] =>
+      T.includes('%') || modo === 'comeca'
+        ? parecido(coluna)
+        : T.split(/\s+/).filter((p) => p.length >= 3).slice(0, 6).map<FiltroErp>((p) => ({ campo: coluna, op: 'contem', valor: p }));
+
+    const COLUNA: Partial<Record<CampoBusca, string>> = {
+      descricao: 'PRO_DESCRICAO',
+      so_descricao: 'PRO_DESCRICAO',
+      referencia: 'REFERENCIA',
+      ref_fabricante: 'REF_FABRICANTE',
+      ref_fornecedor: 'REF_FORNECEDOR',
+      codigo_barras: 'CODIGO_BARRAS',
+      aplicacao: 'APLICACOES',
+      localizacao: 'LOCALIZACAO',
+      subgrupo: 'subgrupo.SUBGRP_DESCRICAO',
+      marca: 'marca.MAR_DESCRICAO',
+    };
+
+    let lotes: FiltroErp[][];
+    if (campo === 'todas_referencias') {
+      lotes = [parecido('REFERENCIA'), parecido('REF_FABRICANTE'), parecido('REF_FORNECEDOR')];
+    } else if (campo === 'generica') {
+      const desc = palavras('PRO_DESCRICAO');
+      lotes = [...(desc.length ? [desc] : []), parecido('REFERENCIA'), parecido('REF_FABRICANTE'), parecido('REF_FORNECEDOR'), parecido('APLICACOES')];
     } else {
-      filtros = T.split(/\s+/).filter((p) => p.length >= 3).slice(0, 6).map<FiltroErp>((p) => ({ campo: coluna, op: 'contem', valor: p }));
-      if (!filtros.length) return [];
+      const coluna = COLUNA[campo] ?? 'PRO_DESCRICAO';
+      const f = campo === 'descricao' || campo === 'so_descricao' || campo === 'aplicacao' ? palavras(coluna) : parecido(coluna);
+      if (!f.length) return [];
+      lotes = [f];
     }
-    const r = await this.erp.consultar<Record<string, any>>('produtos', {
-      ...base,
-      filtros: [...filtros, ...comuns],
-      ordenar: [{ campo: 'PRO_DESCRICAO', dir: 'asc' }],
-    });
-    return r.slice(0, limite).map((x) => this.normalizarProduto(x));
+    const resultados = await Promise.all(lotes.map((f) => consultar(f).catch((e) => { this.logger.warn(`busca ${campo}: ${(e as Error).message}`); return [] as Record<string, any>[]; })));
+    const vistos = new Set<number>();
+    const saida: ProdutoErp[] = [];
+    for (const r of resultados) {
+      for (const x of r) {
+        const cod = Number(x.PRO_CODIGO);
+        if (vistos.has(cod)) continue;
+        vistos.add(cod);
+        saida.push(this.normalizarProduto(x));
+      }
+    }
+    return saida.slice(0, limite);
   }
 
   /** Produtos por código, em lote (máx. 500 por chamada — teto do filtro `em`). */
@@ -253,7 +312,7 @@ export class OrcamentoErpRepository {
       const lote = unicos.slice(i, i + 500);
       const r = await this.erp.consultar<Record<string, any>>('promocoes-itens', {
         empresa: EMPRESA,
-        campos: ['PRO_CODIGO', 'PROM_CODIGO', colPromo],
+        campos: [...new Set(['PRO_CODIGO', 'PROM_CODIGO', colPromo, 'PROM_VALOR'])],
         filtros: [
           { campo: 'PROM_CODIGO', op: 'em', valor: [...cab.keys()] },
           { campo: 'PRO_CODIGO', op: 'em', valor: lote },
@@ -263,23 +322,35 @@ export class OrcamentoErpRepository {
       });
       itens.push(...r);
     }
+    // Prioridade: promoção com preço NA TABELA DO CLIENTE (menor preço). Sem
+    // nenhuma, fica a do balcão só como informação (a EST012 mostra "de/por"
+    // do varejo mesmo para cliente de atacado) — nunca aplicada ao preço.
     for (const it of itens) {
       const valor = num(it[colPromo]);
-      if (!(valor > 0)) continue;
+      const balcao = num(it.PROM_VALOR);
+      if (!(valor > 0) && !(balcao > 0)) continue;
       const p = cab.get(Number(it.PROM_CODIGO));
       if (!p) continue;
       const pro = Number(it.PRO_CODIGO);
       const atual = saida.get(pro);
-      if (atual && atual.valor <= valor) continue;
-      saida.set(pro, {
+      const candidato: PromocaoItem = {
         pro_codigo: pro,
         prom_codigo: Number(it.PROM_CODIGO),
         descricao: String(p.PROM_DESCRICAO ?? '').trim(),
         data_final: ymdDe(p.DATA_FINAL) ?? hoje,
         somente_avista: String(p.SOMENTE_AVISTA ?? '').trim() === 'S',
         durar_estoque: String(p.DURAR_ESTOQUE ?? '').trim() === 'S',
-        valor: Math.round(valor * 100) / 100,
-      });
+        valor: valor > 0 ? Math.round(valor * 100) / 100 : null,
+        valor_balcao: balcao > 0 ? Math.round(balcao * 100) / 100 : null,
+      };
+      if (!atual) { saida.set(pro, candidato); continue; }
+      const melhor =
+        candidato.valor != null && (atual.valor == null || candidato.valor < atual.valor)
+          ? candidato
+          : candidato.valor == null && atual.valor == null && candidato.valor_balcao != null && (atual.valor_balcao == null || candidato.valor_balcao < atual.valor_balcao)
+            ? candidato
+            : atual;
+      saida.set(pro, melhor);
     }
     return saida;
   }

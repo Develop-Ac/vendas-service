@@ -71,6 +71,8 @@ export interface ProdutoOrcamento {
   tem_equivalente: boolean;
   /** Promoção vigente na tabela do cliente: o preço é o promocional e não há desconto por cima. */
   promocao: { codigo: number; descricao: string; data_final: string; somente_avista: boolean } | null;
+  /** Promoção do balcão (tabela 1) vigente, SEM preço na tabela do cliente — só informação. */
+  promocao_balcao: { codigo: number; descricao: string; data_final: string; de: number; por: number } | null;
 }
 
 export interface ClienteOrcamento {
@@ -280,7 +282,8 @@ export class OrcamentoService {
     const tabela = precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
     // Item em promoção vigente na tabela do cliente: o preço É o promocional e
     // não há desconto por cima dele — o mínimo é o próprio preço.
-    const preco = promo ? { coluna: 'PROMOCAO', preco: promo.valor, fallback: false } : tabela;
+    const aplica = promo != null && promo.valor != null;
+    const preco = aplica ? { coluna: 'PROMOCAO', preco: promo!.valor as number, fallback: false } : tabela;
     const custo = p.PRECO_CUSTO > 0 ? p.PRECO_CUSTO : null;
     let avaliacao = avaliarItem({
       custo,
@@ -291,15 +294,15 @@ export class OrcamentoService {
       regua,
       volume,
     });
-    if (promo) {
+    if (aplica && promo) {
       const fim = promo.data_final.split('-').reverse().join('/');
       avaliacao = {
         ...avaliacao,
         desc_max_pct: 0,
         desc_max_efetivo_pct: 0,
-        preco_minimo: promo.valor,
+        preco_minimo: promo.valor as number,
         fracao_volume: 0,
-        escala_volume: avaliacao.escala_volume.map((d) => ({ ...d, desc_max_pct: 0, desc_max_efetivo_pct: 0, preco_minimo: promo.valor })),
+        escala_volume: avaliacao.escala_volume.map((d) => ({ ...d, desc_max_pct: 0, desc_max_efetivo_pct: 0, preco_minimo: promo.valor as number })),
         motivo: `Promoção "${promo.descricao}" até ${fim}: preço fechado, sem desconto.`,
       };
     }
@@ -338,7 +341,11 @@ export class OrcamentoService {
       giro: giro ? { curva_abc: giro.curva_abc, categoria_saldo_atual: giro.categoria_saldo_atual, tempo_medio_saldo_atual: giro.tempo_medio_saldo_atual, tendencia_label: giro.tendencia_label, group_id: giro.group_id } : null,
       ultimo_preco_cliente: ultimo ? { dt_emissao: ultimo.dt_emissao, unitario: ultimo.unitario, quantidade: ultimo.quantidade } : null,
       tem_equivalente: temEquivalente,
-      promocao: promo ? { codigo: promo.prom_codigo, descricao: promo.descricao, data_final: promo.data_final, somente_avista: promo.somente_avista } : null,
+      promocao: aplica && promo ? { codigo: promo.prom_codigo, descricao: promo.descricao, data_final: promo.data_final, somente_avista: promo.somente_avista } : null,
+      promocao_balcao:
+        !aplica && promo && promo.valor_balcao != null
+          ? { codigo: promo.prom_codigo, descricao: promo.descricao, data_final: promo.data_final, de: p.PRECO_VENDA, por: promo.valor_balcao }
+          : null,
     };
   }
 
