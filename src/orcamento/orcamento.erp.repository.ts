@@ -54,7 +54,6 @@ export interface ClienteErp {
   FONE: string | null;
   CELULAR: string | null;
   CONTATO: string | null;
-  EMAIL: string | null;
   REP_CODIGO: number | null;
   TABELA_PRECO: string | null;
   INATIVO: string | null;
@@ -65,7 +64,7 @@ export interface ClienteErp {
 }
 
 const CAMPOS_CLIENTE = [
-  'CLI_CODIGO', 'CLI_NOME', 'CPF_CNPJ', 'UF', 'CIDADE', 'FONE', 'CELULAR', 'CONTATO', 'EMAIL',
+  'CLI_CODIGO', 'CLI_NOME', 'CPF_CNPJ', 'UF', 'CIDADE', 'FONE', 'CELULAR', 'CONTATO',
   'REP_CODIGO', 'TABELA_PRECO', 'INATIVO', 'LIMITE_CREDITO', 'BLOQUEAR_VENDA_CREDIARIO',
   'CON_CODIGO', 'DATA_ULT_COMPRA',
 ];
@@ -161,7 +160,6 @@ export class OrcamentoErpRepository {
       FONE: r.FONE ?? null,
       CELULAR: r.CELULAR ?? null,
       CONTATO: r.CONTATO ?? null,
-      EMAIL: r.EMAIL ?? null,
       REP_CODIGO: r.REP_CODIGO == null ? null : Number(r.REP_CODIGO),
       TABELA_PRECO: (r.TABELA_PRECO ?? '').toString().trim() || null,
       INATIVO: (r.INATIVO ?? '').toString().trim() || null,

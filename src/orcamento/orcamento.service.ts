@@ -127,7 +127,8 @@ export class OrcamentoService {
       fone: c.FONE,
       celular: c.CELULAR,
       contato: c.CONTATO,
-      email: c.EMAIL,
+      // CLIENTES não tem coluna de e-mail no Celta (só FONE/CELULAR/CONTATO).
+      email: null,
       rep_codigo: c.REP_CODIGO,
       tabela_preco: tabela,
       tabela_coluna: precoDaTabela({}, tabela).coluna,
