@@ -71,6 +71,14 @@ const CAMPOS_CLIENTE = [
 
 const num = (v: unknown) => (v == null || v === '' ? 0 : Number(v));
 
+/**
+ * A erp-firebird-api considera a resposta TRUNCADA quando o número de linhas
+ * é IGUAL ao limite pedido — e o ErpApiService transforma isso em erro. Logo,
+ * pedir exatamente o que se espera (1 cliente, N produtos por código) falha
+ * justamente quando dá certo. Pede-se sempre uma linha a mais e corta-se aqui.
+ */
+const FOLGA = 1;
+
 @Injectable()
 export class OrcamentoErpRepository {
   constructor(private readonly erp: ErpApiService) {}
@@ -99,15 +107,15 @@ export class OrcamentoErpRepository {
   async buscarProdutos(termo: string, limite = 30): Promise<ProdutoErp[]> {
     const t = termo.trim();
     if (!t) return [];
-    const base = { empresa: EMPRESA, campos: CAMPOS_PRODUTO, limite };
+    const base = { empresa: EMPRESA, campos: CAMPOS_PRODUTO, limite: limite + FOLGA };
 
     if (/^\d+$/.test(t)) {
       const r = await this.erp.consultar<Record<string, any>>('produtos', {
         ...base,
         filtros: [{ campo: 'PRO_CODIGO', op: 'igual', valor: Number(t) }],
-        limite: 1,
+        limite: 1 + FOLGA,
       });
-      return r.map((x) => this.normalizarProduto(x));
+      return r.slice(0, 1).map((x) => this.normalizarProduto(x));
     }
 
     const palavras = t.toUpperCase().split(/\s+/).filter((p) => p.length >= 2).slice(0, 6);
@@ -119,7 +127,7 @@ export class OrcamentoErpRepository {
       ],
       ordenar: [{ campo: 'PRO_DESCRICAO', dir: 'asc' }],
     });
-    if (porDescricao.length > 0) return porDescricao.map((x) => this.normalizarProduto(x));
+    if (porDescricao.length > 0) return porDescricao.slice(0, limite).map((x) => this.normalizarProduto(x));
 
     const porReferencia = await this.erp.consultar<Record<string, any>>('produtos', {
       ...base,
@@ -128,7 +136,7 @@ export class OrcamentoErpRepository {
         { campo: 'INATIVO', op: 'diferente', valor: 'S' },
       ],
     });
-    return porReferencia.map((x) => this.normalizarProduto(x));
+    return porReferencia.slice(0, limite).map((x) => this.normalizarProduto(x));
   }
 
   /** Produtos por código, em lote (máx. 500 por chamada — teto do filtro `em`). */
@@ -142,7 +150,7 @@ export class OrcamentoErpRepository {
         empresa: EMPRESA,
         campos: CAMPOS_PRODUTO,
         filtros: [{ campo: 'PRO_CODIGO', op: 'em', valor: lote }],
-        limite: lote.length,
+        limite: lote.length + FOLGA,
         semCache: true, // saldo é a pergunta — nunca servir de cache
       });
       saida.push(...r.map((x) => this.normalizarProduto(x)));
@@ -194,9 +202,9 @@ export class OrcamentoErpRepository {
       campos: CAMPOS_CLIENTE,
       filtros,
       ordenar: [{ campo: 'CLI_NOME', dir: 'asc' }],
-      limite,
+      limite: limite + FOLGA,
     });
-    return r.map((x) => this.normalizarCliente(x));
+    return r.slice(0, limite).map((x) => this.normalizarCliente(x));
   }
 
   async clientePorCodigo(cli: number): Promise<ClienteErp | null> {
@@ -204,7 +212,7 @@ export class OrcamentoErpRepository {
       empresa: EMPRESA,
       campos: CAMPOS_CLIENTE,
       filtros: [{ campo: 'CLI_CODIGO', op: 'igual', valor: cli }],
-      limite: 1,
+      limite: 1 + FOLGA,
       semCache: true,
     });
     return r.length ? this.normalizarCliente(r[0]) : null;
