@@ -19,13 +19,17 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 | Classe, mix e faixa | Régua v3 sobre o custo ao vivo | `PRECO_CUSTO` (reposição) → faixa 1A..3D com os **mesmos cortes do ETL** (`sp_Load_Stage_Produtos_FromDelta`); classe PB = subgrupo 154 (ou descrição P/BRISA) |
 | Markup e desconto máximo | Postgres `ven_regua_atacado` | seed = régua v3 aprovada (GERAL 2,85→1,42 / PB 2,30→1,38; desc. 3→10%) |
 | Itens fora da régua | Postgres `ven_regua_item_excecao` | LANÇAMENTO/EXCLUSIVO e OPORTUNIDADE: markup atual congelado, desconto próprio |
-| Equivalentes | Postgres `com_relacionamento_itens` | grupos de similares da análise de estoque (mesma descrição + linha de marca); só os com saldo aparecem primeiro |
+| Equivalentes | Postgres `com_fifo_completo` (última execução) | mesmo `group_id` **e** mesma descrição **e** mesma `marca_linha` (a regra do worker). Só o `group_id` não basta: grupos mesclados à mão viraram "grupões" |
+| Desconto por volume | Postgres `ven_regua_volume` | o máximo da faixa é o teto; a quantidade libera uma fração dele: 50% até 2 un, 75% de 3 a 5, 100% a partir de 6 (ex.: 1D 3% → 1,5% / 2,25% / 3%). A API devolve `escala_volume` por item |
 | Vendem juntos | Postgres `ven_produto_relacionado` | pares apurados no BI (`vw_analise_vendas`, atacado, 12 meses, ≥3 notas juntos), cron semanal seg 04:30 |
 | Bolsa de desconto do vendedor | BI | `vw_analise_vendas` no mês comissional (26→25), canal ATACADO: bruto, desconto, MIX1 |
 | Crédito do cliente | BI + ERP | limite (ERP) − títulos em aberto (`Stage_ContasReceber_Titulos`), bloqueio de crediário |
 | Último preço pago pelo cliente | BI | última nota do cliente com o item |
 
 ## Regra do preço mínimo (a que o vendedor decide sozinho)
+
+O vendedor **nunca digita preço**: só quantidade e desconto (%). `preco = tabela × (1 − desc_pct)`;
+`desc_max` da linha = máximo da faixa × fração liberada pela quantidade (nunca acima do máximo).
 
 ```
 lista da régua = custo × markup(classe, faixa)

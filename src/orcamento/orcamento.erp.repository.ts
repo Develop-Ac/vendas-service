@@ -118,13 +118,17 @@ export class OrcamentoErpRepository {
       return r.slice(0, 1).map((x) => this.normalizarProduto(x));
     }
 
-    const palavras = t.toUpperCase().split(/\s+/).filter((p) => p.length >= 2).slice(0, 6);
+    // Com "%" no termo, a busca é a do balcão no Celta: "P/BRISA%AMAROK" = começa
+    // com P/BRISA e depois tem AMAROK; "%AMAROK" = contém AMAROK. O curinga
+    // final é implícito, como lá. Sem "%", cada palavra vira um "contém" (E).
+    const filtroDescricao: FiltroErp[] = t.includes('%')
+      ? [{ campo: 'PRO_DESCRICAO', op: 'parecido', valor: t.toUpperCase().endsWith('%') ? t.toUpperCase() : `${t.toUpperCase()}%` }]
+      : t.toUpperCase().split(/\s+/).filter((p) => p.length >= 3).slice(0, 6)
+          .map<FiltroErp>((p) => ({ campo: 'PRO_DESCRICAO', op: 'contem', valor: p }));
+    if (!filtroDescricao.length) return [];
     const porDescricao = await this.erp.consultar<Record<string, any>>('produtos', {
       ...base,
-      filtros: [
-        ...palavras.map<FiltroErp>((p) => ({ campo: 'PRO_DESCRICAO', op: 'contem', valor: p })),
-        { campo: 'INATIVO', op: 'diferente', valor: 'S' },
-      ],
+      filtros: [...filtroDescricao, { campo: 'INATIVO', op: 'diferente', valor: 'S' }],
       ordenar: [{ campo: 'PRO_DESCRICAO', dir: 'asc' }],
     });
     if (porDescricao.length > 0) return porDescricao.slice(0, limite).map((x) => this.normalizarProduto(x));
@@ -132,7 +136,7 @@ export class OrcamentoErpRepository {
     const porReferencia = await this.erp.consultar<Record<string, any>>('produtos', {
       ...base,
       filtros: [
-        { campo: 'REFERENCIA', op: 'contem', valor: t.toUpperCase() },
+        { campo: 'REFERENCIA', op: 'contem', valor: t.toUpperCase().replace(/[%_]/g, '') },
         { campo: 'INATIVO', op: 'diferente', valor: 'S' },
       ],
     });
@@ -193,7 +197,7 @@ export class OrcamentoErpRepository {
     } else if (digitos.length >= 11 && digitos.length === t.replace(/[.\-\/\s]/g, '').length) {
       filtros.push({ campo: 'CPF_DIGITOS', op: 'contem', valor: digitos });
     } else {
-      for (const p of t.toUpperCase().split(/\s+/).filter((x) => x.length >= 2).slice(0, 5)) {
+      for (const p of t.toUpperCase().split(/\s+/).filter((x) => x.length >= 3).slice(0, 5)) {
         filtros.push({ campo: 'CLI_NOME', op: 'contem', valor: p });
       }
     }

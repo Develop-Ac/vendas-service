@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
-import { ExcecaoItem, RegraFaixa, REGUA_PADRAO } from './regua';
+import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } from './regua';
 
 /* =============================================================================
    ORÇAMENTO — persistência no Postgres da intranet.
@@ -39,6 +39,13 @@ export class OrcamentoPrismaRepository {
       markup: Number(r.markup),
       desc_max: Number(r.desc_max),
     }));
+  }
+
+  /** Escala de desconto por volume; sem linhas no banco, a escala padrão do código. */
+  async volume(): Promise<FaixaVolume[]> {
+    const rows = await this.prisma.ven_regua_volume.findMany({ where: { ativo: true }, orderBy: { qtd_min: 'asc' } });
+    if (!rows.length) return VOLUME_PADRAO;
+    return rows.map((r) => ({ qtd_min: r.qtd_min, fracao: Number(r.fracao) }));
   }
 
   async excecoes(codigos: number[]): Promise<Map<number, ExcecaoItem>> {
@@ -91,32 +98,51 @@ export class OrcamentoPrismaRepository {
 
   /* ------------------------------------------------ equivalentes e giro */
 
-  /** Quais destes códigos pertencem a algum grupo de similares (têm equivalente). */
+  /**
+   * EQUIVALENTES = mesmo grupo de similares da análise de estoque, com a MESMA
+   * regra que o worker usa para consolidar demanda: mesma descrição + mesma
+   * linha de marca (com_fifo_completo da última execução: group_id, pro_descricao,
+   * marca_linha). Só o group_id não basta: grupos mesclados à mão viraram
+   * "grupões" (o do para-brisa AMAROK 17 tem 46 vidros de veículos diferentes),
+   * e sem o filtro de descrição a tela oferecia HILUX como substituto de AMAROK.
+   */
+  async equivalentes(proCodigo: number): Promise<number[]> {
+    const rows = await this.prisma.$queryRaw<Array<{ pro_codigo: string }>>`
+      WITH ult AS (SELECT MAX(data_processamento) AS d FROM com_fifo_completo),
+      eu AS (
+        SELECT f.group_id, UPPER(TRIM(f.pro_descricao)) AS descr, COALESCE(f.marca_linha, 2) AS linha
+        FROM com_fifo_completo f, ult WHERE f.pro_codigo = ${String(proCodigo)} AND f.data_processamento = ult.d
+      )
+      SELECT f.pro_codigo
+      FROM com_fifo_completo f, ult, eu
+      WHERE f.data_processamento = ult.d
+        AND f.group_id = eu.group_id
+        AND UPPER(TRIM(f.pro_descricao)) = eu.descr
+        AND COALESCE(f.marca_linha, 2) = eu.linha
+        AND f.pro_codigo <> ${String(proCodigo)}
+    `;
+    return rows.map((r) => Number(r.pro_codigo)).filter((c) => Number.isFinite(c));
+  }
+
+  /** Quais destes códigos têm ao menos um equivalente (mesma regra de `equivalentes`). */
   async temGrupo(codigos: number[]): Promise<Set<number>> {
     if (!codigos.length) return new Set();
     const rows = await this.prisma.$queryRaw<Array<{ pro_codigo: string }>>`
-      SELECT r.pro_codigo FROM com_relacionamento_itens r
-      WHERE r.pro_codigo IN (${Prisma.join(codigos.map(String))})
-        AND (SELECT COUNT(*) FROM com_relacionamento_itens g WHERE g.group_id = r.group_id) > 1
+      WITH ult AS (SELECT MAX(data_processamento) AS d FROM com_fifo_completo)
+      SELECT a.pro_codigo
+      FROM com_fifo_completo a, ult
+      WHERE a.data_processamento = ult.d
+        AND a.pro_codigo IN (${Prisma.join(codigos.map(String))})
+        AND EXISTS (
+          SELECT 1 FROM com_fifo_completo b
+          WHERE b.data_processamento = ult.d
+            AND b.group_id = a.group_id
+            AND b.pro_codigo <> a.pro_codigo
+            AND UPPER(TRIM(b.pro_descricao)) = UPPER(TRIM(a.pro_descricao))
+            AND COALESCE(b.marca_linha, 2) = COALESCE(a.marca_linha, 2)
+        )
     `;
     return new Set(rows.map((r) => Number(r.pro_codigo)));
-  }
-
-
-  /**
-   * Os equivalentes de um produto = os outros membros do seu grupo de
-   * similares (com_relacionamento_itens, mantido pelo analise-estoque-service:
-   * mesma descrição + mesma linha de marca). Sem grupo, sem equivalente.
-   */
-  async equivalentes(proCodigo: number): Promise<number[]> {
-    const eu = await this.prisma.com_relacionamento_itens.findUnique({
-      where: { pro_codigo: String(proCodigo) },
-    });
-    if (!eu) return [];
-    const membros = await this.prisma.com_relacionamento_itens.findMany({
-      where: { group_id: eu.group_id, NOT: { pro_codigo: String(proCodigo) } },
-    });
-    return membros.map((m) => Number(m.pro_codigo)).filter((c) => Number.isFinite(c));
   }
 
   /** Curva, situação do saldo e tendência (última execução da análise de estoque). */

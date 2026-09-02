@@ -31,6 +31,7 @@ export type OperadorErp =
   | 'entre'
   | 'contem'
   | 'comeca_com'
+  | 'parecido'
   | 'igual_trim'
   | 'nulo'
   | 'nao_nulo';

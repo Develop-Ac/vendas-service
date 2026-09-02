@@ -39,6 +39,21 @@ INSERT INTO ven_regua_atacado (classe, faixa, markup, desc_max) VALUES
   ('PB','3A',1.420,0.08),('PB','3B',1.410,0.08),('PB','3C',1.390,0.09),('PB','3D',1.380,0.10)
 ON CONFLICT (classe, faixa) DO NOTHING;
 
+-- 1b) Escala por VOLUME (quantidade na linha) ----------------------------------
+-- O desconto máximo da FAIXA é o teto e nunca cresce. A quantidade decide que
+-- fração desse máximo o vendedor pode dar sozinho: 50% até 2 un, 75% de 3 a 5,
+-- 100% a partir de 6. Tabela recriada aqui porque a 1ª versão (adicional em p.p.)
+-- passava do máximo da faixa — o que o plano não permite.
+DROP TABLE IF EXISTS ven_regua_volume;
+CREATE TABLE ven_regua_volume (
+  id         SERIAL PRIMARY KEY,
+  qtd_min    INTEGER NOT NULL UNIQUE,
+  fracao     NUMERIC(5,4) NOT NULL CHECK (fracao > 0 AND fracao <= 1),
+  ativo      BOOLEAN NOT NULL DEFAULT TRUE,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO ven_regua_volume (qtd_min, fracao) VALUES (1, 0.50), (3, 0.75), (6, 1.00);
+
 -- 2) Exceções da régua (lançamento/exclusivo e oportunidade) -------------------
 CREATE TABLE IF NOT EXISTS ven_regua_item_excecao (
   pro_codigo   INTEGER PRIMARY KEY,

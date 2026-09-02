@@ -24,12 +24,12 @@ export class ItemOrcamentoDto {
   @Min(0.001)
   quantidade: number;
 
-  @ApiProperty({ description: 'Preço negociado. Ausente = preço de tabela menos desc_pct.', required: false })
+  @ApiProperty({ description: 'Só para item SEM preço na tabela do cliente. Com tabela, o preço é sempre tabela × (1 − desc_pct).', required: false })
   @IsOptional()
   @IsNumber()
   preco_unit?: number;
 
-  @ApiProperty({ description: 'Desconto em fração (0.03 = 3%). Ignorado quando preco_unit vem informado.', required: false })
+  @ApiProperty({ description: 'Desconto em fração (0.03 = 3%) sobre o preço de tabela do cliente.', required: false })
   @IsOptional()
   @IsNumber()
   desc_pct?: number;

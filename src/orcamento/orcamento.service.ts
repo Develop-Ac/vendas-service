@@ -9,6 +9,7 @@ import {
   calcularBolsa,
   degrauMix1,
   FAIXAS,
+  FaixaVolume,
   precoDaTabela,
   RegraFaixa,
   round2,
@@ -103,7 +104,7 @@ export class OrcamentoService {
   }
 
   async regua() {
-    return { regua: await this.db.regua(), faixas: FAIXAS, parametros: this.parametros() };
+    return { regua: await this.db.regua(), volume: await this.db.volume(), faixas: FAIXAS, parametros: this.parametros() };
   }
 
   async salvarExcecao(proCodigo: number, dto: ExcecaoReguaDto) {
@@ -224,8 +225,9 @@ export class OrcamentoService {
   private async enriquecer(produtos: ProdutoErp[], tabelaPreco: string | null, cli?: number): Promise<ProdutoOrcamento[]> {
     if (!produtos.length) return [];
     const codigos = produtos.map((p) => p.PRO_CODIGO);
-    const [regua, excecoes, giro, ultimos, comGrupo] = await Promise.all([
+    const [regua, volume, excecoes, giro, ultimos, comGrupo] = await Promise.all([
       this.db.regua(),
+      this.db.volume(),
       this.db.excecoes(codigos),
       this.db.giro(codigos).catch((e) => {
         this.logger.warn(`Giro indisponível: ${(e as Error).message}`);
@@ -237,13 +239,14 @@ export class OrcamentoService {
       this.db.temGrupo(codigos),
     ]);
     const ultimoPor = new Map(ultimos.map((u) => [u.pro_codigo, u]));
-    return produtos.map((p) => this.montarProduto(p, tabelaPreco, regua, excecoes.get(p.PRO_CODIGO) ?? null, giro.get(p.PRO_CODIGO) ?? null, ultimoPor.get(p.PRO_CODIGO) ?? null, comGrupo.has(p.PRO_CODIGO)));
+    return produtos.map((p) => this.montarProduto(p, tabelaPreco, regua, volume, excecoes.get(p.PRO_CODIGO) ?? null, giro.get(p.PRO_CODIGO) ?? null, ultimoPor.get(p.PRO_CODIGO) ?? null, comGrupo.has(p.PRO_CODIGO)));
   }
 
   private montarProduto(
     p: ProdutoErp,
     tabelaPreco: string | null,
     regua: RegraFaixa[],
+    volume: FaixaVolume[],
     excecao: Parameters<typeof avaliarItem>[0]['excecao'],
     giro: GiroItem | null,
     ultimo: { dt_emissao: string; unitario: number; quantidade: number } | null,
@@ -258,6 +261,7 @@ export class OrcamentoService {
       descricao: p.PRO_DESCRICAO,
       excecao,
       regua,
+      volume,
     });
     return {
       pro_codigo: p.PRO_CODIGO,
@@ -380,17 +384,23 @@ export class OrcamentoService {
       if (!p) { erros.push(`Item ${idx + 1}: produto ${i.pro_codigo} não existe na empresa 3.`); return; }
       const qtd = Number(i.quantidade);
       const tabela = p.preco_tabela;
-      let preco = i.preco_unit != null ? round2(Number(i.preco_unit)) : round2(tabela * (1 - Number(i.desc_pct ?? 0)));
+      // O vendedor NUNCA digita preço: só desconto. O preço nasce da tabela do
+      // cliente menos o desconto; `preco_unit` só vale para item SEM tabela.
+      const descPedido = Math.min(1, Math.max(0, Number(i.desc_pct ?? 0)));
+      let preco = tabela > 0 ? round2(tabela * (1 - descPedido)) : round2(Number(i.preco_unit ?? 0));
       if (!(preco > 0)) {
-        if (tabela > 0) preco = tabela;
-        else { erros.push(`Item ${idx + 1} (${p.descricao}): sem preço de tabela — informe o preço.`); return; }
+        erros.push(`Item ${idx + 1} (${p.descricao}): sem preço de tabela — informe o preço.`);
+        return;
       }
       if (p.custo != null && preco < p.custo) {
         erros.push(`Item ${idx + 1} (${p.descricao}): preço ${preco.toFixed(2)} abaixo do custo — não permitido.`);
         return;
       }
       const descPct = tabela > 0 ? Math.max(0, Math.round((1 - preco / tabela) * 10000) / 10000) : 0;
-      const minimo = p.avaliacao.preco_minimo;
+      // Desconto máximo e mínimo valem para ESTA quantidade (escala por volume).
+      const degrau = [...p.avaliacao.escala_volume].reverse().find((d) => qtd >= d.qtd_min) ?? p.avaliacao.escala_volume[0];
+      const minimo = degrau?.preco_minimo ?? p.avaliacao.preco_minimo;
+      const descMaxQtd = degrau?.desc_max_efetivo_pct ?? p.avaliacao.desc_max_efetivo_pct;
       const itemAcima = minimo > 0 && preco < minimo - 0.005;
       acima = acima || itemAcima;
       const linhaTotal = round2(preco * qtd);
@@ -414,7 +424,7 @@ export class OrcamentoService {
         mix: p.avaliacao.mix,
         faixa: p.avaliacao.faixa,
         markup_regua: p.avaliacao.markup_regua,
-        desc_max_pct: p.avaliacao.desc_max_efetivo_pct,
+        desc_max_pct: descMaxQtd,
         preco_minimo: minimo,
         acima_alcada: itemAcima,
         estoque_disponivel: p.estoque_disponivel,

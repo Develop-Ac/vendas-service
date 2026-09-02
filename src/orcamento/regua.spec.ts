@@ -73,15 +73,15 @@ describe('avaliarItem', () => {
     expect(a.faixa).toBe('1B');
     expect(a.markup_regua).toBe(2.3);
     expect(a.preco_alvo_regua).toBe(31.86);
-    expect(a.desc_max_pct).toBe(0.03);
-    expect(a.preco_minimo).toBe(33.85); // 34,90 × 0,97
+    expect(a.desc_max_pct).toBe(0.015); // 1 un = metade do máximo da faixa (3%)
+    expect(a.preco_minimo).toBe(34.38); // 34,90 × 0,985
     expect(a.tabela_abaixo_regua).toBe(false);
     expect(a.markup_tabela).toBeCloseTo(2.52, 2);
   });
 
   it('tabela abaixo da lista da régua: desconto encolhe até o piso (nunca acima da tabela)', () => {
     // custo 240,96 PB (154) -> 2A PB markup 1,60 -> lista 385,54; piso 385,54×0,95=366,26; tabela 377,87
-    const a = avaliarItem({ custo: 240.96, preco_tabela: 377.87, subgrp_codigo: 154, descricao: 'P/BRISA' });
+    const a = avaliarItem({ custo: 240.96, preco_tabela: 377.87, subgrp_codigo: 154, descricao: 'P/BRISA', quantidade: 6 });
     expect(a.classe).toBe('PB');
     expect(a.faixa).toBe('2A');
     expect(a.tabela_abaixo_regua).toBe(true);
@@ -90,7 +90,7 @@ describe('avaliarItem', () => {
   });
 
   it('tabela muito abaixo da régua: zero de desconto', () => {
-    const a = avaliarItem({ custo: 100, preco_tabela: 150, subgrp_codigo: 1, descricao: 'X' }); // 1D GERAL 1,85 -> 185; piso 179,45
+    const a = avaliarItem({ custo: 100, preco_tabela: 150, subgrp_codigo: 1, descricao: 'X', quantidade: 6 }); // 1D GERAL 1,85 -> 185; piso 179,45
     expect(a.preco_minimo).toBe(150);
     expect(a.desc_max_efetivo_pct).toBe(0);
   });
@@ -103,7 +103,7 @@ describe('avaliarItem', () => {
   it('exceção exclusivo congela o markup e usa o desconto próprio', () => {
     const a = avaliarItem({
       custo: 500, preco_tabela: 1200, subgrp_codigo: 1, descricao: 'FAROL TERA',
-      excecao: { classe: 'EXCLUSIVO', desc_max: 0.05 },
+      excecao: { classe: 'EXCLUSIVO', desc_max: 0.05 }, quantidade: 6,
     });
     expect(a.classe).toBe('EXCLUSIVO');
     expect(a.preco_minimo).toBe(1140);
@@ -115,6 +115,29 @@ describe('avaliarItem', () => {
     expect(a.faixa).toBeNull();
     expect(a.preco_minimo).toBe(50);
     expect(a.desc_max_pct).toBe(0);
+  });
+});
+
+describe('escala por volume', () => {
+  it('o máximo da faixa é o teto; a quantidade libera 50% / 75% / 100% dele', () => {
+    const base = { custo: 100, preco_tabela: 200, subgrp_codigo: 1, descricao: 'X' }; // 1D GERAL: máx 3%
+    const q1 = avaliarItem({ ...base, quantidade: 1 });
+    const q3 = avaliarItem({ ...base, quantidade: 3 });
+    const q6 = avaliarItem({ ...base, quantidade: 6 });
+    const q50 = avaliarItem({ ...base, quantidade: 50 });
+    expect(q1.desc_max_pct).toBe(0.015);
+    expect(q3.desc_max_pct).toBe(0.0225);
+    expect(q6.desc_max_pct).toBe(0.03);
+    expect(q50.desc_max_pct).toBe(0.03); // nunca acima do máximo da faixa
+    expect(q1.preco_minimo).toBe(197); // 200 × 0,985
+    expect(q6.preco_minimo).toBe(194); // 200 × 0,97
+    expect(q1.fracao_volume).toBe(0.5);
+    expect(q1.escala_volume.map((d) => d.qtd_min)).toEqual([1, 3, 6]);
+    expect(q1.escala_volume[2].desc_max_pct).toBe(0.03);
+  });
+  it('nunca abaixo do custo mesmo com volume', () => {
+    const a = avaliarItem({ custo: 100, preco_tabela: 102, subgrp_codigo: 1, descricao: 'X', quantidade: 50 });
+    expect(a.preco_minimo).toBeGreaterThanOrEqual(100);
   });
 });
 

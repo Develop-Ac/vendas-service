@@ -1048,6 +1048,14 @@ model ven_regua_atacado {
   @@unique([classe, faixa], map: "uq_ven_regua_atacado")
 }
 
+model ven_regua_volume {
+  id         Int      @id @default(autoincrement())
+  qtd_min    Int      @unique
+  fracao     Decimal  @db.Decimal(5, 4)
+  ativo      Boolean  @default(true)
+  updated_at DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+}
+
 model ven_regua_item_excecao {
   pro_codigo  Int       @id
   classe      String // EXCLUSIVO | OPORTUNIDADE

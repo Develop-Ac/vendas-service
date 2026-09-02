@@ -143,6 +143,40 @@ export interface ExcecaoItem {
   motivo?: string | null;
 }
 
+/**
+ * Escala por VOLUME (quantidade na linha): o desconto máximo da FAIXA é o teto e
+ * nunca cresce; o volume é o que LIBERA esse teto. Com pouca quantidade o
+ * vendedor tem só uma fração do máximo da faixa; a partir de `qtd_min` unidades
+ * a fração sobe, até 100% do máximo. Ex.: faixa 1D (3%) → 1,5% até 2 un,
+ * 2,25% de 3 a 5 un, 3% a partir de 6 un.
+ */
+export interface FaixaVolume {
+  qtd_min: number;
+  /** fração do desconto máximo da faixa liberada a partir de qtd_min (1 = o máximo inteiro). */
+  fracao: number;
+}
+
+/** Escala padrão — a mesma do seed de ven_regua_volume. */
+export const VOLUME_PADRAO: FaixaVolume[] = [
+  { qtd_min: 1, fracao: 0.5 },
+  { qtd_min: 3, fracao: 0.75 },
+  { qtd_min: 6, fracao: 1 },
+];
+
+/** Fração do máximo liberada para a quantidade (nunca acima de 1). */
+export function fracaoPorVolume(volume: FaixaVolume[], quantidade: number): number {
+  const validas = volume.filter((v) => quantidade >= v.qtd_min);
+  if (!validas.length) return Math.min(1, volume[0]?.fracao ?? 1);
+  return Math.min(1, validas.reduce((m, v) => Math.max(m, v.fracao), 0));
+}
+
+export interface DegrauVolume {
+  qtd_min: number;
+  desc_max_pct: number;
+  desc_max_efetivo_pct: number;
+  preco_minimo: number;
+}
+
 export interface EntradaAvaliacao {
   custo: number | null;
   preco_tabela: number;
@@ -150,6 +184,10 @@ export interface EntradaAvaliacao {
   descricao: string | null;
   excecao?: ExcecaoItem | null;
   regua?: RegraFaixa[];
+  /** Escala por volume; ausente = VOLUME_PADRAO. */
+  volume?: FaixaVolume[];
+  /** Quantidade da linha — define o degrau de volume aplicado. Padrão 1. */
+  quantidade?: number;
 }
 
 export interface Avaliacao {
@@ -168,6 +206,10 @@ export interface Avaliacao {
   /** Tabela do ERP já está abaixo do preço de lista da régua (item ainda não carregado). */
   tabela_abaixo_regua: boolean;
   motivo: string;
+  /** Fração do máximo da faixa liberada pela quantidade (1 = máximo inteiro). */
+  fracao_volume: number;
+  /** A escala inteira (qtd 1 + cada degrau), já com desc. máx e preço mínimo — a tela escolhe pela quantidade. */
+  escala_volume: DegrauVolume[];
 }
 
 // 13,85 × 2,30 dá 31,854999… em ponto flutuante; sem a folga o meio-centavo cai para baixo.
@@ -187,6 +229,23 @@ const round4 = (v: number) => Math.round(v * 10000 + 1e-7) / 10000;
  * é a tabela menos o desconto próprio, sem piso da régua.
  */
 export function avaliarItem(e: EntradaAvaliacao): Avaliacao {
+  const volume = e.volume ?? VOLUME_PADRAO;
+  const qtd = e.quantidade != null && e.quantidade > 0 ? e.quantidade : 1;
+  const fracao = fracaoPorVolume(volume, qtd);
+  const base = avaliarBase(e, fracao);
+  const degraus = [1, ...volume.map((v) => v.qtd_min)]
+    .filter((q, i, a) => a.indexOf(q) === i)
+    .sort((a, b) => a - b);
+  const escala: DegrauVolume[] = degraus.map((q) => {
+    const a = avaliarBase(e, fracaoPorVolume(volume, q));
+    return { qtd_min: q, desc_max_pct: a.desc_max_pct, desc_max_efetivo_pct: a.desc_max_efetivo_pct, preco_minimo: a.preco_minimo };
+  });
+  return { ...base, fracao_volume: fracao, escala_volume: escala };
+}
+
+type AvaliacaoBase = Omit<Avaliacao, 'fracao_volume' | 'escala_volume'>;
+
+function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
   const regua = e.regua ?? REGUA_PADRAO;
   const custo = e.custo != null && e.custo > 0 ? e.custo : null;
   const fx = faixaPorCusto(custo);
@@ -198,7 +257,7 @@ export function avaliarItem(e: EntradaAvaliacao): Avaliacao {
   const semPrecoOuCusto = tabela <= 0 || !custo;
 
   if (e.excecao) {
-    const descMax = e.excecao.desc_max ?? regra?.desc_max ?? 0.03;
+    const descMax = round4((e.excecao.desc_max ?? regra?.desc_max ?? 0.03) * fracao);
     let minimo = round2(tabela * (1 - descMax));
     if (custo) minimo = Math.max(minimo, round2(custo));
     return {
@@ -242,8 +301,11 @@ export function avaliarItem(e: EntradaAvaliacao): Avaliacao {
   }
 
   const alvo = round2(custo * regra.markup);
+  // O piso da régua é sempre o da FAIXA (desc. máx cheio); a quantidade só
+  // decide quanto desse máximo o vendedor pode dar sozinho.
+  const descMax = round4(regra.desc_max * fracao);
   const pisoRegua = round2(custo * regra.markup * (1 - regra.desc_max));
-  let minimo = Math.max(round2(tabela * (1 - regra.desc_max)), pisoRegua);
+  let minimo = Math.max(round2(tabela * (1 - descMax)), pisoRegua);
   minimo = Math.min(minimo, tabela);
   minimo = Math.max(minimo, round2(custo));
   const abaixo = tabela < alvo - 0.005;
@@ -255,7 +317,7 @@ export function avaliarItem(e: EntradaAvaliacao): Avaliacao {
     faixa: fx.chave,
     markup_regua: regra.markup,
     preco_alvo_regua: alvo,
-    desc_max_pct: regra.desc_max,
+    desc_max_pct: descMax,
     desc_max_efetivo_pct: descEfetivo,
     preco_minimo: minimo,
     markup_tabela: markupTabela,
@@ -264,7 +326,7 @@ export function avaliarItem(e: EntradaAvaliacao): Avaliacao {
       ? descEfetivo <= 0
         ? 'Tabela já abaixo da lista da régua — sem margem para desconto.'
         : 'Tabela abaixo da lista da régua — desconto reduzido ao piso.'
-      : `Faixa ${fx.chave} ${base}: até ${(regra.desc_max * 100).toFixed(0)}% de desconto.`,
+      : `Faixa ${fx.chave} ${base}: até ${(descMax * 100).toFixed(1)}% de desconto${fracao < 1 ? ` (${(regra.desc_max * 100).toFixed(0)}% com volume)` : ''}.`,
   };
 }
 
