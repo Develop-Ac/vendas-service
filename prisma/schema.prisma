@@ -8,23 +8,25 @@ datasource db {
 }
 
 model sis_usuarios {
-  nome              String
-  senha             String
-  trash             Int                @default(0)
-  id                String             @id @default(cuid())
-  codigo            String             @unique
-  perfil_acesso     String
-  avatar_url        String?
-  tema_preferencia  String             @default("system")
-  setor             String?            @db.VarChar(255)
-  est_auditoria     est_auditoria[]
-  est_contagem      est_contagem[]
-  est_contagem_logs est_contagem_log[]
-  fed_comentarios   fed_comentarios[]
-  fed_curtidas      fed_curtidas[]
-  fed_eventos       fed_eventos[]
-  fed_posts         fed_posts[]
-  sis_permissoes    sis_permissoes[]
+  nome               String
+  senha              String
+  trash              Int                @default(0)
+  id                 String             @id @default(cuid())
+  codigo             String             @unique
+  perfil_acesso      String
+  avatar_url         String?
+  tema_preferencia   String             @default("system")
+  setor              String?            @db.VarChar(255)
+  vendas_rep_codigo  Int?
+  vendas_hub_inicial String?            @db.VarChar(30)
+  est_auditoria      est_auditoria[]
+  est_contagem       est_contagem[]
+  est_contagem_logs  est_contagem_log[]
+  fed_comentarios    fed_comentarios[]
+  fed_curtidas       fed_curtidas[]
+  fed_eventos        fed_eventos[]
+  fed_posts          fed_posts[]
+  sis_permissoes     sis_permissoes[]
 }
 
 model com_cotacao {
@@ -76,6 +78,7 @@ model ofi_checklists {
   assinatura_retirada_base64   String?
   dataHoraEntrega              DateTime?
   assinaturaRetiradaBase64     String?
+  clientId                     String?                  @unique
   ofi_checklists_avarias       ofi_checklists_avarias[]
   ofi_checklists_fotos         ofi_checklists_fotos[]
   ofi_checklists_items         ofi_checklists_items[]
@@ -143,23 +146,36 @@ model com_cotacao_itens_for {
   valor_unitario Float?
   qtd_sugerida   Int?            @default(0)
   ref_fornecedor String?         @db.VarChar(255)
+  observacao     String?         @db.VarChar(255)
+  ipi            Decimal?        @db.Decimal(10, 2)
+  icms           Boolean?
   cotacao        com_cotacao_for @relation(fields: [pedido_cotacao, for_codigo], references: [pedido_cotacao, for_codigo], onDelete: Cascade)
 
   @@index([pedido_cotacao, for_codigo])
 }
 
 model com_pedido {
-  id             String             @id @default(cuid())
-  pedido_cotacao Int
-  for_codigo     Int
-  created_at     DateTime           @default(now())
-  updated_at     DateTime           @updatedAt
-  frete          Decimal?           @db.Decimal(10, 2)
-  prazo          String?            @db.VarChar(100)
-  nomeFrete      String?            @db.VarChar(255)
-  status         String?            @db.VarChar(50)
-  categoriaFrete String?            @db.VarChar(255)
-  itens          com_pedido_itens[]
+  id                     String                   @id @default(cuid())
+  pedido_cotacao         Int
+  for_codigo             Int
+  created_at             DateTime                 @default(now())
+  updated_at             DateTime                 @updatedAt
+  frete                  Decimal?                 @db.Decimal(10, 2)
+  prazo                  String?                  @db.VarChar(100)
+  nomeFrete              String?                  @db.VarChar(255)
+  status                 String?                  @db.VarChar(50)
+  categoriaFrete         String?                  @db.VarChar(255)
+  data_recebimento       DateTime?
+  ipi_no_valor           Boolean                  @default(false)
+  status_anterior        String?                  @db.VarChar(50)
+  tem_garantia           Boolean                  @default(false)
+  garantia_qtd_titulos   Int?
+  garantia_qtd_produtos  Int?
+  garantia_valor         Decimal?                 @db.Decimal(15, 2)
+  garantia_verificada_em DateTime?                @db.Timestamp(6)
+  previsao_chegada       DateTime?                @db.Timestamptz(6)
+  itens                  com_pedido_itens[]
+  com_pedido_nfe_vinculo com_pedido_nfe_vinculo[]
 
   @@unique([pedido_cotacao, for_codigo])
   @@index([pedido_cotacao])
@@ -187,6 +203,12 @@ model com_pedido_itens {
   justificativa    String?    @db.VarChar(100)
   qtd_sugerida_min Decimal?   @db.Decimal(15, 4)
   qtd_sugerida_max Decimal?   @db.Decimal(15, 4)
+  status_item      String?    @db.VarChar(30)
+  status_item_por  String?    @db.VarChar(120)
+  status_item_em   DateTime?  @db.Timestamp(6)
+  quantidade_real  Boolean    @default(false)
+  ipi              Decimal?   @db.Decimal(10, 2)
+  icms             Boolean?
   pedido           com_pedido @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
 
   @@unique([pedido_id, pro_codigo, for_codigo])
@@ -204,6 +226,8 @@ model est_contagem {
   piso              String?            @db.VarChar
   status            Int                @default(0)
   tipo              Int                @default(1)
+  data_inicio       DateTime?
+  data_fim          DateTime?
   usuario           sis_usuarios       @relation(fields: [colaborador], references: [id])
   logs              est_contagem_log[]
 
@@ -228,10 +252,12 @@ model est_contagem_itens {
   contagem_cuid      String
   aplicacoes         String?
   identificador_item String?            @db.VarChar
+  pendente           Boolean            @default(false)
   logs               est_contagem_log[]
 
   @@index([contagem_cuid])
   @@index([cod_produto])
+  @@index([pendente])
 }
 
 model est_contagem_log {
@@ -378,7 +404,16 @@ model sac_kanban {
   etapa              String
   updatedAt          DateTime             @db.Timestamptz(6)
   imagem             String?
+  devolucao          String?
+  notaOuCupomFiscal  String?
+  notaDevolucao      String?
+  credito            String?
+  numeroDacte        String?
+  devolutivaSac      String?
+  responsavel        String?              @db.VarChar(255)
+  telefone           String?              @db.VarChar(20)
   sac_kanban_imagens sac_kanban_imagens[]
+  sac_kanban_minion  sac_kanban_minion[]
 }
 
 model sis_permissoes {
@@ -398,7 +433,15 @@ model sac_kanban_imagens {
   kanban_id  String
   imagem     String
   created_at DateTime?  @default(now()) @db.Timestamptz(6)
+  storage    String     @default("base64")
+  tipo       String     @default("imagem")
+  mime_type  String?
+  nome       String?
+  tamanho    Int?
+  bucket     String?
   sac_kanban sac_kanban @relation(fields: [kanban_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([kanban_id], map: "ix_sac_kanban_imagens_kanban")
 }
 
 model com_data_saldo_produto {
@@ -471,6 +514,61 @@ model com_fifo_completo {
   tempo_medio_saldo_atual    Decimal?  @db.Decimal(15, 2)
   categoria_saldo_atual      String?   @db.VarChar(50)
   pro_referencia             String?
+  demanda_real_dia           Decimal?  @db.Decimal(15, 6)
+  sigma_demanda_dia          Decimal?  @db.Decimal(15, 6)
+  cv_demanda                 Decimal?  @db.Decimal(10, 4)
+  classe_xyz                 String?   @db.VarChar(2)
+  estoque_seguranca          Int?
+  nivel_servico_z            Decimal?  @db.Decimal(6, 4)
+  lead_time_dias             Int?
+  venda_perdida_12m          Decimal?  @db.Decimal(15, 4)
+  valor_vendido_12m          Decimal?  @db.Decimal(15, 4)
+  padrao_demanda             String?   @db.VarChar(20)
+  metodo_reposicao           String?   @db.VarChar(30)
+  fator_sazonal              Decimal?  @db.Decimal(8, 4)
+  demanda_planejamento_dia   Decimal?  @db.Decimal(15, 6)
+  sob_encomenda              Boolean?  @default(false)
+  grupo_chave                String?   @db.VarChar(255)
+  grupo_qtd_itens            Int?
+  grupo_estoque_disponivel   Decimal?  @db.Decimal(15, 4)
+  grupo_demanda_dia          Decimal?  @db.Decimal(15, 6)
+  grupo_fator_sazonal        Decimal?  @db.Decimal(8, 4)
+  grupo_curva                String?   @db.VarChar(10)
+  grupo_padrao               String?   @db.VarChar(20)
+  grupo_metodo               String?   @db.VarChar(30)
+  grupo_estoque_min          Int?
+  grupo_estoque_max          Int?
+  grupo_estoque_seguranca    Int?
+  mean_size_mes              Decimal?  @db.Decimal(15, 4)
+  cv2_tamanho                Decimal?  @db.Decimal(10, 4)
+  grupo_mean_size            Decimal?  @db.Decimal(15, 4)
+  grupo_cv2                  Decimal?  @db.Decimal(10, 4)
+  custo_unitario             Decimal?  @db.Decimal(15, 4)
+  margem_unitaria            Decimal?  @db.Decimal(15, 4)
+  margem_pct                 Decimal?  @db.Decimal(8, 4)
+  nivel_servico_custo        Decimal?  @db.Decimal(6, 4)
+  z_custo                    Decimal?  @db.Decimal(6, 4)
+  estoque_min_custo          Int?
+  estoque_max_custo          Int?
+  estoque_seg_custo          Int?
+  grupo_nivel_servico_custo  Decimal?  @db.Decimal(6, 4)
+  grupo_estoque_min_custo    Int?
+  grupo_estoque_max_custo    Int?
+  grupo_margem_pct           Decimal?  @db.Decimal(8, 4)
+  eh_original                Boolean?  @default(false)
+  teve_outlier_aparado       Boolean?  @default(false)
+  outlier_qtd_aparada        Decimal?  @db.Decimal(15, 2)
+  outlier_motivo             String?   @db.VarChar(255)
+  fator_sazonal_ciclo        Decimal?  @db.Decimal(8, 4)
+  fornecedor_principal       String?   @db.VarChar(200)
+  periodo_revisao_dias       Decimal?  @db.Decimal(6, 2)
+  grupo_lead_time_dias       Decimal?  @db.Decimal(6, 2)
+  marca_linha                Int?      @db.SmallInt
+  preco_venda_1              Decimal?  @db.Decimal(15, 4)
+  preco_venda_2              Decimal?  @db.Decimal(15, 4)
+  custo_cogs_12m             Decimal?  @db.Decimal(15, 4)
+  custo_fonte                String?   @db.VarChar(20)
+  margem_unitaria_realizada  Decimal?  @db.Decimal(15, 4)
 
   @@index([teve_alteracao_analise], map: "idx_com_fifo_alteracao")
   @@index([categoria_estocagem], map: "idx_com_fifo_categoria_estocagem")
@@ -479,6 +577,12 @@ model com_fifo_completo {
   @@index([data_processamento], map: "idx_com_fifo_data_processamento")
   @@index([group_id], map: "idx_com_fifo_group_id")
   @@index([pro_codigo], map: "idx_com_fifo_pro_codigo")
+  @@index([classe_xyz], map: "idx_com_fifo_classe_xyz")
+  @@index([eh_original], map: "idx_com_fifo_eh_original")
+  @@index([grupo_chave], map: "idx_com_fifo_grupo_chave")
+  @@index([teve_outlier_aparado], map: "idx_com_fifo_outlier")
+  @@index([padrao_demanda], map: "idx_com_fifo_padrao_demanda")
+  @@index([sob_encomenda], map: "idx_com_fifo_sob_encomenda")
 }
 
 model com_metricas_fifo {
@@ -533,6 +637,13 @@ model com_nfe_conciliacao {
   tipo_imposto             String?                    @db.VarChar(50)
   compra_comercializacao   Boolean                    @default(false)
   uso_consumo              Boolean                    @default(false)
+  dt_entrada               DateTime?                  @db.Timestamp(6)
+  mva_verificado_em        DateTime?                  @db.Timestamptz(6)
+  mva_alerta_enviado_em    DateTime?                  @db.Timestamptz(6)
+  mva_maior                Decimal?                   @db.Decimal(7, 4)
+  auditoria_fiscal_em      DateTime?                  @db.Timestamptz(6)
+  auditoria_fiscal_status  String?                    @db.VarChar(20)
+  auditoria_alerta_em      DateTime?                  @db.Timestamptz(6)
   com_nfe_conciliacao_item com_nfe_conciliacao_item[]
 }
 
@@ -597,6 +708,8 @@ model com_produto_fornecedor_referencia {
   descricao  String    @db.VarChar(255)
   data       DateTime? @default(now()) @db.Timestamp(6)
   codigo     String?   @db.VarChar(255)
+
+  @@index([fornecedor, codigo, data], map: "idx_cpfr_forn_cod_data")
 }
 
 model com_relacionamento_itens {
@@ -811,48 +924,19 @@ model sis_log {
   created_at DateTime? @default(now()) @db.Timestamp(6)
 }
 
-model ven_venda_casada {
-  id            Int      @id @default(autoincrement())
-  nome_vendedor String?  @db.VarChar(255)
-  carro         String?  @db.VarChar(255)
-  ano           Int?
-  observacao    String?
-  cliente       String?  @db.VarChar(255)
-  numero        String?  @db.VarChar(50)
-  imagem        String?
-  status        String?  @db.VarChar(50)
-  pecas         String[]
-  pecas_cotadas String[]
-}
-
-model ven_venda_casada_itens {
-  id         Int     @id @default(autoincrement())
-  nome       String  @db.VarChar(255)
-  valor      Float   @db.Real
-  prazo      String? @db.VarChar(100)
-  fornecedor String? @db.VarChar(255)
-  marca      String? @db.VarChar(255)
-}
-
-// ===================== Carteirização de Clientes =====================
-// Overlay da carteira (fonte de verdade cliente->vendedor para o atacado).
-// Base/métricas dos clientes vêm do SQL Server BI (leitura). Ver sql/carteirizacao_postgres.sql
-
 model ven_carteira_cliente {
-  id            String   @id @default(cuid())
-  cli_codigo    Int      @unique(map: "uq_ven_carteira_cliente_cli")
-  rep_codigo    Int?
-  rep_nome      String?
-  canal         String?
-  origem        String   @default("MANUAL") // SEED_ERP | SEED_VENDAS | MANUAL | LOTE | TRANSFERENCIA | AUTOMATICA
-  observacao    String?
-  atribuido_por String?
-  atribuido_em  DateTime @default(now()) @db.Timestamptz(6)
-  created_at    DateTime @default(now()) @db.Timestamptz(6)
-  updated_at    DateTime @default(now()) @updatedAt @db.Timestamptz(6)
-  trash         Int      @default(0)
-  // Revisão (sincronização ERP): cliente que saiu do atacado fica sem vendedor
-  // e revisao=1 aguardando confirmação manual da exclusão da carteira.
+  id             String    @id @default(cuid())
+  cli_codigo     Int       @unique(map: "uq_ven_carteira_cliente_cli")
+  rep_codigo     Int?
+  rep_nome       String?
+  canal          String?
+  origem         String    @default("MANUAL")
+  observacao     String?
+  atribuido_por  String?
+  atribuido_em   DateTime  @default(now()) @db.Timestamptz(6)
+  created_at     DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at     DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  trash          Int       @default(0)
   revisao        Int       @default(0)
   revisao_motivo String?
   revisao_em     DateTime? @db.Timestamptz(6)
@@ -868,7 +952,7 @@ model ven_carteira_historico {
   rep_nome_anterior   String?
   rep_codigo_novo     Int?
   rep_nome_novo       String?
-  acao                String // ATRIBUICAO | ALTERACAO | REMOCAO | TRANSFERENCIA | LOTE
+  acao                String
   motivo              String?
   usuario_id          String?
   usuario_nome        String?
@@ -909,14 +993,9 @@ model ven_meta_vendedor {
   @@unique([rep_codigo, ano, mes], map: "uq_ven_meta_vendedor_periodo")
 }
 
-// CRM do Atacado (fase 1) — fila do dia gerada pela régua por curva. A tarefa
-// fecha SOZINHA por sinal observado (orçamento/venda do cliente após gerada_em);
-// prazo estourado sem sinal vira ESCALADA (visível ao supervisor). O unique
-// parcial "1 tarefa em andamento por cliente" mora no SQL manual
-// (uq_ven_fila_tarefa_andamento) — o Prisma não expressa índice parcial.
 model ven_fila_tarefa {
   id              String    @id @default(cuid())
-  tipo            String // CONTATO | RESGATE
+  tipo            String
   cli_codigo      Int
   cli_nome        String?
   rep_codigo      Int?
@@ -925,10 +1004,10 @@ model ven_fila_tarefa {
   motivo_geracao  String?
   gerada_em       DateTime  @default(now()) @db.Timestamptz(6)
   prazo_em        DateTime  @db.Timestamptz(6)
-  status          String    @default("ABERTA") // ABERTA | ESCALADA | CONCLUIDA | CANCELADA
+  status          String    @default("ABERTA")
   escalada_em     DateTime? @db.Timestamptz(6)
   concluida_em    DateTime? @db.Timestamptz(6)
-  conclusao_sinal String? // VENDA | ORCAMENTO | (futuro) MENSAGEM
+  conclusao_sinal String?
   conclusao_obs   String?
   created_at      DateTime  @default(now()) @db.Timestamptz(6)
   updated_at      DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
@@ -939,24 +1018,22 @@ model ven_fila_tarefa {
   @@index([gerada_em], map: "idx_ven_fila_tarefa_gerada")
 }
 
-// Desfecho do orçamento que não fechou — a única digitação nova do vendedor
-// (1 toque, 6 motivos). É a pesquisa de motivo de perda da fase 1.
 model ven_orcamento_desfecho {
-  id           String   @id @default(cuid())
-  empresa      Int      @default(3)
+  id           String    @id @default(cuid())
+  empresa      Int       @default(3)
   orcamento    Int
   emissao      DateTime? @db.Date
   cli_codigo   Int
   cli_nome     String?
   rep_codigo   Int?
   rep_nome     String?
-  total        Decimal  @default(0) @db.Decimal(15, 2)
-  motivo       String // PRECO | PRAZO_FRETE | SEM_ESTOQUE | CONCORRENTE | CLIENTE_ADIOU | CREDITO_BLOQUEADO
+  total        Decimal   @default(0) @db.Decimal(15, 2)
+  motivo       String
   observacao   String?
   usuario_id   String?
   usuario_nome String?
-  created_at   DateTime @default(now()) @db.Timestamptz(6)
-  updated_at   DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([empresa, orcamento], map: "uq_ven_orc_desfecho_orcamento")
   @@index([cli_codigo], map: "idx_ven_orc_desfecho_cli")
@@ -965,15 +1042,13 @@ model ven_orcamento_desfecho {
   @@index([created_at], map: "idx_ven_orc_desfecho_created")
 }
 
-// Sensor WhatsApp (piloto WAHA) — vínculo telefone -> cliente. Casamento pela
-// chave DDD + últimos 8 dígitos (sobrevive ao 9º dígito). N números -> 1 cliente.
 model ven_wa_contato {
   id         String   @id @default(cuid())
   chave      String   @unique(map: "uq_ven_wa_contato_chave")
   telefone   String
   cli_codigo Int
   cli_nome   String?
-  origem     String   @default("SEED_ERP") // SEED_ERP | MANUAL
+  origem     String   @default("SEED_ERP")
   criado_por String?
   created_at DateTime @default(now()) @db.Timestamptz(6)
   updated_at DateTime @default(now()) @updatedAt @db.Timestamptz(6)
@@ -981,17 +1056,15 @@ model ven_wa_contato {
   @@index([cli_codigo], map: "idx_ven_wa_contato_cli")
 }
 
-// Sensor WhatsApp — SÓ METADADOS (decisão do plano: nenhum corpo de mensagem).
-// Uma linha por evento de mensagem, deduplicada por (sessao, message_id).
 model ven_wa_mensagem {
   id            String   @id @default(cuid())
   message_id    String
-  sessao        String // sessão WAHA (convenção: rep-<codigo>)
+  sessao        String
   rep_codigo    Int?
   chat_telefone String
   chave         String
-  cli_codigo    Int? // resolvido via ven_wa_contato; NULL = fila de vínculo
-  direcao       String // ENVIADA | RECEBIDA
+  cli_codigo    Int?
+  direcao       String
   tipo          String?
   timestamp     DateTime @db.Timestamptz(6)
   ack           Int?
@@ -1003,11 +1076,6 @@ model ven_wa_mensagem {
   @@index([sessao, timestamp], map: "idx_ven_wa_msg_sessao_ts")
 }
 
-// Esteira de resgate (fase 1): um episódio por entrada em risco de inativação,
-// acompanhado até RECUPERADO/PERDIDO. Estágio avança SOZINHO por sinal
-// observado (mensagem/orçamento/venda) — nenhum card é arrastado à mão. O
-// unique parcial "1 episódio aberto por cliente" mora no SQL manual
-// (uq_ven_resgate_aberto).
 model ven_resgate {
   id                       String    @id @default(cuid())
   cli_codigo               Int
@@ -1018,7 +1086,7 @@ model ven_resgate {
   faturamento_total        Decimal   @default(0) @db.Decimal(15, 2)
   dias_sem_compra_abertura Int?
   aberto_em                DateTime  @default(now()) @db.Timestamptz(6)
-  estagio                  String    @default("A_CONTATAR") // A_CONTATAR | CONTATADO | PROPOSTA | RECUPERADO | PERDIDO
+  estagio                  String    @default("A_CONTATAR")
   contatado_em             DateTime? @db.Timestamptz(6)
   proposta_em              DateTime? @db.Timestamptz(6)
   fechado_em               DateTime? @db.Timestamptz(6)
@@ -1030,4 +1098,1154 @@ model ven_resgate {
   @@index([rep_codigo, estagio], map: "idx_ven_resgate_rep_estagio")
   @@index([fechado_em], map: "idx_ven_resgate_fechado")
   @@index([cli_codigo], map: "idx_ven_resgate_cli")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model avi_aviso_alvo {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  aviso_id   String     @db.VarChar(36)
+  tipo       String     @db.VarChar(10)
+  valor      String?
+  avi_avisos avi_avisos @relation(fields: [aviso_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([aviso_id], map: "ix_avi_alvo_aviso")
+  @@index([tipo, valor], map: "ix_avi_alvo_lookup")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model avi_avisos {
+  id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  regra_id             String?                @db.VarChar(36)
+  origem               String                 @db.VarChar(10)
+  evento_chave         String?                @db.VarChar(160)
+  titulo               String
+  corpo                String?
+  link                 String?
+  prioridade           String                 @default("normal") @db.VarChar(10)
+  canais               String[]               @default(["badge", "mural"])
+  fixado               Boolean                @default(false)
+  autor_id             String?                @db.VarChar(36)
+  contador             Int                    @default(1)
+  publicado_em         DateTime               @default(now()) @db.Timestamp(6)
+  expira_em            DateTime?              @db.Timestamp(6)
+  trash                Int                    @default(0) @db.SmallInt
+  created_at           DateTime               @default(now()) @db.Timestamp(6)
+  updated_at           DateTime               @default(now()) @db.Timestamp(6)
+  avi_aviso_alvo       avi_aviso_alvo[]
+  avi_regra            avi_regra?             @relation(fields: [regra_id], references: [id], onUpdate: NoAction)
+  avi_entrega_whatsapp avi_entrega_whatsapp[]
+  avi_leitura          avi_leitura[]
+
+  @@index([trash, prioridade, publicado_em(sort: Desc)], map: "ix_avi_avisos_ativos")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model avi_entrega_whatsapp {
+  id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  aviso_id   String     @db.VarChar(36)
+  setor      String?
+  chat_id    String
+  status     String     @default("pendente") @db.VarChar(12)
+  detalhe    String?
+  enviado_em DateTime?  @db.Timestamp(6)
+  avi_avisos avi_avisos @relation(fields: [aviso_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([aviso_id, chat_id])
+}
+
+model avi_leitura {
+  aviso_id   String     @db.VarChar(36)
+  usuario_id String     @db.VarChar(36)
+  lido_em    DateTime   @default(now()) @db.Timestamp(6)
+  avi_avisos avi_avisos @relation(fields: [aviso_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([aviso_id, usuario_id])
+  @@index([usuario_id], map: "ix_avi_leitura_usuario")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model avi_regra {
+  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  chave           String       @unique @db.VarChar(120)
+  descricao       String?
+  origem          String       @default("sistema") @db.VarChar(10)
+  ativo           Boolean      @default(false)
+  auto_descoberta Boolean      @default(false)
+  titulo_template String
+  corpo_template  String?
+  link_template   String?
+  prioridade      String       @default("normal") @db.VarChar(10)
+  canais          String[]     @default(["badge", "mural"])
+  alvo_tipo       String?      @db.VarChar(10)
+  alvo_valor      String?
+  agrupar         Boolean      @default(true)
+  cooldown_min    Int          @default(0)
+  created_at      DateTime     @default(now()) @db.Timestamp(6)
+  updated_at      DateTime     @default(now()) @db.Timestamp(6)
+  avi_avisos      avi_avisos[]
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model com_cte_documento {
+  chave_acesso          String    @id @db.VarChar(44)
+  numero                String?   @db.VarChar(20)
+  serie                 String?   @db.VarChar(10)
+  cfop                  String?   @db.VarChar(10)
+  emitente_nome         String?   @db.VarChar(120)
+  emitente_cnpj         String?   @db.VarChar(20)
+  remetente_nome        String?   @db.VarChar(120)
+  destinatario_nome     String?   @db.VarChar(120)
+  origem                String?   @db.VarChar(80)
+  destino               String?   @db.VarChar(80)
+  valor_total           Decimal   @default(0) @db.Decimal(15, 2)
+  data_emissao          DateTime? @db.Timestamptz(6)
+  status                String    @default("PENDENTE") @db.VarChar(12)
+  dt_entrada            DateTime? @db.Timestamptz(6)
+  xml_completo          String    @default("")
+  dados_json            Json?
+  hash                  String?   @db.VarChar(64)
+  created_at            DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at            DateTime  @default(now()) @db.Timestamptz(6)
+  tipo_frete            String    @default("OUTRO") @db.VarChar(10)
+  tomador_nome          String?   @db.VarChar(120)
+  tomador_nos           Boolean   @default(false)
+  tomador_cnpj          String?   @db.VarChar(20)
+  modalidade_pagador    String?   @db.VarChar(20)
+  rastreio_status       String?
+  rastreio_cobertura    String?
+  rastreio_dominio      String?
+  rastreio_previsao     DateTime?
+  rastreio_entregue_em  DateTime?
+  rastreio_recebedor    String?
+  rastreio_ult_evento   String?
+  rastreio_ult_consulta DateTime?
+  rastreio_tentativas   Int       @default(0)
+
+  @@index([rastreio_status])
+  @@index([data_emissao], map: "ix_cte_documento_data")
+  @@index([tipo_frete], map: "ix_cte_documento_frete")
+  @@index([numero], map: "ix_cte_documento_numero")
+  @@index([status], map: "ix_cte_documento_status")
+}
+
+model com_cte_rastreio_evento {
+  id             Int      @id @default(autoincrement())
+  chave_acesso   String
+  data_hora      DateTime
+  codigo_ssw     String?
+  ocorrencia     String?
+  descricao      String?
+  cidade         String?
+  filial         String?
+  tipo           String?
+  nome_recebedor String?
+  dominio        String?
+  created_at     DateTime @default(now())
+
+  @@unique([chave_acesso, data_hora, codigo_ssw], map: "uq_cte_evento")
+  @@index([chave_acesso], map: "com_cte_rastreio_evento_chave_idx")
+}
+
+model com_cte_transportadora_cobertura {
+  cnpj_raiz              String    @id
+  nome                   String?
+  coberta                Boolean?
+  dominio                String?
+  tentativas_sem_sucesso Int       @default(0)
+  ultima_verificacao     DateTime?
+  atualizado_em          DateTime  @default(now())
+}
+
+model com_fiscal_cfop {
+  id              BigInt   @id @default(autoincrement())
+  cfop_fornecedor String   @db.VarChar(5)
+  destinacao      String   @default("QUALQUER") @db.VarChar(20)
+  tem_cest        String   @default("QUALQUER") @db.VarChar(10)
+  cfop_entrada    String   @db.VarChar(5)
+  cst_final       String?  @db.VarChar(2)
+  ativo           Boolean  @default(true)
+  descricao       String?
+  updated_at      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([cfop_fornecedor], map: "ix_fiscal_cfop_forn")
+}
+
+model com_fiscal_opf_destinacao {
+  id         BigInt  @id @default(autoincrement())
+  opf_codigo String  @unique @db.VarChar(10)
+  destinacao String  @db.VarChar(20)
+  ativo      Boolean @default(true)
+}
+
+model com_fiscal_origem_cst {
+  id          BigInt  @id @default(autoincrement())
+  origem_de   String  @unique @db.VarChar(1)
+  origem_para String  @db.VarChar(1)
+  ativo       Boolean @default(true)
+}
+
+model com_fiscal_regra {
+  id              BigInt   @id @default(autoincrement())
+  imposto         String   @db.VarChar(20)
+  destinacao      String   @db.VarChar(20)
+  monofasico      Boolean?
+  cfop_sufixo     String?  @db.VarChar(4)
+  cst_final       String?  @db.VarChar(2)
+  st_codigo       String?  @db.VarChar(20)
+  pis_codigo      String?  @db.VarChar(10)
+  cofins_codigo   String?  @db.VarChar(10)
+  subtipo         String?  @db.VarChar(4)
+  comercializavel String?  @db.VarChar(2)
+  subgrp_codigo   String?  @db.VarChar(10)
+  ativo           Boolean  @default(true)
+  descricao       String?
+  updated_at      DateTime @default(now()) @db.Timestamptz(6)
+}
+
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model com_fornecedor_parametros {
+  id                  Int       @id @default(autoincrement())
+  for_codigo          Int       @unique
+  for_nome            String    @db.VarChar(255)
+  lead_time_dias      Int?
+  tempo_revisao_dias  Int?
+  pedido_minimo_valor Decimal?  @db.Decimal(15, 2)
+  updated_at          DateTime? @default(now()) @db.Timestamp(6)
+  updated_by          String?   @db.VarChar(100)
+  pedido_minimo_qtd   Decimal?  @db.Decimal(15, 2)
+  trabalha_carteira   Boolean   @default(false)
+}
+
+model com_fornecedor_relacionamento {
+  id            String    @id @db.VarChar(191)
+  group_id      String    @db.VarChar(100)
+  for_codigo    Int       @unique(map: "uq_forn_rel_for_codigo")
+  principal     Boolean   @default(false)
+  created_at    DateTime? @default(now()) @db.Timestamp(6)
+  ref_descricao Boolean   @default(false)
+
+  @@index([group_id], map: "idx_forn_rel_group")
+}
+
+model com_fornecedores {
+  id         Int    @id @default(autoincrement())
+  for_codigo Int
+  for_nome   String @db.VarChar(255)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model com_marca_linha {
+  mar_descricao String    @id @db.VarChar(200)
+  linha         Int       @db.SmallInt
+  observacao    String?   @db.VarChar(255)
+  updated_at    DateTime? @default(now()) @db.Timestamp(6)
+  updated_by    String?   @db.VarChar(100)
+}
+
+model com_nfe_ajustado_processado {
+  waha_msg_id   String   @id
+  chave_nfe     String?
+  resultado     String?
+  processado_em DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([chave_nfe], map: "ix_ajustado_proc_chave")
+}
+
+model com_nfe_auditoria_item {
+  id         BigInt   @id @default(autoincrement())
+  chave_nfe  String   @db.VarChar(44)
+  n_item     Int
+  campo      String   @db.VarChar(30)
+  esperado   String?  @db.VarChar(40)
+  encontrado String?  @db.VarChar(40)
+  mensagem   String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([chave_nfe, n_item, campo])
+  @@index([chave_nfe], map: "ix_auditoria_item_chave")
+}
+
+model com_nfe_ressalva {
+  id         BigInt   @id @default(autoincrement())
+  chave_nfe  String   @db.VarChar(44)
+  n_item     Int
+  motivo     String?
+  criado_por String?  @db.VarChar(120)
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([chave_nfe, n_item], map: "uq_ressalva")
+  @@index([chave_nfe], map: "ix_ressalva_chave")
+}
+
+model com_nfe_saldo_item {
+  id         String   @id
+  chave_nfe  String   @db.VarChar(44)
+  cprod      String
+  descricao  String?
+  qtd_total  Decimal  @db.Decimal(15, 4)
+  created_at DateTime @default(now())
+  updated_at DateTime
+
+  @@unique([chave_nfe, cprod])
+  @@index([chave_nfe])
+}
+
+model com_nfse_certificado {
+  cnpj          String    @id @db.VarChar(14)
+  nome          String?   @db.VarChar(255)
+  arquivo       Bytes
+  senha         String
+  validade_ate  DateTime? @db.Timestamp(6)
+  ativo         Boolean   @default(true)
+  atualizado_em DateTime  @default(now()) @db.Timestamp(6)
+  created_at    DateTime  @default(now()) @db.Timestamp(6)
+}
+
+model com_nfse_dist_controle {
+  cnpj            String    @id @db.VarChar(14)
+  ultimo_nsu      BigInt    @default(0)
+  max_nsu         BigInt    @default(0)
+  ultima_consulta DateTime? @db.Timestamp(6)
+  atualizado_em   DateTime  @default(now()) @db.Timestamp(6)
+}
+
+model com_nfse_documento {
+  chave_acesso      String    @id @db.VarChar(60)
+  cnpj_destinatario String    @db.VarChar(14)
+  ultimo_nsu        BigInt    @default(0)
+  numero            String?   @db.VarChar(30)
+  serie             String?   @db.VarChar(10)
+  cnpj_prestador    String?   @db.VarChar(14)
+  nome_prestador    String?   @db.VarChar(255)
+  cnpj_tomador      String?   @db.VarChar(14)
+  nome_tomador      String?   @db.VarChar(255)
+  valor             Float?
+  data_emissao      DateTime? @db.Timestamp(6)
+  competencia       DateTime? @db.Timestamp(6)
+  situacao          String    @default("NORMAL") @db.VarChar(20)
+  papel             String?   @db.VarChar(20)
+  xml               String    @default("")
+  hash              String?   @db.VarChar(64)
+  dados_json        Json?
+  processado        Boolean   @default(false)
+  created_at        DateTime  @default(now()) @db.Timestamp(6)
+  updated_at        DateTime  @default(now()) @db.Timestamp(6)
+  retencao_federal  Float     @default(0)
+
+  @@index([data_emissao], map: "idx_nfse_documento_emissao")
+  @@index([numero], map: "idx_nfse_documento_numero")
+  @@index([cnpj_prestador], map: "idx_nfse_documento_prestador")
+  @@index([retencao_federal], map: "idx_nfse_documento_ret_fed")
+}
+
+model com_nfse_evento {
+  nsu          BigInt    @id
+  chave_acesso String    @db.VarChar(60)
+  tipo_evento  String?   @db.VarChar(60)
+  data_evento  DateTime? @db.Timestamp(6)
+  xml          String    @default("")
+  dados_json   Json?
+  created_at   DateTime  @default(now()) @db.Timestamp(6)
+
+  @@index([chave_acesso], map: "idx_nfse_evento_chave")
+}
+
+model com_pedido_intranet_celta {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  pedido_celta    Int      @unique(map: "uq_com_pedido_celta")
+  pedido_intranet String   @unique(map: "uq_com_pedido_intranet")
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([pedido_intranet], map: "idx_com_pedido_intranet_celta_intranet")
+}
+
+model com_pedido_nfe_vinculo {
+  id                          String                        @id
+  pedido_id                   String
+  pedido_cotacao              Int
+  for_codigo                  Int?
+  chave_nfe                   String                        @db.VarChar(44)
+  emitente                    String?
+  data_emissao                DateTime?
+  valor_total                 Decimal?                      @db.Decimal(15, 2)
+  usuario                     String?                       @db.VarChar(120)
+  created_at                  DateTime                      @default(now())
+  updated_at                  DateTime
+  confirmado                  Boolean                       @default(true)
+  origem_vinculo              String                        @default("manual") @db.VarChar(20)
+  rejeitado                   Boolean                       @default(false)
+  com_pedido                  com_pedido                    @relation(fields: [pedido_id], references: [id], onDelete: Cascade)
+  com_pedido_nfe_vinculo_item com_pedido_nfe_vinculo_item[]
+
+  @@unique([pedido_id, chave_nfe])
+  @@index([chave_nfe])
+  @@index([pedido_id])
+}
+
+model com_pedido_nfe_vinculo_item {
+  id                     String                 @id
+  vinculo_id             String
+  tipo                   String                 @db.VarChar(20)
+  produto_xml            String?
+  cprod_xml              String?
+  quantidade_xml         Decimal?               @db.Decimal(15, 4)
+  vuncom_xml             Decimal?               @db.Decimal(15, 4)
+  pro_codigo             Int?
+  pro_descricao          String?
+  quantidade_cotacao     Decimal?               @db.Decimal(15, 4)
+  quantidade_pedido      Decimal?               @db.Decimal(15, 4)
+  valor_pedido           Decimal?               @db.Decimal(15, 4)
+  match_campo            String?                @db.VarChar(60)
+  match_valor            String?
+  origem                 String?                @db.VarChar(20)
+  created_at             DateTime               @default(now())
+  quantidade_alocada     Decimal?               @db.Decimal(15, 4)
+  excede_saldo           Boolean                @default(false)
+  com_pedido_nfe_vinculo com_pedido_nfe_vinculo @relation(fields: [vinculo_id], references: [id], onDelete: Cascade)
+
+  @@index([vinculo_id])
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model com_precificacao_faixa {
+  id              Int       @id @default(autoincrement())
+  tabela_preco    String    @db.VarChar(20)
+  custo_min       Decimal   @db.Decimal(15, 2)
+  custo_max       Decimal?  @db.Decimal(15, 2)
+  markup_min_pct  Decimal   @db.Decimal(8, 4)
+  markup_max_pct  Decimal   @db.Decimal(8, 4)
+  vigencia_inicio DateTime  @db.Timestamp(6)
+  vigencia_fim    DateTime? @db.Timestamp(6)
+  criado_por      String    @db.VarChar(120)
+  criado_em       DateTime  @default(now()) @db.Timestamp(6)
+  encerrado_por   String?   @db.VarChar(120)
+  encerrado_em    DateTime? @db.Timestamp(6)
+  motivo          String?
+
+  @@index([tabela_preco, vigencia_inicio], map: "idx_com_precificacao_faixa_historico")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model esc_documento {
+  id              BigInt   @id @default(autoincrement())
+  tipo            String   @db.VarChar(40)
+  data_documento  DateTime @db.Date
+  descricao       String?  @db.VarChar(200)
+  minio_bucket    String   @db.VarChar(120)
+  minio_key       String
+  nome_arquivo    String?  @db.VarChar(200)
+  tamanho_bytes   Int?
+  client_id       String?  @unique @db.VarChar(64)
+  criado_em       DateTime @default(now()) @db.Timestamptz(6)
+  nf_numero       String?  @db.VarChar(20)
+  chave_nfe       String?  @db.VarChar(44)
+  fornecedor_nome String?  @db.VarChar(200)
+  fornecedor_cnpj String?  @db.VarChar(14)
+  for_codigo      Int?
+
+  @@index([chave_nfe], map: "idx_esc_documento_chave")
+  @@index([criado_em(sort: Desc)], map: "idx_esc_documento_criado")
+  @@index([data_documento], map: "idx_esc_documento_data")
+  @@index([for_codigo], map: "idx_esc_documento_forn")
+  @@index([nf_numero], map: "idx_esc_documento_nf")
+  @@index([tipo], map: "idx_esc_documento_tipo")
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model est_regua_financeira_snapshot {
+  id                    Int      @id @default(autoincrement())
+  competencia           DateTime @unique(map: "uq_regua_competencia") @db.Date
+  data_execucao_modelo  DateTime @db.Timestamp(6)
+  excesso_total         Decimal  @db.Decimal(14, 2)
+  excesso_estocaveis    Decimal  @db.Decimal(14, 2)
+  excesso_sob_encomenda Decimal  @db.Decimal(14, 2)
+  itens_acima_max       Int
+  estoque_total_custo   Decimal  @db.Decimal(14, 2)
+  taxa_am               Decimal  @default(0.0245) @db.Decimal(6, 4)
+  juros_teorico_mes     Decimal? @default(dbgenerated("(excesso_total * taxa_am)")) @db.Decimal(12, 2)
+  criado_em             DateTime @default(now()) @db.Timestamp(6)
+}
+
+model fin_analise {
+  id                     String              @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  criado_em              DateTime            @default(now()) @db.Timestamp(6)
+  criado_por             String?             @db.VarChar(36)
+  documento              String              @db.VarChar(20)
+  tipo                   String?             @db.VarChar(4)
+  razao_social           String?
+  versao_modelo          String?             @db.VarChar(20)
+  score_final            Int?
+  faixa_pct              Float?
+  limite_atual_erp       Int?
+  sugestao_op2           Int?
+  sugestao_op3           Int?
+  limite_recomend        Int?
+  rating                 String?             @db.VarChar(3)
+  pd_pct                 Float?
+  bloqueado              Boolean             @default(false)
+  analista               String?
+  parecer                String?
+  dossie_json            Json?
+  resultado_json         Json?
+  decisao_comite         String?             @db.VarChar(10)
+  limite_aprovado_comite Int?
+  decidido_por           String?             @db.VarChar(36)
+  decidido_em            DateTime?           @db.Timestamp(6)
+  decisao_obs            String?
+  fin_analise_anexo      fin_analise_anexo[]
+
+  @@index([criado_em], map: "idx_fin_analise_data")
+  @@index([documento], map: "idx_fin_analise_doc")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model fin_analise_anexo {
+  id            String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  analise_id    String      @db.VarChar(36)
+  tipo          String      @db.VarChar(20)
+  bucket        String
+  object_key    String      @unique
+  nome_original String
+  content_type  String?     @db.VarChar(120)
+  tamanho       BigInt?
+  hash          String?     @db.VarChar(64)
+  enviado_por   String?     @db.VarChar(36)
+  enviado_em    DateTime    @default(now()) @db.Timestamp(6)
+  fin_analise   fin_analise @relation(fields: [analise_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([analise_id, hash])
+  @@index([analise_id], map: "idx_fin_analise_anexo_analise")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model fin_cliente_documento {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  empresa       Int      @default(3)
+  documento     String   @db.VarChar(20)
+  cli_codigo    Int?
+  categoria     String   @db.VarChar(30)
+  bucket        String
+  object_key    String   @unique
+  nome_original String
+  content_type  String?  @db.VarChar(120)
+  tamanho       BigInt?
+  hash          String?  @db.VarChar(64)
+  enviado_por   String?  @db.VarChar(36)
+  enviado_em    DateTime @default(now()) @db.Timestamp(6)
+
+  @@unique([empresa, documento, hash])
+  @@index([documento], map: "idx_fin_cliente_documento_documento")
+}
+
+model fin_cob_envio {
+  id              String        @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  criado_em       DateTime      @default(now()) @db.Timestamp(6)
+  fila_id         String?       @db.VarChar(36)
+  data_ref        DateTime      @db.Date
+  regua_id        String?       @db.VarChar(36)
+  empresa         Int           @db.SmallInt
+  titulo          BigInt
+  parcela         Int
+  cli_codigo      Int
+  telefone        String?       @db.VarChar(40)
+  chat_id         String?       @db.VarChar(40)
+  texto           String
+  anexos          Json?
+  waha_message_id String?       @db.VarChar(100)
+  enviado_por     String?       @db.VarChar(36)
+  fin_cob_fila    fin_cob_fila? @relation(fields: [fila_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([empresa, titulo, parcela, regua_id, data_ref])
+  @@index([cli_codigo], map: "idx_fin_cob_envio_cli")
+  @@index([criado_em], map: "idx_fin_cob_envio_data")
+}
+
+model fin_cob_fila {
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  criado_em        DateTime          @default(now()) @db.Timestamp(6)
+  data_ref         DateTime          @db.Date
+  regua_id         String            @db.VarChar(36)
+  empresa          Int               @db.SmallInt
+  titulo           BigInt
+  parcela          Int
+  lancto           BigInt?
+  cli_codigo       Int
+  cliente_nome     String?
+  telefone         String?           @db.VarChar(40)
+  chat_id          String?           @db.VarChar(40)
+  texto            String
+  nro_boleto       String?           @db.VarChar(20)
+  titulo_nf_id     String?           @db.VarChar(36)
+  selo_nf          String?           @db.VarChar(15)
+  status           String            @default("pendente") @db.VarChar(12)
+  motivo_bloqueio  String?
+  aprovado_por     String?           @db.VarChar(36)
+  aprovado_em      DateTime?         @db.Timestamp(6)
+  enviado_em       DateTime?         @db.Timestamp(6)
+  erro             String?
+  fin_cob_envio    fin_cob_envio[]
+  fin_cob_regua    fin_cob_regua     @relation(fields: [regua_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  fin_cr_titulo_nf fin_cr_titulo_nf? @relation(fields: [titulo_nf_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([empresa, titulo, parcela, regua_id, data_ref])
+  @@index([data_ref], map: "idx_fin_cob_fila_data")
+  @@index([status], map: "idx_fin_cob_fila_status")
+}
+
+model fin_cob_optout {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  empresa    Int      @default(3) @db.SmallInt
+  cli_codigo Int
+  documento  String?  @db.VarChar(20)
+  telefone   String?  @db.VarChar(40)
+  motivo     String?
+  origem     String   @default("manual") @db.VarChar(10)
+  criado_em  DateTime @default(now()) @db.Timestamp(6)
+  criado_por String?  @db.VarChar(36)
+
+  @@unique([empresa, cli_codigo])
+}
+
+model fin_cob_regua {
+  id            String         @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  nome          String         @unique @db.VarChar(50)
+  gatilho_dias  Int
+  template      String
+  canal         String         @default("whatsapp") @db.VarChar(15)
+  anexar_boleto Boolean        @default(true)
+  ativo         Boolean        @default(false)
+  ordem         Int?
+  criado_em     DateTime       @default(now()) @db.Timestamp(6)
+  atualizado_em DateTime?      @db.Timestamp(6)
+  fin_cob_fila  fin_cob_fila[]
+}
+
+model fin_cob_resposta {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  recebido_em      DateTime  @db.Timestamp(6)
+  capturado_em     DateTime  @default(now()) @db.Timestamp(6)
+  chat_id          String    @db.VarChar(40)
+  telefone         String?   @db.VarChar(40)
+  empresa          Int?      @db.SmallInt
+  titulo           BigInt?
+  cli_codigo       Int?
+  waha_message_id  String    @unique @db.VarChar(100)
+  corpo            String?
+  tipo_midia       String    @default("texto") @db.VarChar(15)
+  veto             Boolean   @default(false)
+  intencao         String?   @db.VarChar(30)
+  confianca        Float?
+  justificativa    String?
+  acao_automatica  String?   @db.VarChar(30)
+  encaminhado_em   DateTime? @db.Timestamp(6)
+  encaminhado_para String?   @db.VarChar(50)
+  tratado_por      String?   @db.VarChar(36)
+  tratado_em       DateTime? @db.Timestamp(6)
+  status           String    @default("nova") @db.VarChar(15)
+
+  @@index([chat_id], map: "idx_fin_cob_resp_chat")
+  @@index([recebido_em], map: "idx_fin_cob_resp_data")
+  @@index([status], map: "idx_fin_cob_resp_status")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model fin_cr_cliente_modalidade {
+  empresa        Int       @db.SmallInt
+  cli_codigo     Int
+  modalidade     String    @db.VarChar(20)
+  observacao     String?
+  definido_por   String?   @db.VarChar(36)
+  definido_em    DateTime  @default(now()) @db.Timestamp(6)
+  atualizado_por String?   @db.VarChar(36)
+  atualizado_em  DateTime? @db.Timestamp(6)
+
+  @@id([empresa, cli_codigo])
+}
+
+model fin_cr_nfe_cache {
+  chave_acesso  String    @id @db.VarChar(50)
+  tipo          String    @db.VarChar(10)
+  fonte         String?   @db.VarChar(10)
+  xml           String?
+  pdf           Bytes?
+  gerado_em     DateTime  @default(now()) @db.Timestamp(6)
+  atualizado_em DateTime? @db.Timestamp(6)
+}
+
+model fin_cr_observacao {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  criado_em  DateTime @default(now()) @db.Timestamp(6)
+  criado_por String?  @db.VarChar(36)
+  autor_nome String?
+  empresa    Int      @db.SmallInt
+  cli_codigo Int
+  titulo     BigInt?
+  parcela    Int?
+  texto      String
+
+  @@index([empresa, cli_codigo], map: "idx_fin_cr_obs_cliente")
+  @@index([criado_em], map: "idx_fin_cr_obs_data")
+}
+
+model fin_cr_sync_log {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  data_ref           DateTime  @db.Date
+  iniciado_em        DateTime  @default(now()) @db.Timestamp(6)
+  terminado_em       DateTime? @db.Timestamp(6)
+  status             String    @default("rodando") @db.VarChar(10)
+  titulos_snap       Int?
+  nf_resolvidas      Int?
+  nf_nao_localizadas Int?
+  erro               String?
+  detalhes           Json?
+
+  @@index([data_ref], map: "idx_fin_cr_synclog_data")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model contains an expression index which requires additional setup for migrations. Visit https://pris.ly/d/expression-indexes for more info.
+model fin_cr_titulo_nf {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  empresa        Int            @db.SmallInt
+  titulo         BigInt
+  valor_titulo   Decimal?       @db.Decimal(14, 2)
+  pedidos        Json?
+  tipo_documento String?        @db.VarChar(10)
+  nfs_destino    BigInt?
+  nota_numero    BigInt?
+  serie          String?        @db.VarChar(5)
+  chave_acesso   String?        @db.VarChar(50)
+  valor_nota     Decimal?       @db.Decimal(14, 2)
+  valor_confere  Boolean?
+  origem         String         @db.VarChar(10)
+  confianca      String         @db.VarChar(15)
+  confirmado_por String?        @db.VarChar(36)
+  confirmado_em  DateTime?      @db.Timestamp(6)
+  criado_em      DateTime       @default(now()) @db.Timestamp(6)
+  atualizado_em  DateTime?      @db.Timestamp(6)
+  fin_cob_fila   fin_cob_fila[]
+
+  @@index([confianca], map: "idx_fin_cr_titulo_nf_conf")
+}
+
+model fin_cr_titulo_snap {
+  data_ref            DateTime  @db.Date
+  empresa             Int       @db.SmallInt
+  lancto              BigInt
+  titulo              BigInt
+  parcela             Int
+  cli_codigo          Int
+  cliente_nome        String?
+  cliente_documento   String?   @db.VarChar(20)
+  celular             String?   @db.VarChar(40)
+  fone                String?   @db.VarChar(40)
+  tt_codigo           String?   @db.VarChar(10)
+  fp_codigo           String?   @db.VarChar(10)
+  emissao             DateTime? @db.Date
+  vencimento          DateTime  @db.Date
+  valor               Decimal?  @db.Decimal(14, 2)
+  valor_liquido       Decimal   @db.Decimal(14, 2)
+  nro_boleto          String?   @db.VarChar(20)
+  bol_codigo          Int?
+  boleto_impresso     String?   @db.Char(1)
+  data_criacao_boleto DateTime? @db.Date
+  por_codigo          String?   @db.VarChar(10)
+  nfs                 BigInt?
+  historico           String?
+  dias_atraso         Int
+  faixa_aging         String    @db.VarChar(10)
+  criado_em           DateTime  @default(now()) @db.Timestamp(6)
+
+  @@id([data_ref, empresa, lancto])
+  @@index([data_ref, cli_codigo], map: "idx_fin_cr_snap_cliente")
+  @@index([data_ref, faixa_aging], map: "idx_fin_cr_snap_faixa")
+  @@index([data_ref, empresa, titulo, parcela], map: "idx_fin_cr_snap_grao")
+  @@index([data_ref, vencimento], map: "idx_fin_cr_snap_venc")
+}
+
+model fin_excedente {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  criado_em          DateTime  @default(now()) @db.Timestamp(6)
+  criado_por         String?   @db.VarChar(36)
+  documento          String    @db.VarChar(20)
+  codigo_erp         Int?
+  razao_social       String?
+  valor_solicitado   Float?
+  limite_total       Float?
+  limite_disponivel  Float?
+  valor_excedente    Float?
+  nova_exposicao     Float?
+  capacidade_provada Float?
+  nivel_risco        String?   @db.VarChar(10)
+  recomendacao       String?
+  calco              String?
+  analista           String?
+  decisao            String?   @db.VarChar(10)
+  resultado          String?   @db.VarChar(10)
+  resultado_obs      String?
+  resultado_em       DateTime? @db.Timestamp(6)
+  resultado_json     Json?
+
+  @@index([documento], map: "idx_fin_exc_doc")
+  @@index([resultado], map: "idx_fin_exc_resultado")
+}
+
+model fin_parecer_ia {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  criado_em    DateTime @default(now()) @db.Timestamp(6)
+  criado_por   String?  @db.VarChar(36)
+  documento    String   @db.VarChar(20)
+  modelo       String?  @db.VarChar(30)
+  brief_json   Json?
+  parecer_json Json?
+
+  @@index([criado_em], map: "idx_fin_parecer_data")
+  @@index([documento], map: "idx_fin_parecer_doc")
+}
+
+model fin_spc_consulta {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  criado_em          DateTime  @default(now()) @db.Timestamp(6)
+  criado_por         String?   @db.VarChar(36)
+  documento          String    @db.VarChar(20)
+  nome               String?
+  data_consulta      DateTime? @db.Timestamp(6)
+  origem             String?   @db.VarChar(20)
+  score              Int?
+  classe             String?   @db.VarChar(4)
+  prob_inadimplencia Float?
+  consultas_90d      Int?
+  consultas_30d      Int?
+  tem_restricao      Boolean?
+  negativacoes_valor Float?
+  protestos_valor    Float?
+  judicial_qtde      Int?
+  alerta_doc         Boolean?
+  contumacia         Int?
+  credito_concedido  Float?
+  limite_sugerido    Float?
+  protocolo          String?
+  arquivo            String?
+  json_completo      Json?
+  dedupe_chave       String    @unique @db.VarChar(200)
+
+  @@index([data_consulta], map: "idx_fin_spc_data")
+  @@index([documento], map: "idx_fin_spc_doc")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model rec_impressora {
+  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  nome           String    @unique(map: "rec_impressora_nome_unico")
+  local          String?
+  host           String
+  porta          Int       @default(9100)
+  dpi            Int       @default(203)
+  midia_atual    String    @default("10x15")
+  ativa          Boolean   @default(true)
+  padrao         Boolean   @default(false)
+  observacao     String?
+  criada_em      DateTime  @default(dbgenerated("(now() AT TIME ZONE 'America/Cuiaba'::text)")) @db.Timestamp(6)
+  criada_por     String
+  atualizada_em  DateTime? @db.Timestamp(6)
+  atualizada_por String?
+  ajuste_x_mm    Decimal   @default(0) @db.Decimal(4, 1)
+  ajuste_y_mm    Decimal   @default(0) @db.Decimal(4, 1)
+
+  @@unique([host, porta], map: "rec_impressora_destino_unico")
+}
+
+model rec_ml_compra {
+  order_id           BigInt    @id
+  pack_id            BigInt?
+  status             String    @db.VarChar(32)
+  data_criacao       DateTime  @db.Timestamptz(6)
+  data_fechamento    DateTime? @db.Timestamptz(6)
+  valor_total        Decimal   @db.Decimal(15, 2)
+  moeda              String    @db.VarChar(8)
+  vendedor_id        BigInt?
+  vendedor_nick      String?
+  itens              Json      @default("[]")
+  shipping_id        BigInt?
+  envio_status       String?   @db.VarChar(32)
+  envio_substatus    String?   @db.VarChar(64)
+  tracking_number    String?
+  tracking_method    String?
+  logistic_type      String?   @db.VarChar(32)
+  data_envio         DateTime? @db.Timestamptz(6)
+  data_entrega       DateTime? @db.Timestamptz(6)
+  tags               String[]  @default([])
+  sincronizado_em    DateTime  @db.Timestamptz(6)
+  criado_em          DateTime  @default(now()) @db.Timestamptz(6)
+  atualizado_em      DateTime  @default(now()) @db.Timestamptz(6)
+  conferido_em       DateTime? @db.Timestamptz(6)
+  conferido_por      String?   @db.VarChar(64)
+  pedido_interno     Int?
+  pagamento          Json?
+  previsao_entrega   DateTime? @db.Timestamptz(6)
+  endereco_entrega   String?
+  raw_order          Json?
+  raw_envio          Json?
+  nfe_chave          String?   @db.VarChar(44)
+  nfe_vinculo_origem String?   @db.VarChar(8)
+  nfe_vinculada_em   DateTime? @db.Timestamptz(6)
+
+  @@index([data_criacao(sort: Desc)], map: "idx_rec_ml_compra_data_criacao")
+  @@index([envio_status], map: "idx_rec_ml_compra_envio_status")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model rec_ml_integracao {
+  id              Int       @id @default(1) @db.SmallInt
+  ml_user_id      BigInt?
+  access_token    String?
+  refresh_token   String?
+  token_expira_em DateTime? @db.Timestamptz(6)
+  ultima_sync_em  DateTime? @db.Timestamptz(6)
+  ultimo_erro     String?
+  atualizado_em   DateTime  @default(now()) @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model rec_ocorrencia {
+  id                  String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  numero              Int                   @unique(map: "uq_rec_oco_numero") @default(autoincrement())
+  chave_cte           String                @db.VarChar(44)
+  cte_numero          String?
+  transportadora      String?
+  fornecedor          String?
+  nfs                 String[]              @default([])
+  motivos             String[]              @default([])
+  descricao           String                @default("")
+  produto             String?
+  codigo_produto      String?
+  quantidade          String?
+  providencia         String?
+  conferente          String?
+  registrado_por      String                @db.VarChar(64)
+  registrado_em       DateTime              @default(dbgenerated("(now() AT TIME ZONE 'America/Cuiaba'::text)")) @db.Timestamp(6)
+  encerrada_em        DateTime?             @db.Timestamp(6)
+  encerrada_por       String?               @db.VarChar(64)
+  encerramento_texto  String?
+  aberta_em           DateTime?             @db.Timestamp(6)
+  aberta_por          String?               @db.VarChar(64)
+  token               String                @unique(map: "uq_rec_oco_token") @default(dbgenerated("upper(substr(replace((gen_random_uuid())::text, '-'::text, ''::text), 1, 12))")) @db.Char(12)
+  rec_ocorrencia_foto rec_ocorrencia_foto[]
+
+  @@index([registrado_em(sort: Desc)], map: "idx_rec_oco_recentes")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model rec_ocorrencia_anexo {
+  id                       String                   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  resolucao_id             String                   @db.Uuid
+  bucket                   String                   @db.VarChar(64)
+  object_key               String                   @db.VarChar(512)
+  nome_original            String                   @db.VarChar(255)
+  content_type             String                   @db.VarChar(128)
+  tamanho_bytes            BigInt
+  enviado_por              String                   @db.VarChar(64)
+  enviado_em               DateTime                 @default(dbgenerated("(now() AT TIME ZONE 'America/Cuiaba'::text)")) @db.Timestamp(6)
+  rec_ocorrencia_resolucao rec_ocorrencia_resolucao @relation(fields: [resolucao_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([bucket, object_key], map: "uq_rec_anexo_objeto")
+  @@index([resolucao_id, enviado_em], map: "idx_rec_anexo_resolucao")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model rec_ocorrencia_foto {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ocorrencia_id  String?         @db.Uuid
+  waha_msg_id    String          @unique(map: "uq_rec_foto_msg")
+  chat_id        String
+  autor          String?
+  legenda        String?
+  bucket         String
+  object_key     String
+  mimetype       String
+  tamanho_bytes  BigInt
+  filehash       String?
+  enviada_em     DateTime        @db.Timestamp(6)
+  capturada_em   DateTime        @default(dbgenerated("(now() AT TIME ZONE 'America/Cuiaba'::text)")) @db.Timestamp(6)
+  vinculada_em   DateTime?       @db.Timestamp(6)
+  vinculada_por  String?         @db.VarChar(64)
+  origem_vinculo String?         @db.VarChar(12)
+  rec_ocorrencia rec_ocorrencia? @relation(fields: [ocorrencia_id], references: [id], onUpdate: NoAction)
+
+  @@unique([bucket, object_key], map: "uq_rec_foto_objeto")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model rec_ocorrencia_resolucao {
+  id                   String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  chave_cte            String                 @db.VarChar(44)
+  codigo_ssw           String?                @db.VarChar(8)
+  ocorrencia_texto     String?
+  estado               rec_estado_resolucao   @default(RESOLVIDA)
+  resolucao            String
+  resolvido_por        String                 @db.VarChar(64)
+  resolvido_em         DateTime               @default(dbgenerated("(now() AT TIME ZONE 'America/Cuiaba'::text)")) @db.Timestamp(6)
+  confirmado_por       String?                @db.VarChar(64)
+  confirmado_em        DateTime?              @db.Timestamp(6)
+  devolvido_por        String?                @db.VarChar(64)
+  devolvido_em         DateTime?              @db.Timestamp(6)
+  motivo_devolucao     String?
+  criado_em            DateTime               @default(dbgenerated("(now() AT TIME ZONE 'America/Cuiaba'::text)")) @db.Timestamp(6)
+  atualizado_em        DateTime               @default(dbgenerated("(now() AT TIME ZONE 'America/Cuiaba'::text)")) @db.Timestamp(6)
+  rec_ocorrencia_anexo rec_ocorrencia_anexo[]
+
+  @@index([chave_cte, criado_em(sort: Desc)], map: "idx_rec_res_cte_recente")
+}
+
+model sac_kanban_minion {
+  id            String     @id @db.VarChar(255)
+  docTypeLabel  String     @db.VarChar(255)
+  descricao     String     @db.VarChar(255)
+  sac_kanban_id String     @db.VarChar(255)
+  sac_kanban    sac_kanban @relation(fields: [sac_kanban_id], references: [id], onDelete: NoAction, onUpdate: NoAction, map: "fk_sac_kanban_minion_sac_kanban")
+}
+
+model ven_encomenda_pecas {
+  id            Int      @id(map: "ven_venda_casada_pkey") @default(autoincrement())
+  nome_vendedor String?  @db.VarChar(255)
+  carro         String?  @db.VarChar(255)
+  ano           Int?
+  observacao    String?
+  cliente       String?  @db.VarChar(255)
+  numero        String?  @db.VarChar(50)
+  imagem        String?
+  status        String?  @db.VarChar(50)
+  pecas         String[]
+  pecas_cotadas String[]
+}
+
+model ven_orcamento {
+  id                 String               @id
+  numero             Int                  @unique @default(autoincrement())
+  empresa            Int                  @default(3)
+  cli_codigo         Int
+  cli_nome           String?
+  tabela_preco       String?
+  rep_codigo         Int?
+  rep_nome           String?
+  status             String               @default("RASCUNHO")
+  validade           DateTime?            @db.Date
+  observacao         String?
+  subtotal           Decimal              @default(0) @db.Decimal(15, 2)
+  desconto_total     Decimal              @default(0) @db.Decimal(15, 2)
+  total              Decimal              @default(0) @db.Decimal(15, 2)
+  desc_pct           Decimal              @default(0) @db.Decimal(6, 4)
+  acima_alcada       Boolean              @default(false)
+  bolsa_pct_antes    Decimal?             @db.Decimal(6, 4)
+  bolsa_pct_depois   Decimal?             @db.Decimal(6, 4)
+  aprovado_por       String?
+  aprovado_em        DateTime?            @db.Timestamptz(6)
+  enviado_em         DateTime?            @db.Timestamptz(6)
+  desfecho_em        DateTime?            @db.Timestamptz(6)
+  desfecho_motivo    String?
+  desfecho_ref       String?
+  usuario_id         String?
+  usuario_nome       String?
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime             @default(now()) @db.Timestamptz(6)
+  ven_orcamento_item ven_orcamento_item[]
+
+  @@index([cli_codigo], map: "idx_ven_orcamento_cli")
+  @@index([created_at], map: "idx_ven_orcamento_created")
+  @@index([rep_codigo, status], map: "idx_ven_orcamento_rep_status")
+}
+
+model ven_orcamento_item {
+  id                 String        @id
+  orcamento_id       String
+  item               Int
+  pro_codigo         Int
+  descricao          String?
+  referencia         String?
+  unidade            String?
+  quantidade         Decimal       @default(1) @db.Decimal(15, 3)
+  preco_tabela       Decimal       @db.Decimal(15, 2)
+  tabela_coluna      String?
+  preco_unit         Decimal       @db.Decimal(15, 2)
+  desc_pct           Decimal       @default(0) @db.Decimal(6, 4)
+  total              Decimal       @db.Decimal(15, 2)
+  custo_ref          Decimal?      @db.Decimal(15, 2)
+  classe             String?
+  mix                Int?
+  faixa              String?
+  markup_regua       Decimal?      @db.Decimal(6, 3)
+  desc_max_pct       Decimal?      @db.Decimal(6, 4)
+  preco_minimo       Decimal?      @db.Decimal(15, 2)
+  acima_alcada       Boolean       @default(false)
+  estoque_disponivel Decimal?      @db.Decimal(15, 3)
+  substituto_de      Int?
+  observacao         String?
+  ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([orcamento_id], map: "idx_ven_orcamento_item_orc")
+  @@index([pro_codigo], map: "idx_ven_orcamento_item_pro")
+}
+
+model ven_produto_relacionado {
+  pro_codigo      Int
+  pro_relacionado Int
+  juntos          Int
+  base            Int
+  suporte_pct     Decimal  @db.Decimal(6, 4)
+  calculado_em    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([pro_codigo, pro_relacionado])
+}
+
+model ven_regua_atacado {
+  id         Int      @id @default(autoincrement())
+  classe     String
+  faixa      String
+  markup     Decimal  @db.Decimal(6, 3)
+  desc_max   Decimal  @db.Decimal(5, 4)
+  ativo      Boolean  @default(true)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+
+  @@unique([classe, faixa], map: "uq_ven_regua_atacado")
+}
+
+model ven_regua_item_excecao {
+  pro_codigo  Int       @id
+  classe      String
+  desc_max    Decimal?  @db.Decimal(5, 4)
+  motivo      String?
+  vigente_ate DateTime? @db.Date
+  criado_por  String?
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @db.Timestamptz(6)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model ven_regua_volume {
+  id         Int      @id @default(autoincrement())
+  qtd_min    Int      @unique
+  fracao     Decimal  @db.Decimal(5, 4)
+  ativo      Boolean  @default(true)
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model ven_encomenda_pecas_itens {
+  id         Int     @id(map: "ven_venda_casada_itens_pkey") @default(autoincrement())
+  nome       String  @db.VarChar(255)
+  valor      Float   @db.Real
+  prazo      String? @db.VarChar(100)
+  fornecedor String? @db.VarChar(255)
+  marca      String? @db.VarChar(255)
+}
+
+enum rec_estado_resolucao {
+  RESOLVIDA
+  CONFIRMADA
+  DEVOLVIDA
 }

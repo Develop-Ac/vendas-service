@@ -34,7 +34,7 @@ export class CreateVendaCasadaDto {
   @IsArray()
   @ArrayNotEmpty()
   @IsStringValidator({ each: true })
-  pecas: string[];
+  pecas!: string[];
 
   @ApiProperty({ description: 'Ano', required: false })
   @IsOptional()

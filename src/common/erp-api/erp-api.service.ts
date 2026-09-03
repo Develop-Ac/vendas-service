@@ -162,21 +162,42 @@ export class ErpApiService {
       : `${e.message}${codigo ? ` (${codigo})` : ''}${onde}${causa.message ? ` — ${causa.message}` : ''}`;
   }
 
+  /**
+   * GET direto numa rota da API (as rotas de leitura por chave, como
+   * `/erp/encomenda-pecas/produtos/:pro_codigo`). Diferente de {@link consultar},
+   * não trata `truncado`: busca por chave devolve no máximo uma linha, e o
+   * flag vem ligado no meta mesmo assim.
+   */
+  async buscar<T = Record<string, any>>(rota: string): Promise<ResultadoErp<T>> {
+    return this.requisitar<T>(rota, { method: 'GET' });
+  }
+
   private async chamar<T>(rota: string, corpo: unknown): Promise<ResultadoErp<T>> {
+    return this.requisitar<T>(rota, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(corpo),
+    });
+  }
+
+  private async requisitar<T>(
+    rota: string,
+    init: { method: string; headers?: Record<string, string>; body?: string },
+  ): Promise<ResultadoErp<T>> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
     const inicio = Date.now();
     try {
       const resp = await fetch(`${this.baseUrl}${rota}`, {
-        method: 'POST',
+        method: init.method,
         headers: {
-          'content-type': 'application/json',
+          ...(init.headers ?? {}),
           'x-app-token': process.env.ERP_API_TOKEN ?? '',
           // Sem este header o /health/n1 da API relata "desconhecido" e o
           // relatório de quem consulta item a item deixa de ser acionável.
-          'x-servico': 'vendas-service',
+          'x-servico': 'x-vendas',
         },
-        body: JSON.stringify(corpo),
+        body: init.body,
         signal: ctrl.signal,
       });
 
