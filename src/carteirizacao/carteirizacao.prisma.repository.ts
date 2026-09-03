@@ -361,6 +361,43 @@ export class CarteirizacaoPrismaRepository {
    * (orçamento/venda). Sem a tabela (DDL do piloto ainda não aplicado) ou sem
    * dados, devolve vazio e a fila segue só com os sinais do ERP.
    */
+  /**
+   * Orçamentos feitos NA INTRANET, por cliente: contam como esforço do vendedor
+   * assim que SALVOS (decisão 03/09/2026) — último orçamento (fila/resgate) e
+   * quantidade/valor nos 90 dias (quadrante). Cancelados ficam de fora.
+   */
+  async orcamentosIntranetPorCliente(): Promise<Map<number, { ult_orcamento: Date; orcamentos_90d: number; valor_orcado_90d: number }>> {
+    try {
+      const ha90 = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+      const [ultimos, recentes] = await Promise.all([
+        this.prisma.ven_orcamento.groupBy({
+          by: ['cli_codigo'],
+          where: { status: { not: 'CANCELADO' } },
+          _max: { created_at: true },
+        }),
+        this.prisma.ven_orcamento.groupBy({
+          by: ['cli_codigo'],
+          where: { status: { not: 'CANCELADO' }, created_at: { gte: ha90 } },
+          _count: { _all: true },
+          _sum: { total: true },
+        }),
+      ]);
+      const mapa = new Map<number, { ult_orcamento: Date; orcamentos_90d: number; valor_orcado_90d: number }>();
+      for (const u of ultimos) {
+        if (u._max.created_at) mapa.set(u.cli_codigo, { ult_orcamento: u._max.created_at, orcamentos_90d: 0, valor_orcado_90d: 0 });
+      }
+      for (const r of recentes) {
+        const l = mapa.get(r.cli_codigo);
+        if (!l) continue;
+        l.orcamentos_90d = r._count._all;
+        l.valor_orcado_90d = Number(r._sum.total ?? 0);
+      }
+      return mapa;
+    } catch {
+      return new Map();
+    }
+  }
+
   async ultimaMensagemEnviadaPorCliente(): Promise<Map<number, Date>> {
     try {
       const grupos = await this.prisma.ven_wa_mensagem.groupBy({

@@ -580,6 +580,18 @@ export class OrcamentoErpRepository {
     return r.slice(0, limite).map((x) => this.normalizarCliente(x));
   }
 
+  /** Cadastro completo para o PDF (endereço, bairro, CEP, IE) — só quando vai imprimir. */
+  async clienteParaPdf(cli: number): Promise<Record<string, any> | null> {
+    const r = await this.erp.consultar<Record<string, any>>('clientes', {
+      empresa: EMPRESA,
+      campos: [...CAMPOS_CLIENTE, 'ENDERECO', 'NUMERO', 'BAIRRO', 'CEP', 'RG_IE'],
+      filtros: [{ campo: 'CLI_CODIGO', op: 'igual', valor: cli }],
+      limite: 1 + FOLGA,
+      semCache: true,
+    });
+    return r[0] ?? null;
+  }
+
   async clientePorCodigo(cli: number): Promise<ClienteErp | null> {
     const r = await this.erp.consultar<Record<string, any>>('clientes', {
       empresa: EMPRESA,

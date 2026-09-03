@@ -145,9 +145,29 @@ CREATE TABLE IF NOT EXISTS ven_produto_relacionado (
   PRIMARY KEY (pro_codigo, pro_relacionado)
 );
 
+-- 5b) Vendem juntos por SUBGRUPO. No atacado a maioria dos produtos sai em
+--     poucas notas e não forma par próprio (>= 3 notas juntos); o que sai junto
+--     com QUALQUER item do subgrupo (cola, arame de remoção com para-brisa)
+--     tem base de milhares de notas e cobre esses itens.
+CREATE TABLE IF NOT EXISTS ven_subgrupo_relacionado (
+  subgrp_codigo    INTEGER NOT NULL,
+  pro_relacionado  INTEGER NOT NULL,                -- produto de OUTRO subgrupo
+  juntos           INTEGER NOT NULL,                -- notas com o subgrupo e o produto
+  base             INTEGER NOT NULL,                -- notas em que o subgrupo saiu
+  suporte_pct      NUMERIC(6,4) NOT NULL,           -- juntos / base
+  calculado_em     TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (subgrp_codigo, pro_relacionado)
+);
+
 -- 6) Permissão da tela (módulo Vendas é ESTRITO: cada tela liberada por usuário).
 -- Exemplo — ajuste os usuários:
 -- INSERT INTO sis_permissoes (id, usuario_id, modulo, tela, visualizar, editar, criar, deletar)
 -- SELECT gen_random_uuid()::text, u.id, 'Vendas', '/vendas/orcamento', true, true, true, false
 -- FROM sis_usuarios u WHERE u.codigo IN ('<codigo>') AND NOT EXISTS (
 --   SELECT 1 FROM sis_permissoes p WHERE p.usuario_id = u.id AND p.tela = '/vendas/orcamento');
+
+-- 7) Entrega ao cliente (Estação do WhatsApp, 03/09/2026): quando e por onde o
+--    orçamento foi ENTREGUE ao cliente (mensagem + PDF pelo WhatsApp do vendedor).
+--    `enviado_em` continua sendo o momento em que o vendedor fechou a proposta.
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS entregue_canal TEXT;
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS entregue_em    TIMESTAMPTZ;

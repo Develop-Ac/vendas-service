@@ -17,6 +17,7 @@ import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { OrcamentoService } from './orcamento.service';
 import {
   AcaoOrcamentoDto,
+  EntregueOrcamentoDto,
   DesfechoOrcamentoDto,
   ExcecaoReguaDto,
   SalvarOrcamentoDto,
@@ -249,6 +250,28 @@ export class OrcamentoController {
   @ApiOperation({ summary: 'Fecha a proposta: ENVIADO, ou APROVACAO se algum item está abaixo do mínimo.' })
   enviar(@Param('id') id: string, @Body() dto: AcaoOrcamentoDto) {
     return this.service.enviar(id, dto);
+  }
+
+  @Get(':id/mensagem')
+  @ApiOperation({ summary: 'Texto para o WhatsApp + PDF (base64) do orçamento — o que a Estação envia no chat ativo.' })
+  mensagem(@Param('id') id: string) {
+    return this.service.mensagem(id);
+  }
+
+  @Get(':id/pdf')
+  @ApiOperation({ summary: 'PDF do orçamento no leiaute que o cliente conhece (logo da AC).' })
+  async pdf(@Param('id') id: string, @Res() res: FastifyReply) {
+    const { nome, dados } = await this.service.pdf(id);
+    res.header('Content-Type', 'application/pdf');
+    res.header('Content-Disposition', `inline; filename="${nome}"`);
+    res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+    return res.send(dados);
+  }
+
+  @Post(':id/entregue')
+  @ApiOperation({ summary: 'Marca que o cliente RECEBEU a proposta (canal e hora).' })
+  entregue(@Param('id') id: string, @Body() dto: EntregueOrcamentoDto) {
+    return this.service.entregue(id, dto.canal);
   }
 
   @Post(':id/aprovar')

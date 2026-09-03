@@ -89,6 +89,12 @@ export class SalvarOrcamentoDto {
   usuario_nome?: string;
 }
 
+export class EntregueOrcamentoDto {
+  @ApiProperty({ example: 'WHATSAPP', description: 'Canal por onde o cliente recebeu a proposta.' })
+  @IsIn(['WHATSAPP', 'EMAIL', 'IMPRESSO'])
+  canal!: 'WHATSAPP' | 'EMAIL' | 'IMPRESSO';
+}
+
 export class AcaoOrcamentoDto {
   @ApiProperty({ required: false })
   @IsOptional()
