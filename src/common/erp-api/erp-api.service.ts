@@ -163,6 +163,19 @@ export class ErpApiService {
       : `${e.message}${codigo ? ` (${codigo})` : ''}${onde}${causa.message ? ` — ${causa.message}` : ''}`;
   }
 
+  /**
+   * Consulta que ACEITA resposta cortada no limite — para busca de tela, onde
+   * "mostre os 60 primeiros e avise que há mais" é o comportamento certo.
+   * `consultar()` continua estrito para carga/reconciliação.
+   */
+  async consultarPagina<T = Record<string, any>>(
+    recurso: string,
+    consulta: ConsultaErp,
+  ): Promise<{ dados: T[]; truncado: boolean }> {
+    const r = await this.chamar<T>(`/erp/${recurso}/consulta`, consulta);
+    return { dados: r.dados, truncado: r.meta.truncado };
+  }
+
   /** GET simples (rotas nomeadas que devolvem JSON, ex.: /erp/produtos/:codigo/imagens). */
   async obterJson<T = unknown>(rota: string): Promise<T> {
     const r = await this.buscar(rota);

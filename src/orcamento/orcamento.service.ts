@@ -350,8 +350,8 @@ export class OrcamentoService {
   }
 
   async buscarProdutos(q: string, tabelaPreco: string | null, cli?: number, limite = 30) {
-    const r = await this.erp.buscarProdutos(q, { modo: q.includes('%') ? 'comeca' : 'contem', limite });
-    return this.enriquecer(r, tabelaPreco, cli);
+    const { produtos } = await this.erp.buscarProdutos(q, { modo: q.includes('%') ? 'comeca' : 'contem', limite });
+    return this.enriquecer(produtos, tabelaPreco, cli);
   }
 
   /**
@@ -362,8 +362,9 @@ export class OrcamentoService {
    * grupos de um só.
    */
   async pesquisar(q: string, tabelaPreco: string | null, cli: number | undefined, o: OpcoesBusca & { equivalentes?: boolean }) {
-    const achados = await this.erp.buscarProdutos(q, o);
-    if (!achados.length) return [];
+    const { produtos: achados, truncado } = await this.erp.buscarProdutos(q, o);
+    const limite = o.limite ?? 60;
+    if (!achados.length) return { itens: [] as ProdutoOrcamento[], truncado: false, limite };
     const codigos = achados.map((p) => p.PRO_CODIGO);
     const grupos = o.equivalentes === false ? [] : await this.db.gruposDe(codigos).catch((e) => {
       this.logger.warn(`Grupos de similares indisponíveis: ${(e as Error).message}`);
@@ -389,7 +390,7 @@ export class OrcamentoService {
       membros.forEach((m, i) => { m.principal = i === 0; });
       saida.push(...membros);
     }
-    return saida;
+    return { itens: saida, truncado, limite };
   }
 
   imagensDoProduto(codigo: number) {

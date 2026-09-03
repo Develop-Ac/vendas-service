@@ -181,9 +181,9 @@ export class OrcamentoErpRepository {
    * colunas — o montador da API só combina filtros com E, então viram
    * consultas paralelas com o resultado unido (sem repetir código).
    */
-  async buscarProdutos(termo: string, o: OpcoesBusca = {}): Promise<ProdutoErp[]> {
+  async buscarProdutos(termo: string, o: OpcoesBusca = {}): Promise<{ produtos: ProdutoErp[]; truncado: boolean }> {
     const t = termo.trim();
-    if (!t) return [];
+    if (!t) return { produtos: [], truncado: false };
     const limite = o.limite ?? 60;
     const modo: ModoBusca = o.modo ?? 'comeca';
     const campo: CampoBusca = o.campo ?? 'descricao';
@@ -193,12 +193,14 @@ export class OrcamentoErpRepository {
     if (o.comEstoque) comuns.push({ campo: 'ESTOQUE_DISPONIVEL', op: 'maior', valor: 0 });
     if (o.comercializavel) comuns.push({ campo: 'COMERCIALIZAVEL', op: 'igual', valor: 'S' });
 
+    // Busca de tela: resposta cortada no limite NÃO é erro — "amarok" sozinho
+    // acha centenas de itens; mostra-se os primeiros e a tela avisa que há mais.
     const consultar = async (filtros: FiltroErp[]) =>
-      this.erp.consultar<Record<string, any>>('produtos', {
+      (await this.erp.consultarPagina<Record<string, any>>('produtos', {
         ...base,
         filtros: [...filtros, ...comuns],
         ordenar: [{ campo: 'PRO_DESCRICAO', dir: 'asc' }],
-      });
+      })).dados;
 
     if ((campo === 'descricao' || campo === 'codigo') && /^\d+$/.test(t)) {
       const r = await this.erp.consultar<Record<string, any>>('produtos', {
@@ -206,9 +208,9 @@ export class OrcamentoErpRepository {
         filtros: [{ campo: 'PRO_CODIGO', op: 'igual', valor: Number(t) }],
         limite: 1 + FOLGA,
       });
-      return r.slice(0, 1).map((x) => this.normalizarProduto(x));
+      return { produtos: r.slice(0, 1).map((x) => this.normalizarProduto(x)), truncado: false };
     }
-    if (campo === 'codigo') return [];
+    if (campo === 'codigo') return { produtos: [], truncado: false };
 
     const T = t.toUpperCase();
     const padrao = modo === 'comeca' ? (T.endsWith('%') ? T : `${T}%`) : `%${T.replace(/^%+|%+$/g, '')}%`;
@@ -241,7 +243,7 @@ export class OrcamentoErpRepository {
     } else {
       const coluna = COLUNA[campo] ?? 'PRO_DESCRICAO';
       const f = campo === 'descricao' || campo === 'so_descricao' || campo === 'aplicacao' ? palavras(coluna) : parecido(coluna);
-      if (!f.length) return [];
+      if (!f.length) return { produtos: [], truncado: false };
       lotes = [f];
     }
     const resultados = await Promise.all(lotes.map((f) => consultar(f).catch((e) => { this.logger.warn(`busca ${campo}: ${(e as Error).message}`); return [] as Record<string, any>[]; })));
@@ -255,7 +257,7 @@ export class OrcamentoErpRepository {
         saida.push(this.normalizarProduto(x));
       }
     }
-    return saida.slice(0, limite);
+    return { produtos: saida.slice(0, limite), truncado: saida.length > limite };
   }
 
   /** Produtos por código, em lote (máx. 500 por chamada — teto do filtro `em`). */
@@ -406,7 +408,7 @@ export class OrcamentoErpRepository {
         filtros.push({ campo: 'CLI_NOME', op: 'contem', valor: p });
       }
     }
-    const r = await this.erp.consultar<Record<string, any>>('clientes', {
+    const { dados: r } = await this.erp.consultarPagina<Record<string, any>>('clientes', {
       empresa: EMPRESA,
       campos: CAMPOS_CLIENTE,
       filtros,
