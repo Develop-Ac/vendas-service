@@ -1,6 +1,5 @@
-import * as fs from 'fs';
-import * as path from 'path';
 import PDFDocument from 'pdfkit';
+import { LOGO_AC } from './orcamento.logo';
 
 /**
  * PDF DO ORÇAMENTO — o leiaute que o cliente já conhece.
@@ -107,11 +106,6 @@ const COLS: Array<[string, number, number, 'left' | 'right']> = [
   ['T O T A L', M + 479, LARG - 479, 'right'],
 ];
 
-function logoPath(): string | null {
-  // dist/orcamento → dist/assets (nest-cli copia src/assets); em dev, src/assets.
-  const p = path.join(__dirname, '..', 'assets', 'logo-ac.png');
-  return fs.existsSync(p) ? p : null;
-}
 
 export function gerarPdfOrcamento(o: PdfOrcamento): Promise<Buffer> {
   return new Promise((resolve, reject) => {
@@ -141,15 +135,12 @@ export function gerarPdfOrcamento(o: PdfOrcamento): Promise<Buffer> {
 
 function cabecalho(doc: PDFKit.PDFDocument, o: PdfOrcamento): number {
   let y = M;
-  const logo = logoPath();
   let xTexto = M;
-  if (logo) {
-    try {
-      doc.image(logo, M, y - 2, { width: 64 });
-      xTexto = M + 76;
-    } catch {
-      /* logo ilegível: segue sem ela */
-    }
+  try {
+    doc.image(LOGO_AC(), M, y - 2, { width: 64 });
+    xTexto = M + 76;
+  } catch {
+    /* logo ilegível: segue sem ela */
   }
   doc.fillColor(TEXTO).font('Helvetica-Bold').fontSize(12).text(EMPRESA_PDF.razao, xTexto, y, { width: 330, lineBreak: false });
   doc.font('Helvetica').fontSize(8.5).text(EMPRESA_PDF.endereco, xTexto, y + 15).text(EMPRESA_PDF.cidade, xTexto, y + 26);
