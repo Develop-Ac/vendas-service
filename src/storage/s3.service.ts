@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { NodeHttpHandler } from '@smithy/node-http-handler';
+import * as http from 'http';
 import * as https from 'https';
 import { UploadedFileData } from '../common/types/uploaded-file';
 
@@ -25,6 +26,19 @@ type S3Opts = {
 export class S3Service {
   private client: S3Client;
   private bucketDefault: string;
+  private readonly endpoint: string;
+  private readonly tlsInsecure: boolean;
+  /**
+   * URL pré-assinada é validada pelo relógio do próprio MinIO. O @aws-sdk/s3-request-presigner
+   * desta versão não lê `systemClockOffset` (só o client "direto" faz isso, e mesmo assim só
+   * reage depois de já levar um erro). Então, se a VM que roda essa API estiver com o relógio
+   * atrasado em relação ao MinIO, a URL nasce assinada com uma data "no passado" e o
+   * `X-Amz-Expires` (contado a partir dessa data) se esgota antes mesmo de chegar no usuário.
+   * A saída é medir esse desvio uma vez no startup (via header Date de uma resposta do MinIO)
+   * e somá-lo ao `expiresIn` pedido, pra a janela de validade real bater com o TTL desejado.
+   */
+  private clockOffsetMs = 0;
+  private clockOffsetReady: Promise<void>;
 
   constructor() {
     const opts: S3Opts = {
@@ -56,6 +70,50 @@ export class S3Service {
     });
 
     this.bucketDefault = opts.bucketDefault;
+    this.endpoint = opts.endpoint;
+    this.tlsInsecure = !!opts.tlsInsecure;
+    this.clockOffsetReady = this.syncClockOffset();
+  }
+
+  /** Mede o desvio (servidor - local) lendo o header `Date` do MinIO. Nunca lança. */
+  private syncClockOffset(): Promise<void> {
+    return new Promise((resolve) => {
+      let url: URL;
+      try {
+        url = new URL(this.endpoint);
+      } catch {
+        return resolve();
+      }
+
+      const lib = url.protocol === 'https:' ? https : http;
+      const req = lib.request(
+        {
+          hostname: url.hostname,
+          port: url.port || (url.protocol === 'https:' ? 443 : 80),
+          path: '/',
+          method: 'HEAD',
+          timeout: 3000,
+          ...(url.protocol === 'https:' ? { rejectUnauthorized: !this.tlsInsecure } : {}),
+        },
+        (res) => {
+          const serverDate = res.headers['date'];
+          if (typeof serverDate === 'string') {
+            const offsetMs = new Date(serverDate).getTime() - Date.now();
+            if (Number.isFinite(offsetMs)) {
+              this.clockOffsetMs = offsetMs;
+            }
+          }
+          res.resume();
+          resolve();
+        },
+      );
+      req.on('timeout', () => {
+        req.destroy();
+        resolve();
+      });
+      req.on('error', () => resolve());
+      req.end();
+    });
   }
 
   getDefaultBucket() {
@@ -98,6 +156,8 @@ export class S3Service {
     expiresSeconds = 3600,
     bucket = this.bucketDefault,
   ): Promise<string> {
+    await this.clockOffsetReady;
+
     // valida se o objeto existe — se não existir, HeadObject lança
     await this.headObject(key, bucket);
 
@@ -106,7 +166,12 @@ export class S3Service {
       Key: key,
     });
 
-    const url = await getSignedUrl(this.client, cmd, { expiresIn: expiresSeconds });
+    // se o relógio local estiver atrasado em relação ao MinIO, a URL é assinada com uma
+    // data "no passado" do ponto de vista do servidor — compensa alongando o expiresIn.
+    const atrasoSegundos = Math.max(0, Math.ceil(this.clockOffsetMs / 1000));
+    const url = await getSignedUrl(this.client, cmd, {
+      expiresIn: expiresSeconds + atrasoSegundos,
+    });
     return url;
   }
 
