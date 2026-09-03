@@ -2126,7 +2126,7 @@ model ven_encomenda_pecas {
 }
 
 model ven_orcamento {
-  id                 String               @id
+  id                 String               @id @default(cuid())
   numero             Int                  @unique @default(autoincrement())
   empresa            Int                  @default(3)
   cli_codigo         Int
@@ -2154,7 +2154,7 @@ model ven_orcamento {
   usuario_nome       String?
   created_at         DateTime             @default(now()) @db.Timestamptz(6)
   updated_at         DateTime             @default(now()) @db.Timestamptz(6)
-  ven_orcamento_item ven_orcamento_item[]
+  itens              ven_orcamento_item[]
 
   @@index([cli_codigo], map: "idx_ven_orcamento_cli")
   @@index([created_at], map: "idx_ven_orcamento_created")
@@ -2162,7 +2162,7 @@ model ven_orcamento {
 }
 
 model ven_orcamento_item {
-  id                 String        @id
+  id                 String        @id @default(cuid())
   orcamento_id       String
   item               Int
   pro_codigo         Int
