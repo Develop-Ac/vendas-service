@@ -7,6 +7,14 @@ import {
   ven_encomenda_pecas_itens_encomendados,
 } from '@prisma/client';
 
+/**
+ * Origem do anexo: `carro` para as imagens mandadas na criação da encomenda e
+ * `comprovante` para os arquivos enviados depois, em POST /encomenda-pecas/anexo/:id.
+ */
+export const ANEXO_TIPO_CARRO = 'carro';
+export const ANEXO_TIPO_COMPROVANTE = 'comprovante';
+export type AnexoTipo = typeof ANEXO_TIPO_CARRO | typeof ANEXO_TIPO_COMPROVANTE;
+
 /** Campos escalares da encomenda (sem o id autoincrement nem created_at, que tem default no banco). */
 export type CreateEncomendaPecasInput = Omit<ven_encomenda_pecas, 'id' | 'created_at'>;
 
@@ -137,15 +145,19 @@ export class EncomendaPecasRepository {
     });
   }
 
-  /** Salva as chaves dos anexos já enviados ao MinIO, vinculadas à encomenda. */
+  /**
+   * Salva as chaves dos anexos já enviados ao MinIO, vinculadas à encomenda.
+   * `tipo` diz de onde veio o arquivo (ver AnexoTipo).
+   */
   async addAnexos(
     vendaCasadaId: number,
     chaves: string[],
+    tipo: AnexoTipo,
   ): Promise<ven_encomenda_pecas_anexos[]> {
     return this.prisma.$transaction(
       chaves.map((anexo) =>
         this.prisma.ven_encomenda_pecas_anexos.create({
-          data: { ven_encomenda_id: vendaCasadaId, anexo },
+          data: { ven_encomenda_id: vendaCasadaId, anexo, tipo },
         }),
       ),
     );

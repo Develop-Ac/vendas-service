@@ -6,14 +6,12 @@ import {
   Param,
   Query,
   ParseIntPipe,
-  UploadedFile,
   UploadedFiles,
   UseInterceptors,
   Body,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
-import { FastifyFileInterceptor } from '../common/interceptors/fastify-file.interceptor';
 import { FastifyFilesInterceptor } from '../common/interceptors/fastify-files.interceptor';
 import type { UploadedFileData } from '../common/types/uploaded-file';
 import {
@@ -43,7 +41,8 @@ export class EncomendaPecasController {
     summary: 'Lista todas as encomendas de peças',
     description:
       'Cada encomenda vem com `pecas` (ven_encomenda_pecas_itens_encomendados), ' +
-      '`pecas_cotadas` (ven_encomenda_pecas_itens_cotados) e `anexos` (ven_encomenda_pecas_anexos).',
+      '`pecas_cotadas` (ven_encomenda_pecas_itens_cotados) e `anexos` (ven_encomenda_pecas_anexos), ' +
+      'cada anexo com `tipo`: "carro" (imagens da criação) ou "comprovante" (enviados depois).',
   })
   @ApiResponse({ status: 200, description: 'Lista retornada com sucesso' })
   findAll() {
@@ -99,7 +98,8 @@ export class EncomendaPecasController {
     summary: 'Busca uma encomenda de peça pelo ID',
     description:
       'Retorna a encomenda com `pecas` (ven_encomenda_pecas_itens_encomendados), ' +
-      '`pecas_cotadas` (ven_encomenda_pecas_itens_cotados) e `anexos` (ven_encomenda_pecas_anexos).',
+      '`pecas_cotadas` (ven_encomenda_pecas_itens_cotados) e `anexos` (ven_encomenda_pecas_anexos), ' +
+      'cada anexo com `tipo`: "carro" (imagens da criação) ou "comprovante" (enviados depois).',
   })
   @ApiParam({ name: 'id', type: Number, description: 'ID da venda casada' })
   @ApiResponse({ status: 200, description: 'Registro encontrado' })
@@ -109,13 +109,15 @@ export class EncomendaPecasController {
   }
 
   @Post()
-  @UseInterceptors(FastifyFileInterceptor('imagem'))
-  @ApiOperation({ summary: 'Cria uma nova encomenda de peça (com imagem opcional)' })
+  @UseInterceptors(FastifyFilesInterceptor(['imagens', 'imagem']))
+  @ApiOperation({ summary: 'Cria uma nova encomenda de peça (com imagens opcionais)' })
   @ApiConsumes('application/json', 'multipart/form-data')
   @ApiBody({
     description:
-      'Dados da encomenda e imagem opcional. Cada item de `pecas` vira uma linha em ' +
-      'ven_encomenda_pecas_itens_encomendados. Em multipart, envie cada peça como JSON string.',
+      'Dados da encomenda e imagens opcionais. Cada item de `pecas` vira uma linha em ' +
+      'ven_encomenda_pecas_itens_encomendados. Em multipart, envie cada peça como JSON string ' +
+      'e repita o campo `imagens` para mandar várias fotos — cada uma vira uma linha em ' +
+      'ven_encomenda_pecas_anexos com `tipo: "carro"`. O campo antigo `imagem` continua aceito.',
     schema: {
       type: 'object',
       properties: {
@@ -143,16 +145,19 @@ export class EncomendaPecasController {
         cli_codigo: { type: 'integer' },
         cliente: { type: 'string' },
         numero: { type: 'string' },
-        imagem: { type: 'string', format: 'binary' },
+        imagens: {
+          type: 'array',
+          items: { type: 'string', format: 'binary' },
+        },
       },
     },
   })
   @ApiResponse({ status: 201, description: 'Encomenda de peça criada com sucesso' })
   create(
     @Body() dto: CreateVendaCasadaDto,
-    @UploadedFile() file?: UploadedFileData,
+    @UploadedFiles() files?: UploadedFileData[],
   ) {
-    return this.service.create(dto, file);
+    return this.service.create(dto, files);
   }
 
   @Post(':id')
@@ -206,7 +211,8 @@ export class EncomendaPecasController {
     description:
       'Aceita qualquer tipo de arquivo (imagem, PDF, vídeo, áudio) no campo `anexos` ' +
       '(pode repetir o campo para enviar vários), sobe cada um para o bucket configurado ' +
-      'em S3_BUCKET_AVARIAS e grava a chave de cada arquivo em ven_encomenda_pecas_anexos.',
+      'em S3_BUCKET_AVARIAS e grava a chave de cada arquivo em ven_encomenda_pecas_anexos ' +
+      'com `tipo: "comprovante"`.',
   })
   @ApiConsumes('multipart/form-data')
   @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
@@ -227,7 +233,6 @@ export class EncomendaPecasController {
     @Param('id', ParseIntPipe) id: number,
     @UploadedFiles() files: UploadedFileData[],
   ) {
-    console.log(files)
     return this.service.enviarAnexos(id, files);
   }
 }
