@@ -2186,13 +2186,7 @@ model ven_orcamento_item {
   estoque_disponivel Decimal?      @db.Decimal(15, 3)
   substituto_de      Int?
   observacao         String?
-<<<<<<< HEAD
   ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
-=======
-  promocao_codigo    Int?
-  promocao_fim       DateTime?     @db.Date
-  orcamento          ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade)
->>>>>>> 02d5cd948627ea3cf412194ab856adb15a2c5580
 
   @@index([orcamento_id], map: "idx_ven_orcamento_item_orc")
   @@index([pro_codigo], map: "idx_ven_orcamento_item_pro")
@@ -2208,7 +2202,6 @@ model ven_produto_relacionado {
 
   @@id([pro_codigo, pro_relacionado])
 }
-<<<<<<< HEAD
 
 model ven_regua_atacado {
   id         Int      @id @default(autoincrement())
@@ -2256,5 +2249,3 @@ enum rec_estado_resolucao {
   CONFIRMADA
   DEVOLVIDA
 }
-=======
->>>>>>> 02d5cd948627ea3cf412194ab856adb15a2c5580
