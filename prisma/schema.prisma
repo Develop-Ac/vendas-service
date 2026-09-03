@@ -1146,3 +1146,17 @@ model ven_produto_relacionado {
 
   @@id([pro_codigo, pro_relacionado])
 }
+
+/// "Vendem juntos" no nível do SUBGRUPO: o que sai na mesma nota com qualquer
+/// item do subgrupo (cola e arame com para-brisa). Cobre o produto de giro
+/// baixo, que no atacado não forma par próprio.
+model ven_subgrupo_relacionado {
+  subgrp_codigo   Int
+  pro_relacionado Int
+  juntos          Int
+  base            Int
+  suporte_pct     Decimal  @db.Decimal(6, 4)
+  calculado_em    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([subgrp_codigo, pro_relacionado])
+}

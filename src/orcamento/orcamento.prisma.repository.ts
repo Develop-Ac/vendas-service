@@ -223,6 +223,34 @@ export class OrcamentoPrismaRepository {
     return pares.length;
   }
 
+  /** Vendem juntos no nível do SUBGRUPO (o que sai junto com qualquer item dele). */
+  async relacionadosSubgrupo(subgrpCodigo: number, limite = 15) {
+    const rows = await this.prisma.ven_subgrupo_relacionado.findMany({
+      where: { subgrp_codigo: subgrpCodigo },
+      orderBy: [{ juntos: 'desc' }, { suporte_pct: 'desc' }],
+      take: limite,
+    });
+    return rows.map((r) => ({
+      pro_codigo: r.pro_relacionado,
+      juntos: r.juntos,
+      base: r.base,
+      suporte_pct: Number(r.suporte_pct),
+      calculado_em: r.calculado_em,
+    }));
+  }
+
+  async gravarRelacionadosSubgrupo(
+    pares: Array<{ subgrp_codigo: number; pro_relacionado: number; juntos: number; base: number; suporte_pct: number }>,
+  ): Promise<number> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.ven_subgrupo_relacionado.deleteMany({});
+      for (let i = 0; i < pares.length; i += 2000) {
+        await tx.ven_subgrupo_relacionado.createMany({ data: pares.slice(i, i + 2000) });
+      }
+    });
+    return pares.length;
+  }
+
   async relacionadosCalculadoEm(): Promise<Date | null> {
     const r = await this.prisma.ven_produto_relacionado.findFirst({ orderBy: { calculado_em: 'desc' } });
     return r?.calculado_em ?? null;

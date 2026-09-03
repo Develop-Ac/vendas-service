@@ -462,16 +462,35 @@ export class OrcamentoService {
       .sort((a, b) => b.estoque_disponivel - a.estoque_disponivel || a.preco_tabela - b.preco_tabela);
   }
 
-  /** Vendem juntos — só o que tem saldo hoje (sugestão que não pode ser atendida atrapalha). */
+  /**
+   * Vendem juntos — só o que tem saldo hoje (sugestão que não pode ser atendida
+   * atrapalha). Dois níveis, do mais específico ao mais amplo:
+   *   1. pares do PRÓPRIO produto (>= 3 notas juntos em 12 meses);
+   *   2. pares do SUBGRUPO do produto — o que sai junto com qualquer item dele
+   *      (cola e arame de remoção com para-brisa). No atacado a maioria dos
+   *      produtos sai em poucas notas e não forma par próprio; sem este nível a
+   *      seção ficava vazia para quase todo item.
+   */
   async relacionados(codigo: number, tabelaPreco: string | null, cli?: number) {
-    const pares = await this.db.relacionados(codigo, 12);
-    if (!pares.length) return [];
-    const lista = await this.produtosPorCodigo(pares.map((p) => p.pro_codigo), tabelaPreco, cli);
+    const [base] = await this.produtosPorCodigo([codigo], tabelaPreco, cli);
+    const [paresProduto, paresSubgrupo] = await Promise.all([
+      this.db.relacionados(codigo, 12),
+      base?.subgrp_codigo != null ? this.db.relacionadosSubgrupo(base.subgrp_codigo, 15) : Promise.resolve([]),
+    ]);
+    const jaTem = new Set(paresProduto.map((p) => p.pro_codigo));
+    const candidatos = [
+      ...paresProduto.map((p) => ({ ...p, origem: 'produto' as const })),
+      ...paresSubgrupo.filter((p) => p.pro_codigo !== codigo && !jaTem.has(p.pro_codigo)).map((p) => ({ ...p, origem: 'subgrupo' as const })),
+    ];
+    if (!candidatos.length) return [];
+    const lista = await this.produtosPorCodigo(candidatos.map((p) => p.pro_codigo), tabelaPreco, cli);
     const porCodigo = new Map(lista.map((p) => [p.pro_codigo, p]));
-    return pares
+    return candidatos
       .map((par) => {
         const p = porCodigo.get(par.pro_codigo);
-        return p ? { ...p, juntos: par.juntos, base: par.base, suporte_pct: par.suporte_pct } : null;
+        return p
+          ? { ...p, juntos: par.juntos, base: par.base, suporte_pct: par.suporte_pct, origem: par.origem, subgrupo_base: base?.subgrupo ?? null }
+          : null;
       })
       .filter((p): p is NonNullable<typeof p> => !!p && !p.inativo && p.estoque_disponivel > 0)
       .slice(0, 8);
@@ -490,7 +509,7 @@ export class OrcamentoService {
   /** Apuração dos pares "vendem juntos" (cron semanal ou botão). */
   async recalcularRelacionados(meses = 12) {
     const inicio = Date.now();
-    const pares = await this.bi.paresVendemJuntos(meses, 3);
+    const [pares, paresSub] = await Promise.all([this.bi.paresVendemJuntos(meses, 3), this.bi.paresSubgrupoVendemJuntos(meses, 5)]);
     // Guarda só os 12 mais fortes de cada produto: a tela mostra 8 e o resto é ruído.
     const porProduto = new Map<number, typeof pares>();
     for (const p of pares) {
@@ -506,7 +525,23 @@ export class OrcamentoService {
       }
     }
     const gravados = await this.db.gravarRelacionados(linhas);
-    return { meses, pares_apurados: pares.length, produtos: porProduto.size, gravados, ms: Date.now() - inicio };
+
+    // Subgrupo: os 15 mais fortes de cada um (a tela completa até 8 com eles).
+    const porSubgrupo = new Map<number, typeof paresSub>();
+    for (const p of paresSub) {
+      const l = porSubgrupo.get(p.subgrp_codigo) ?? [];
+      l.push(p);
+      porSubgrupo.set(p.subgrp_codigo, l);
+    }
+    const linhasSub: Array<{ subgrp_codigo: number; pro_relacionado: number; juntos: number; base: number; suporte_pct: number }> = [];
+    for (const [, l] of porSubgrupo) {
+      l.sort((a, b) => b.juntos - a.juntos);
+      for (const p of l.slice(0, 15)) {
+        linhasSub.push({ ...p, suporte_pct: p.base > 0 ? Math.round((p.juntos / p.base) * 10000) / 10000 : 0 });
+      }
+    }
+    const gravados_subgrupo = await this.db.gravarRelacionadosSubgrupo(linhasSub);
+    return { meses, pares_apurados: pares.length, produtos: porProduto.size, gravados, subgrupos: porSubgrupo.size, gravados_subgrupo, ms: Date.now() - inicio };
   }
 
   /* ----------------------------------------------------------- orçamento */

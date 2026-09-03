@@ -43,6 +43,13 @@ export interface ParRelacionado {
   base: number;
 }
 
+export interface ParSubgrupo {
+  subgrp_codigo: number;
+  pro_relacionado: number;
+  juntos: number;
+  base: number;
+}
+
 /**
  * Mês comissional: fecha no dia 25. De 26 em diante já é o mês seguinte —
  * a mesma convenção de vw_analise_vendas (mes_comissional / ano_comissional).
@@ -200,6 +207,43 @@ export class OrcamentoBiRepository {
     );
     return rows.map((r: any) => ({
       pro_codigo: Number(r.pro_codigo),
+      pro_relacionado: Number(r.pro_relacionado),
+      juntos: Number(r.juntos),
+      base: Number(r.base),
+    }));
+  }
+
+  /**
+   * Pares no nível do SUBGRUPO: para cada subgrupo, os produtos de OUTRO
+   * subgrupo que saem na mesma nota. `juntos` conta notas distintas (uma nota
+   * com três para-brisas e uma cola conta uma vez), `base` é o total de notas
+   * em que o subgrupo saiu.
+   */
+  async paresSubgrupoVendemJuntos(meses = 12, minimo = 5): Promise<ParSubgrupo[]> {
+    const rows = await this.mssql.query<any>(
+      `
+      SET NOCOUNT ON;
+      SELECT DISTINCT CONCAT(v.EMPRESA,'-',v.SERIE,'-',v.NFS) AS nota, v.PRO_CODIGO, v.SUBGRP_CODIGO
+      INTO #n
+      FROM dbo.vw_analise_vendas v
+      WHERE v.EMPRESA = 3 AND v.local_venda = 'ATACADO' AND v.DT_CANCELAMENTO IS NULL
+        AND v.SUBGRP_CODIGO IS NOT NULL
+        AND v.dt_emissao_convertida >= DATEADD(MONTH, -@meses, CAST(GETDATE() AS date));
+      CREATE CLUSTERED INDEX ix_n ON #n (nota, PRO_CODIGO);
+      SELECT SUBGRP_CODIGO, COUNT(DISTINCT nota) AS notas INTO #sg FROM #n GROUP BY SUBGRP_CODIGO;
+      SELECT a.SUBGRP_CODIGO AS subgrp_codigo, b.PRO_CODIGO AS pro_relacionado,
+             COUNT(DISTINCT a.nota) AS juntos, MAX(sg.notas) AS base
+      FROM #n a
+      JOIN #n b ON b.nota = a.nota AND b.SUBGRP_CODIGO <> a.SUBGRP_CODIGO
+      JOIN #sg sg ON sg.SUBGRP_CODIGO = a.SUBGRP_CODIGO
+      GROUP BY a.SUBGRP_CODIGO, b.PRO_CODIGO
+      HAVING COUNT(DISTINCT a.nota) >= @minimo;
+      DROP TABLE #sg; DROP TABLE #n;
+      `,
+      { meses, minimo },
+    );
+    return rows.map((r: any) => ({
+      subgrp_codigo: Number(r.subgrp_codigo),
       pro_relacionado: Number(r.pro_relacionado),
       juntos: Number(r.juntos),
       base: Number(r.base),
