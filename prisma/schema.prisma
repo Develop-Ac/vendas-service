@@ -93,7 +93,7 @@ model avi_regra {
 }
 
 model com_cotacao {
-  id                String              @id
+  id                String              @id @default(cuid())
   empresa           Int
   pedido_cotacao    Int                 @unique
   indice            Int                 @unique(map: "com_cotacao_indice_unique") @default(autoincrement())
@@ -103,7 +103,7 @@ model com_cotacao {
 }
 
 model com_cotacao_for {
-  id                    String                  @id
+  id                    String                  @id @default(cuid())
   empresa               Int                     @default(3)
   pedido_cotacao        Int
   for_codigo            Int
@@ -135,7 +135,7 @@ model com_cotacao_itens {
 }
 
 model com_cotacao_itens_for {
-  id              String          @id
+  id              String          @id @default(cuid())
   pedido_cotacao  Int
   for_codigo      Int
   emissao         DateTime?
@@ -687,7 +687,7 @@ model com_pagamento_guia {
 }
 
 model com_pedido {
-  id                     String                   @id
+  id                     String                   @id @default(cuid())
   pedido_cotacao         Int
   for_codigo             Int
   created_at             DateTime                 @default(now())
@@ -725,7 +725,7 @@ model com_pedido_intranet_celta {
 }
 
 model com_pedido_itens {
-  id               String     @id
+  id               String     @id @default(cuid())
   pedido_id        String
   item_id_origem   String?
   pro_codigo       Int
@@ -949,7 +949,7 @@ model est_auditoria {
 }
 
 model est_contagem {
-  id                String             @id
+  id                String             @id @default(cuid())
   colaborador       String
   created_at        DateTime           @default(now())
   contagem          Int                @default(1)
@@ -968,7 +968,7 @@ model est_contagem {
 }
 
 model est_contagem_itens {
-  id                 String             @id
+  id                 String             @id @default(cuid())
   data               DateTime
   cod_produto        Int
   desc_produto       String
@@ -993,7 +993,7 @@ model est_contagem_itens {
 }
 
 model est_contagem_log {
-  id                 String             @id
+  id                 String             @id @default(cuid())
   contagem_id        String
   usuario_id         String
   item_id            String
@@ -1581,7 +1581,7 @@ model gar_historico_garantias {
 
 /// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
 model ofi_checklists {
-  id                           String                   @id
+  id                           String                   @id @default(cuid())
   osInterna                    String?
   dataHoraEntrada              DateTime?
   observacoes                  String?
@@ -1613,7 +1613,7 @@ model ofi_checklists {
 }
 
 model ofi_checklists_avarias {
-  id             String         @id
+  id             String         @id @default(cuid())
   checklistId    String
   tipo           String?
   peca           String?
@@ -1643,7 +1643,7 @@ model ofi_checklists_fotos {
 }
 
 model ofi_checklists_items {
-  id             String         @id
+  id             String         @id @default(cuid())
   checklistId    String
   item           String
   status         String
@@ -1919,7 +1919,7 @@ model sis_usuarios {
   nome               String
   senha              String
   trash              Int                @default(0)
-  id                 String             @id
+  id                 String             @id @default(cuid())
   codigo             String             @unique
   perfil_acesso      String
   avatar_url         String?
@@ -1938,7 +1938,7 @@ model sis_usuarios {
 }
 
 model ven_carteira_cliente {
-  id             String    @id
+  id             String    @id @default(cuid())
   cli_codigo     Int       @unique(map: "uq_ven_carteira_cliente_cli")
   rep_codigo     Int?
   rep_nome       String?
@@ -1959,7 +1959,7 @@ model ven_carteira_cliente {
 }
 
 model ven_carteira_historico {
-  id                  String   @id
+  id                  String   @id @default(cuid())
   cli_codigo          Int
   rep_codigo_anterior Int?
   rep_nome_anterior   String?
@@ -1979,7 +1979,7 @@ model ven_carteira_historico {
 }
 
 model ven_carteira_vendedor_config {
-  id               String   @id
+  id               String   @id @default(cuid())
   rep_codigo       Int      @unique(map: "uq_ven_carteira_vend_cfg_rep")
   rep_nome         String?
   capacidade_max   Int?
@@ -2045,7 +2045,7 @@ model ven_encomenda_pecas_itens_encomendados {
 }
 
 model ven_fila_tarefa {
-  id              String    @id
+  id              String    @id @default(cuid())
   tipo            String
   cli_codigo      Int
   cli_nome        String?
@@ -2070,7 +2070,7 @@ model ven_fila_tarefa {
 }
 
 model ven_meta_vendedor {
-  id             String   @id
+  id             String   @id @default(cuid())
   rep_codigo     Int
   rep_nome       String?
   ano            Int
@@ -2085,37 +2085,37 @@ model ven_meta_vendedor {
 }
 
 model ven_orcamento {
-  id                 String               @id
-  numero             Int                  @unique @default(autoincrement())
-  empresa            Int                  @default(3)
-  cli_codigo         Int
-  cli_nome           String?
-  tabela_preco       String?
-  rep_codigo         Int?
-  rep_nome           String?
-  status             String               @default("RASCUNHO")
-  validade           DateTime?            @db.Date
-  observacao         String?
-  subtotal           Decimal              @default(0) @db.Decimal(15, 2)
-  desconto_total     Decimal              @default(0) @db.Decimal(15, 2)
-  total              Decimal              @default(0) @db.Decimal(15, 2)
-  desc_pct           Decimal              @default(0) @db.Decimal(6, 4)
-  acima_alcada       Boolean              @default(false)
-  bolsa_pct_antes    Decimal?             @db.Decimal(6, 4)
-  bolsa_pct_depois   Decimal?             @db.Decimal(6, 4)
-  aprovado_por       String?
-  aprovado_em        DateTime?            @db.Timestamptz(6)
-  enviado_em         DateTime?            @db.Timestamptz(6)
-  desfecho_em        DateTime?            @db.Timestamptz(6)
-  desfecho_motivo    String?
-  desfecho_ref       String?
-  usuario_id         String?
-  usuario_nome       String?
-  created_at         DateTime             @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime             @default(now()) @db.Timestamptz(6)
-  entregue_canal     String?
-  entregue_em        DateTime?            @db.Timestamptz(6)
-  ven_orcamento_item ven_orcamento_item[]
+  id               String               @id @default(cuid())
+  numero           Int                  @unique @default(autoincrement())
+  empresa          Int                  @default(3)
+  cli_codigo       Int
+  cli_nome         String?
+  tabela_preco     String?
+  rep_codigo       Int?
+  rep_nome         String?
+  status           String               @default("RASCUNHO")
+  validade         DateTime?            @db.Date
+  observacao       String?
+  subtotal         Decimal              @default(0) @db.Decimal(15, 2)
+  desconto_total   Decimal              @default(0) @db.Decimal(15, 2)
+  total            Decimal              @default(0) @db.Decimal(15, 2)
+  desc_pct         Decimal              @default(0) @db.Decimal(6, 4)
+  acima_alcada     Boolean              @default(false)
+  bolsa_pct_antes  Decimal?             @db.Decimal(6, 4)
+  bolsa_pct_depois Decimal?             @db.Decimal(6, 4)
+  aprovado_por     String?
+  aprovado_em      DateTime?            @db.Timestamptz(6)
+  enviado_em       DateTime?            @db.Timestamptz(6)
+  desfecho_em      DateTime?            @db.Timestamptz(6)
+  desfecho_motivo  String?
+  desfecho_ref     String?
+  usuario_id       String?
+  usuario_nome     String?
+  created_at       DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime             @default(now()) @db.Timestamptz(6)
+  entregue_canal   String?
+  entregue_em      DateTime?            @db.Timestamptz(6)
+  itens            ven_orcamento_item[]
 
   @@index([cli_codigo], map: "idx_ven_orcamento_cli")
   @@index([created_at], map: "idx_ven_orcamento_created")
@@ -2123,7 +2123,7 @@ model ven_orcamento {
 }
 
 model ven_orcamento_desfecho {
-  id           String    @id
+  id           String    @id @default(cuid())
   empresa      Int       @default(3)
   orcamento    Int
   emissao      DateTime? @db.Date
@@ -2147,7 +2147,7 @@ model ven_orcamento_desfecho {
 }
 
 model ven_orcamento_item {
-  id                 String        @id
+  id                 String        @id @default(cuid())
   orcamento_id       String
   item               Int
   pro_codigo         Int
@@ -2223,7 +2223,7 @@ model ven_regua_volume {
 }
 
 model ven_resgate {
-  id                       String    @id
+  id                       String    @id @default(cuid())
   cli_codigo               Int
   cli_nome                 String?
   rep_codigo               Int?
@@ -2258,7 +2258,7 @@ model ven_subgrupo_relacionado {
 }
 
 model ven_wa_contato {
-  id         String   @id
+  id         String   @id @default(cuid())
   chave      String   @unique(map: "uq_ven_wa_contato_chave")
   telefone   String
   cli_codigo Int
@@ -2272,7 +2272,7 @@ model ven_wa_contato {
 }
 
 model ven_wa_mensagem {
-  id            String   @id
+  id            String   @id @default(cuid())
   message_id    String
   sessao        String
   rep_codigo    Int?
