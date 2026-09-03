@@ -2011,6 +2011,7 @@ model ven_encomenda_pecas_anexos {
   id                  String              @id(map: "pk_ven_enc_pecas_anexos") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   ven_encomenda_id    Int
   anexo               String              @db.VarChar(500)
+  tipo                String              @default("comprovante") @db.VarChar(20)
   ven_encomenda_pecas ven_encomenda_pecas @relation(fields: [ven_encomenda_id], references: [id], onDelete: Cascade, map: "fk_ven_enc_pecas_anexos_encomenda")
 
   @@index([ven_encomenda_id], map: "idx_ven_enc_pecas_anexos_encomenda_id")

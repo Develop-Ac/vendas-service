@@ -18,8 +18,15 @@ import { UploadedFileData } from '../types/uploaded-file';
  * arquivos no mesmo campo (ex.: `anexos`). Mesma lógica do FastifyFileInterceptor, mas
  * empilha todos os arquivos do campo em `req.files` (o que `@UploadedFiles()` lê) em vez
  * de manter só o primeiro.
+ *
+ * Aceita mais de um nome de campo (ex.: ['imagens', 'imagem']) para casos em que o mesmo
+ * endpoint recebe o arquivo por nomes diferentes; todos caem na mesma lista.
  */
-export function FastifyFilesInterceptor(fieldName: string): Type<NestInterceptor> {
+export function FastifyFilesInterceptor(
+  fieldName: string | string[],
+): Type<NestInterceptor> {
+  const fieldNames = Array.isArray(fieldName) ? fieldName : [fieldName];
+
   @Injectable()
   class MixinFastifyFilesInterceptor implements NestInterceptor {
     async intercept(
@@ -46,7 +53,7 @@ export function FastifyFilesInterceptor(fieldName: string): Type<NestInterceptor
       try {
         for await (const part of req.parts()) {
           if (part.type === 'file') {
-            if (part.fieldname === fieldName) {
+            if (fieldNames.includes(part.fieldname)) {
               const buffer = await part.toBuffer();
               files.push({
                 fieldname: part.fieldname,

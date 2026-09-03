@@ -1,5 +1,8 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import {
+  ANEXO_TIPO_CARRO,
+  ANEXO_TIPO_COMPROVANTE,
+  AnexoTipo,
   CreateItemEncomendadoInput,
   EncomendaPecasRepository,
   VendaCasadaComItens,
@@ -44,6 +47,7 @@ export type AnexoEnviado = {
   size: number;
   key: string;
   url: string;
+  tipo: AnexoTipo;
 };
 
 export type AnexoComUrl = ven_encomenda_pecas_anexos & { url: string | null };
@@ -76,44 +80,52 @@ export class EncomendaPecasService {
     return this.comUrlDeAnexos(record);
   }
 
-  /** Troca a chave salva de cada anexo por uma URL pré-assinada de GET, pra exibir na tela. */
+  /**
+   * Troca as chaves salvas por URLs pré-assinadas de GET, pra exibir na tela:
+   * cada item de `anexos` e também a `imagem` enviada na criação (que vive em
+   * outro bucket).
+   */
   private async comUrlDeAnexos(venda: VendaCasadaComItens): Promise<VendaCasadaComUrls> {
-    const anexos = await Promise.all(
-      venda.anexos.map(async (anexo) => ({
-        ...anexo,
-        url: await this.gerarUrlAnexo(anexo.anexo),
-      })),
-    );
-    return { ...venda, anexos };
+    const [anexos, imagem] = await Promise.all([
+      Promise.all(
+        venda.anexos.map(async (anexo) => ({
+          ...anexo,
+          url: await this.gerarUrlAnexo(anexo.anexo),
+        })),
+      ),
+      venda.imagem ? this.gerarUrlAnexo(venda.imagem, this.BUCKET) : null,
+    ]);
+
+    return { ...venda, anexos, imagem };
   }
 
   /** Se o objeto não existir mais no bucket, devolve null em vez de quebrar o GET. */
-  private async gerarUrlAnexo(key: string): Promise<string | null> {
+  private async gerarUrlAnexo(
+    key: string,
+    bucket = this.ANEXOS_BUCKET,
+  ): Promise<string | null> {
     try {
-      return await this.s3.getPresignedGetUrl(key, undefined, this.ANEXOS_BUCKET);
+      return await this.s3.getPresignedGetUrl(key, undefined, bucket);
     } catch {
       return null;
     }
   }
 
+  /**
+   * Cria a encomenda com os itens encomendados e grava as imagens recebidas em
+   * `imagens` como anexos do tipo `carro` (as fotos do veículo/peça). Os arquivos
+   * enviados depois, em POST /encomenda-pecas/anexo/:id, entram como `comprovante`.
+   */
   async create(
     dto: CreateVendaCasadaDto,
-    file?: UploadedFileData,
-  ): Promise<VendaCasadaComItens> {
+    files?: UploadedFileData[],
+  ): Promise<VendaCasadaComUrls> {
     const itens = this.normalizarPecas(dto.pecas);
     if (itens.length === 0) {
       throw new BadRequestException('Informe ao menos uma peça em "pecas".');
     }
 
-    let imagemKey: string | null = null;
-
-    if (file) {
-      const timestamp = Date.now();
-      imagemKey = `${timestamp}_${file.originalname}`;
-      await this.s3.putObject(imagemKey, file.buffer, file.mimetype, this.BUCKET);
-    }
-
-    return this.repository.create(
+    const encomenda = await this.repository.create(
       {
         nome_vendedor: dto.nome_vendedor ?? null,
         carro: dto.carro ?? null,
@@ -121,11 +133,17 @@ export class EncomendaPecasService {
         observacao: dto.observacao ?? null,
         cliente: dto.cliente ?? null,
         numero: dto.numero ?? null,
-        imagem: imagemKey,
+        imagem: null,
         status: 'Aguardando cotação',
       },
       itens,
     );
+
+    if (files?.length) {
+      await this.subirAnexos(encomenda.id, files, ANEXO_TIPO_CARRO);
+    }
+
+    return this.findById(encomenda.id);
   }
 
   /**
@@ -254,6 +272,18 @@ export class EncomendaPecasService {
       throw new BadRequestException('Envie ao menos um anexo no campo "anexos".');
     }
 
+    return this.subirAnexos(id, files, ANEXO_TIPO_COMPROVANTE);
+  }
+
+  /**
+   * Sobe os arquivos para o bucket de anexos e grava as chaves em
+   * ven_encomenda_pecas_anexos com o tipo informado.
+   */
+  private async subirAnexos(
+    id: number,
+    files: UploadedFileData[],
+    tipo: AnexoTipo,
+  ): Promise<AnexoEnviado[]> {
     const enviados: AnexoEnviado[] = [];
     for (const file of files) {
       const key = `${id}/${Date.now()}_${file.originalname}`;
@@ -265,12 +295,14 @@ export class EncomendaPecasService {
         size: file.size,
         key,
         url,
+        tipo,
       });
     }
 
     await this.repository.addAnexos(
       id,
       enviados.map((anexo) => anexo.key),
+      tipo,
     );
 
     return enviados;
