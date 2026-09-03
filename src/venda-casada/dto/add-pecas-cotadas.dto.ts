@@ -1,6 +1,7 @@
 import { ApiProperty } from '@nestjs/swagger';
 import {
   IsArray,
+  IsBoolean,
   IsDefined,
   IsNotEmpty,
   IsNumber,
@@ -42,6 +43,19 @@ export class VendaCasadaItemDto {
   @IsString()
   @MaxLength(255)
   marca?: string;
+
+  @ApiProperty({
+    description: 'Transportadora (coluna `transpostadora` no banco)',
+    required: false,
+  })
+  @IsOptional()
+  @IsString()
+  transpostadora?: string;
+
+  @ApiProperty({ description: 'Se o item cotado foi autorizado', required: false })
+  @IsOptional()
+  @IsBoolean()
+  autorizado?: boolean;
 }
 
 export class AddPecasCotadasDto {

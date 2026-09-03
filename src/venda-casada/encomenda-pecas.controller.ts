@@ -2,16 +2,19 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
   Param,
   Query,
   ParseIntPipe,
   UploadedFile,
+  UploadedFiles,
   UseInterceptors,
   Body,
   UsePipes,
   ValidationPipe,
 } from '@nestjs/common';
 import { FastifyFileInterceptor } from '../common/interceptors/fastify-file.interceptor';
+import { FastifyFilesInterceptor } from '../common/interceptors/fastify-files.interceptor';
 import type { UploadedFileData } from '../common/types/uploaded-file';
 import {
   ApiTags,
@@ -25,6 +28,8 @@ import {
 import { EncomendaPecasService } from './encomenda-pecas.service';
 import { CreateVendaCasadaDto } from './dto/create-encomenda-pecas.dto';
 import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
+import { UpdateStatusDto } from './dto/update-status.dto';
+import { UpdateItemCotadoDto } from './dto/update-item-cotado.dto';
 
 @ApiTags('Encomenda de Peças')
 @Controller('encomenda-pecas')
@@ -34,7 +39,12 @@ export class EncomendaPecasController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: 'Lista todas as vendas casadas' })
+  @ApiOperation({
+    summary: 'Lista todas as encomendas de peças',
+    description:
+      'Cada encomenda vem com `pecas` (ven_encomenda_pecas_itens_encomendados), ' +
+      '`pecas_cotadas` (ven_encomenda_pecas_itens_cotados) e `anexos` (ven_encomenda_pecas_anexos).',
+  })
   @ApiResponse({ status: 200, description: 'Lista retornada com sucesso' })
   findAll() {
     return this.service.findAll();
@@ -85,7 +95,12 @@ export class EncomendaPecasController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: 'Busca uma encomenda de peça pelo ID' })
+  @ApiOperation({
+    summary: 'Busca uma encomenda de peça pelo ID',
+    description:
+      'Retorna a encomenda com `pecas` (ven_encomenda_pecas_itens_encomendados), ' +
+      '`pecas_cotadas` (ven_encomenda_pecas_itens_cotados) e `anexos` (ven_encomenda_pecas_anexos).',
+  })
   @ApiParam({ name: 'id', type: Number, description: 'ID da venda casada' })
   @ApiResponse({ status: 200, description: 'Registro encontrado' })
   @ApiResponse({ status: 404, description: 'Registro não encontrado' })
@@ -96,17 +111,36 @@ export class EncomendaPecasController {
   @Post()
   @UseInterceptors(FastifyFileInterceptor('imagem'))
   @ApiOperation({ summary: 'Cria uma nova encomenda de peça (com imagem opcional)' })
-  @ApiConsumes('multipart/form-data')
+  @ApiConsumes('application/json', 'multipart/form-data')
   @ApiBody({
-    description: 'Dados da venda casada e imagem opcional',
+    description:
+      'Dados da encomenda e imagem opcional. Cada item de `pecas` vira uma linha em ' +
+      'ven_encomenda_pecas_itens_encomendados. Em multipart, envie cada peça como JSON string.',
     schema: {
       type: 'object',
       properties: {
         nome_vendedor: { type: 'string' },
         carro: { type: 'string' },
-        pecas: { type: 'array', items: { type: 'string' } },
+        pecas: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['peca'],
+            properties: {
+              peca: { type: 'string', example: 'LAN T GOL /86 LE FUME' },
+              pro_codigo: {
+                type: 'integer',
+                example: 2321,
+                description: 'Se não informado, o backend usa 99999.',
+              },
+              referencia: { type: 'string', example: '2204' },
+              quantidade: { type: 'integer', example: 12, default: 1 },
+            },
+          },
+        },
         ano: { type: 'integer' },
         observacao: { type: 'string' },
+        cli_codigo: { type: 'integer' },
         cliente: { type: 'string' },
         numero: { type: 'string' },
         imagem: { type: 'string', format: 'binary' },
@@ -125,7 +159,8 @@ export class EncomendaPecasController {
   @ApiOperation({
     summary: 'Adiciona peças cotadas a uma encomenda de peça',
     description:
-      'Cria registros em ven_encomenda_pecas_itens e salva os IDs gerados na lista pecas_cotadas da encomenda de peça correspondente.',
+      'Cria registros em ven_encomenda_pecas_itens_cotados já vinculados à encomenda ' +
+      '(encomenda_pecas_id) e devolve a encomenda atualizada com as duas listas de itens.',
   })
   @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
   @ApiBody({ type: AddPecasCotadasDto })
@@ -136,5 +171,63 @@ export class EncomendaPecasController {
     @Body() dto: AddPecasCotadasDto,
   ) {
     return this.service.addPecasCotadas(id, dto);
+  }
+
+  @Patch('status/:id')
+  @ApiOperation({ summary: 'Atualiza o status de uma encomenda de peça' })
+  @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
+  @ApiBody({ type: UpdateStatusDto })
+  @ApiResponse({ status: 200, description: 'Status atualizado com sucesso' })
+  @ApiResponse({ status: 404, description: 'Encomenda de peça não encontrada' })
+  updateStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateStatusDto,
+  ) {
+    return this.service.updateStatus(id, dto);
+  }
+
+  @Patch('item_cotado/:id')
+  @ApiOperation({ summary: 'Autoriza ou desautoriza um item cotado' })
+  @ApiParam({ name: 'id', type: Number, description: 'ID do item cotado' })
+  @ApiBody({ type: UpdateItemCotadoDto })
+  @ApiResponse({ status: 200, description: 'Item cotado atualizado com sucesso' })
+  @ApiResponse({ status: 404, description: 'Item cotado não encontrado' })
+  updateItemCotado(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateItemCotadoDto,
+  ) {
+    return this.service.updateItemCotadoAutorizado(id, dto);
+  }
+
+  @Post('anexo/:id')
+  @UseInterceptors(FastifyFilesInterceptor('anexos'))
+  @ApiOperation({
+    summary: 'Envia anexos de uma encomenda de peça para o MinIO',
+    description:
+      'Aceita qualquer tipo de arquivo (imagem, PDF, vídeo, áudio) no campo `anexos` ' +
+      '(pode repetir o campo para enviar vários), sobe cada um para o bucket configurado ' +
+      'em S3_BUCKET_AVARIAS e grava a chave de cada arquivo em ven_encomenda_pecas_anexos.',
+  })
+  @ApiConsumes('multipart/form-data')
+  @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        anexos: {
+          type: 'array',
+          items: { type: 'string', format: 'binary' },
+        },
+      },
+    },
+  })
+  @ApiResponse({ status: 201, description: 'Anexos enviados com sucesso' })
+  @ApiResponse({ status: 404, description: 'Encomenda de peça não encontrada' })
+  enviarAnexos(
+    @Param('id', ParseIntPipe) id: number,
+    @UploadedFiles() files: UploadedFileData[],
+  ) {
+    console.log(files)
+    return this.service.enviarAnexos(id, files);
   }
 }

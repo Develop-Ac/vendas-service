@@ -2112,49 +2112,51 @@ model sac_kanban_minion {
 }
 
 model ven_encomenda_pecas {
-  id            Int      @id(map: "ven_venda_casada_pkey") @default(autoincrement())
-  nome_vendedor String?  @db.VarChar(255)
-  carro         String?  @db.VarChar(255)
-  ano           Int?
-  observacao    String?
-  cliente       String?  @db.VarChar(255)
-  numero        String?  @db.VarChar(50)
-  imagem        String?
-  status        String?  @db.VarChar(50)
-  pecas         String[]
-  pecas_cotadas String[]
+  id                                     Int                                      @id(map: "ven_venda_casada_pkey") @default(autoincrement())
+  nome_vendedor                          String?                                  @db.VarChar(255)
+  carro                                  String?                                  @db.VarChar(255)
+  ano                                    Int?
+  observacao                             String?
+  cliente                                String?                                  @db.VarChar(255)
+  numero                                 String?                                  @db.VarChar(50)
+  imagem                                 String?
+  status                                 String?                                  @db.VarChar(50)
+  created_at                             DateTime?                                @default(now()) @db.Date
+  ven_encomenda_pecas_anexos             ven_encomenda_pecas_anexos[]
+  ven_encomenda_pecas_itens_cotados      ven_encomenda_pecas_itens_cotados[]
+  ven_encomenda_pecas_itens_encomendados ven_encomenda_pecas_itens_encomendados[]
 }
 
 model ven_orcamento {
-  id                 String               @id @default(cuid())
-  numero             Int                  @unique @default(autoincrement())
-  empresa            Int                  @default(3)
-  cli_codigo         Int
-  cli_nome           String?
-  tabela_preco       String?
-  rep_codigo         Int?
-  rep_nome           String?
-  status             String               @default("RASCUNHO")
-  validade           DateTime?            @db.Date
-  observacao         String?
-  subtotal           Decimal              @default(0) @db.Decimal(15, 2)
-  desconto_total     Decimal              @default(0) @db.Decimal(15, 2)
-  total              Decimal              @default(0) @db.Decimal(15, 2)
-  desc_pct           Decimal              @default(0) @db.Decimal(6, 4)
-  acima_alcada       Boolean              @default(false)
-  bolsa_pct_antes    Decimal?             @db.Decimal(6, 4)
-  bolsa_pct_depois   Decimal?             @db.Decimal(6, 4)
-  aprovado_por       String?
-  aprovado_em        DateTime?            @db.Timestamptz(6)
-  enviado_em         DateTime?            @db.Timestamptz(6)
-  desfecho_em        DateTime?            @db.Timestamptz(6)
-  desfecho_motivo    String?
-  desfecho_ref       String?
-  usuario_id         String?
-  usuario_nome       String?
-  created_at         DateTime             @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime             @default(now()) @db.Timestamptz(6)
-  itens              ven_orcamento_item[]
+  id               String               @id @default(cuid())
+  numero           Int                  @unique @default(autoincrement())
+  empresa          Int                  @default(3)
+  cli_codigo       Int
+  cli_nome         String?
+  tabela_preco     String?
+  rep_codigo       Int?
+  rep_nome         String?
+  status           String               @default("RASCUNHO")
+  validade         DateTime?            @db.Date
+  observacao       String?
+  subtotal         Decimal              @default(0) @db.Decimal(15, 2)
+  desconto_total   Decimal              @default(0) @db.Decimal(15, 2)
+  total            Decimal              @default(0) @db.Decimal(15, 2)
+  desc_pct         Decimal              @default(0) @db.Decimal(6, 4)
+  acima_alcada     Boolean              @default(false)
+  bolsa_pct_antes  Decimal?             @db.Decimal(6, 4)
+  bolsa_pct_depois Decimal?             @db.Decimal(6, 4)
+  aprovado_por     String?
+  aprovado_em      DateTime?            @db.Timestamptz(6)
+  enviado_em       DateTime?            @db.Timestamptz(6)
+  desfecho_em      DateTime?            @db.Timestamptz(6)
+  desfecho_motivo  String?
+  desfecho_ref     String?
+  usuario_id       String?
+  usuario_nome     String?
+  created_at       DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime             @default(now()) @db.Timestamptz(6)
+  itens            ven_orcamento_item[]
 
   @@index([cli_codigo], map: "idx_ven_orcamento_cli")
   @@index([created_at], map: "idx_ven_orcamento_created")
@@ -2237,13 +2239,52 @@ model ven_regua_volume {
   updated_at DateTime @default(now()) @db.Timestamptz(6)
 }
 
-model ven_encomenda_pecas_itens {
-  id         Int     @id(map: "ven_venda_casada_itens_pkey") @default(autoincrement())
-  nome       String  @db.VarChar(255)
-  valor      Float   @db.Real
-  prazo      String? @db.VarChar(100)
-  fornecedor String? @db.VarChar(255)
-  marca      String? @db.VarChar(255)
+model ven_encomenda_pecas_itens_cotados {
+  id                  Int                  @id(map: "ven_venda_casada_itens_pkey") @default(autoincrement())
+  nome                String               @db.VarChar(255)
+  valor               Float                @db.Real
+  prazo               String?              @db.VarChar(100)
+  fornecedor          String?              @db.VarChar(255)
+  marca               String?              @db.VarChar(255)
+  encomenda_pecas_id  Int?
+  transpostadora      String?
+  autorizado          Boolean?
+  ven_encomenda_pecas ven_encomenda_pecas? @relation(fields: [encomenda_pecas_id], references: [id], onDelete: Cascade, map: "fk_ven_enc_pecas_itens_cotados_encomenda")
+
+  @@index([encomenda_pecas_id], map: "idx_ven_enc_pecas_itens_cotados_encomenda_id")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model ven_encomenda_pecas_itens_encomendados {
+  id                  String              @id(map: "pk_ven_enc_pecas_itens") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  encomenda_pecas_id  Int
+  pro_codigo          Int
+  pro_descricao       String              @db.VarChar(255)
+  referencia          String?             @db.VarChar(60)
+  quantidade          Int                 @default(1)
+  ven_encomenda_pecas ven_encomenda_pecas @relation(fields: [encomenda_pecas_id], references: [id], onDelete: Cascade, map: "fk_ven_enc_pecas_itens_encomenda")
+
+  @@index([encomenda_pecas_id], map: "idx_ven_enc_pecas_itens_encomenda_id")
+}
+
+model ven_encomenda_pecas_anexos {
+  id                  String              @id(map: "pk_ven_enc_pecas_anexos") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ven_encomenda_id    Int
+  anexo               String              @db.VarChar(500)
+  ven_encomenda_pecas ven_encomenda_pecas @relation(fields: [ven_encomenda_id], references: [id], onDelete: Cascade, map: "fk_ven_enc_pecas_anexos_encomenda")
+
+  @@index([ven_encomenda_id], map: "idx_ven_enc_pecas_anexos_encomenda_id")
+}
+
+model ven_subgrupo_relacionado {
+  subgrp_codigo   Int
+  pro_relacionado Int
+  juntos          Int
+  base            Int
+  suporte_pct     Decimal  @db.Decimal(6, 4)
+  calculado_em    DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([subgrp_codigo, pro_relacionado])
 }
 
 enum rec_estado_resolucao {

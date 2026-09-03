@@ -8,8 +8,42 @@ import {
   ArrayNotEmpty,
   IsDefined,
   IsNotEmpty,
-  IsString as IsStringValidator,
+  IsPositive,
+  ValidateNested,
 } from 'class-validator';
+import { Type } from 'class-transformer';
+
+export class EncomendaPecaItemDto {
+  @ApiProperty({ description: 'Descrição da peça', example: 'LAN T GOL /86 LE FUME' })
+  @IsDefined()
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(255)
+  peca!: string;
+
+  @ApiProperty({
+    description: 'Código do produto no ERP. Se não informado, o backend usa 99999.',
+    required: false,
+    example: 2321,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  pro_codigo?: number;
+
+  @ApiProperty({ description: 'Referência do produto', required: false, example: '2204' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(60)
+  referencia?: string;
+
+  @ApiProperty({ description: 'Quantidade encomendada', example: 12, default: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  quantidade?: number;
+}
 
 export class CreateVendaCasadaDto {
   @ApiProperty({ description: 'Nome do vendedor', required: false })
@@ -25,19 +59,20 @@ export class CreateVendaCasadaDto {
   carro?: string;
 
   @ApiProperty({
-    description: 'Lista de peças',
+    description: 'Lista de peças encomendadas',
     required: true,
-    type: [String],
-    example: ['Porta dianteira esquerda', 'Retrovisor direito'],
+    type: [EncomendaPecaItemDto],
   })
   @IsDefined()
   @IsArray()
   @ArrayNotEmpty()
-  @IsStringValidator({ each: true })
-  pecas!: string[];
+  @ValidateNested({ each: true })
+  @Type(() => EncomendaPecaItemDto)
+  pecas!: EncomendaPecaItemDto[];
 
   @ApiProperty({ description: 'Ano', required: false })
   @IsOptional()
+  @Type(() => Number)
   @IsInt()
   ano?: number;
 
@@ -45,6 +80,12 @@ export class CreateVendaCasadaDto {
   @IsOptional()
   @IsString()
   observacao?: string;
+
+  @ApiProperty({ description: 'Código do cliente no ERP', required: false })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  cli_codigo?: number;
 
   @ApiProperty({ description: 'Cliente', required: false })
   @IsOptional()
