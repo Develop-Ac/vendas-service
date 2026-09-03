@@ -228,6 +228,16 @@ export class OrcamentoPrismaRepository {
     return r?.calculado_em ?? null;
   }
 
+  /** Orçamentos do Celta que já têm motivo de perda registrado (CRM fase 1). */
+  async celtaComDesfecho(orcamentos: number[]): Promise<Set<number>> {
+    if (!orcamentos.length) return new Set();
+    const rows = await this.prisma.ven_orcamento_desfecho.findMany({
+      where: { empresa: 3, orcamento: { in: orcamentos } },
+      select: { orcamento: true },
+    });
+    return new Set(rows.map((r) => r.orcamento));
+  }
+
   /* ----------------------------------------------------------- orçamento */
 
   private mapItem(i: any) {

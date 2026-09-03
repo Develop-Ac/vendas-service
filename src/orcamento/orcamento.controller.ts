@@ -88,6 +88,24 @@ export class OrcamentoController {
     return this.service.bolsa(rep, b != null ? { bruto: b, desconto: d ?? 0 } : undefined);
   }
 
+  /* -------------------------------------------------- orçamentos do Celta */
+
+  @Get('celta/pendentes')
+  @ApiOperation({ summary: 'Orçamentos lançados no Celta nos últimos N dias (padrão 7) ainda sem venda do cliente e sem motivo de perda.' })
+  @ApiQuery({ name: 'rep', required: false })
+  @ApiQuery({ name: 'dias', required: false, example: 7 })
+  celtaPendentes(@Query('rep') rep?: string, @Query('dias') dias?: string) {
+    return this.service.celtaPendentes(toNum(rep), toNum(dias) ?? 7);
+  }
+
+  @Get('celta/:orcamento/itens')
+  @ApiOperation({ summary: 'Itens de um orçamento do Celta avaliados na régua para a tabela do cliente — o "importar itens".' })
+  @ApiQuery({ name: 'tabela', required: false })
+  @ApiQuery({ name: 'cli', required: false })
+  celtaItens(@Param('orcamento', ParseIntPipe) orcamento: number, @Query('tabela') tabela?: string, @Query('cli') cli?: string) {
+    return this.service.celtaItens(orcamento, tabela ?? null, toNum(cli));
+  }
+
   /* ----------------------------------------------------------- produtos */
 
   @Get('produtos')

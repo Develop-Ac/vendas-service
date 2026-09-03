@@ -393,6 +393,52 @@ export class OrcamentoService {
     return { itens: saida, truncado, limite };
   }
 
+  /**
+   * Orçamentos do Celta dos últimos `dias` ainda pendentes (sem venda do
+   * cliente e sem motivo de perda registrado) — a lista de trabalho do dia,
+   * na tela inicial. O vendedor vê os seus; gestão vê todos.
+   */
+  async celtaPendentes(rep: number | undefined, dias = 7) {
+    const d = Math.max(1, Math.min(60, dias));
+    const itens = await this.erp.orcamentosCeltaPendentes(d, rep);
+    const comDesfecho = await this.db.celtaComDesfecho(itens.map((o) => o.orcamento)).catch(() => new Set<number>());
+    const abertos = itens.filter((o) => !comDesfecho.has(o.orcamento));
+    return {
+      dias: d,
+      total: abertos.length,
+      valor_total: round2(abertos.reduce((s, o) => s + o.total, 0)),
+      itens: abertos,
+    };
+  }
+
+  /**
+   * Itens de um orçamento do Celta prontos para entrar no orçamento da
+   * intranet: cada produto avaliado na régua para a TABELA DO CLIENTE de hoje,
+   * com a quantidade do Celta e o desconto que o unitário praticado lá
+   * representa sobre a tabela de hoje (nunca negativo — se o Celta cobrou
+   * acima da tabela, entra sem desconto). Item que não existe mais ou está
+   * inativo vem em `ignorados`, com o motivo.
+   */
+  async celtaItens(orcamento: number, tabelaPreco: string | null, cli?: number) {
+    const cab = await this.erp.orcamentoCelta(orcamento);
+    if (!cab) throw new NotFoundException(`Orçamento ${orcamento} não encontrado no Celta.`);
+    const itens = await this.erp.itensOrcamentoCelta(orcamento);
+    const cliente = cli ?? cab.cli_codigo;
+    const tabela = tabelaPreco ?? (await this.erp.clientePorCodigo(cliente))?.TABELA_PRECO ?? null;
+    const produtos = itens.length ? await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), tabela, cliente) : [];
+    const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
+    const prontos: Array<{ produto: ProdutoOrcamento; quantidade: number; desc_pct: number; unitario_celta: number }> = [];
+    const ignorados: Array<{ pro_codigo: number; descricao: string; motivo: string }> = [];
+    for (const i of itens) {
+      const p = porCodigo.get(i.pro_codigo);
+      if (!p) { ignorados.push({ pro_codigo: i.pro_codigo, descricao: i.descricao, motivo: 'produto não encontrado' }); continue; }
+      if (p.inativo) { ignorados.push({ pro_codigo: i.pro_codigo, descricao: i.descricao, motivo: 'produto inativo' }); continue; }
+      const desc = p.preco_tabela > 0 && i.unitario > 0 && i.unitario < p.preco_tabela ? Math.round((1 - i.unitario / p.preco_tabela) * 10000) / 10000 : 0;
+      prontos.push({ produto: p, quantidade: Math.max(1, i.quantidade), desc_pct: p.promocao ? 0 : desc, unitario_celta: i.unitario });
+    }
+    return { orcamento: cab, cli_codigo: cliente, tabela_preco: tabela, itens: prontos, ignorados };
+  }
+
   imagensDoProduto(codigo: number) {
     return this.erp.imagensDoProduto(codigo);
   }

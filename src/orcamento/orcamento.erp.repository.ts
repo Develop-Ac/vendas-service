@@ -126,6 +126,34 @@ export function ymdDe(v: unknown): string | null {
 
 export const hojeYmd = () => ymdDe(new Date()) as string;
 
+/** Operações fiscais que contam como VENDA (mesma lista da carteirização). */
+const OPERACOES_VENDA = ['1', '4', '5', '6', '7', '101', '104', '105', '106', '124', '200'];
+
+export interface OrcamentoCelta {
+  orcamento: number;
+  emissao: string;
+  validade: string | null;
+  cli_codigo: number;
+  cli_nome: string;
+  fone: string | null;
+  tabela_preco: string | null;
+  rep_codigo: number | null;
+  rep_nome: string | null;
+  total: number;
+  dias_desde_emissao: number;
+}
+
+export interface ItemOrcamentoCelta {
+  item: number;
+  pro_codigo: number;
+  descricao: string;
+  quantidade: number;
+  unitario: number;
+  unitario_original: number;
+  perc_descto: number;
+  total: number;
+}
+
 export interface PromocaoItem {
   pro_codigo: number;
   prom_codigo: number;
@@ -355,6 +383,140 @@ export class OrcamentoErpRepository {
       saida.set(pro, melhor);
     }
     return saida;
+  }
+
+  /* ------------------------------------------------- orçamentos do Celta */
+
+  /**
+   * Orçamentos lançados NO CELTA nos últimos `dias`, ainda sem venda do cliente
+   * desde a emissão (a mesma inferência da carteirização: o vínculo NFS quase
+   * nunca é preenchido). Todos os clientes, não só o atacado — o vendedor de
+   * balcão também orça. Nomes atuais de cliente e representante vêm em lote.
+   */
+  async orcamentosCeltaPendentes(dias = 7, rep?: number): Promise<OrcamentoCelta[]> {
+    const hoje = new Date(`${hojeYmd()}T00:00:00`);
+    const desde = new Date(hoje);
+    desde.setDate(desde.getDate() - dias);
+    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const filtrosOrc: FiltroErp[] = [{ campo: 'EMISSAO', op: 'entre', valor: [ymd(desde), ymd(hoje)] }];
+    if (rep != null) filtrosOrc.push({ campo: 'REP_CODIGO', op: 'igual', valor: rep });
+
+    const [orcs, vendas] = await Promise.all([
+      this.erp.consultar<Record<string, any>>('orcamentos', {
+        empresa: EMPRESA,
+        campos: ['ORCAMENTO', 'EMISSAO', 'DT_VALIDADE', 'CLI_CODIGO', 'CLI_NOME', 'REP_CODIGO', 'TOTAL', 'NFS'],
+        filtros: filtrosOrc,
+        ordenar: [{ campo: 'EMISSAO', dir: 'desc' }, { campo: 'ORCAMENTO', dir: 'desc' }],
+        limite: 5000,
+        semCache: true,
+      }),
+      this.erp.consultar<{ CLI_CODIGO: number; DT_EMISSAO: string }>('nf-saida', {
+        empresa: EMPRESA,
+        filtros: [
+          { campo: 'DT_EMISSAO', op: 'maior_igual', valor: ymd(desde) },
+          { campo: 'DT_CANCELAMENTO', op: 'nulo' },
+          { campo: 'OPF_CODIGO', op: 'em', valor: OPERACOES_VENDA },
+        ],
+        agrupar: ['CLI_CODIGO', 'DT_EMISSAO'],
+        agregar: [{ fn: 'contar', campo: 'NFS', como: 'N' }],
+        limite: 20_000,
+      }),
+    ]);
+    const diasComVenda = new Map<number, string[]>();
+    for (const v of vendas) {
+      const cli = Number(v.CLI_CODIGO);
+      const dia = String(v.DT_EMISSAO).slice(0, 10);
+      (diasComVenda.get(cli) ?? diasComVenda.set(cli, []).get(cli)!).push(dia);
+    }
+    const pendentes = orcs.filter((o) => {
+      if (o.NFS != null && Number(o.NFS) > 0) return false;
+      const emissao = String(o.EMISSAO).slice(0, 10);
+      return !(diasComVenda.get(Number(o.CLI_CODIGO)) ?? []).some((dia) => dia >= emissao);
+    });
+    if (!pendentes.length) return [];
+
+    const clis = [...new Set(pendentes.map((o) => Number(o.CLI_CODIGO)))];
+    const reps = [...new Set(pendentes.map((o) => Number(o.REP_CODIGO)).filter((r) => Number.isFinite(r) && r > 0))];
+    const [clientes, representantes] = await Promise.all([
+      Promise.all(
+        Array.from({ length: Math.ceil(clis.length / 500) }, (_, i) => clis.slice(i * 500, i * 500 + 500)).map((lote) =>
+          this.erp.consultar<Record<string, any>>('clientes', {
+            empresa: EMPRESA,
+            campos: ['CLI_CODIGO', 'CLI_NOME', 'FONE', 'CELULAR', 'TABELA_PRECO'],
+            filtros: [{ campo: 'CLI_CODIGO', op: 'em', valor: lote }],
+            limite: lote.length + FOLGA,
+          }),
+        ),
+      ).then((r) => r.flat()),
+      reps.length
+        ? this.erp.consultar<Record<string, any>>('representantes', {
+            empresa: EMPRESA,
+            campos: ['REP_CODIGO', 'REP_NOME'],
+            filtros: [{ campo: 'REP_CODIGO', op: 'em', valor: reps }],
+            limite: 2000,
+          })
+        : Promise.resolve([] as Record<string, any>[]),
+    ]);
+    const cli = new Map(clientes.map((c) => [Number(c.CLI_CODIGO), c]));
+    // REPRESENTANTES repete o código (uma linha por empresa) — o primeiro nome serve.
+    const rep_ = new Map<number, string>();
+    for (const r of representantes) if (!rep_.has(Number(r.REP_CODIGO))) rep_.set(Number(r.REP_CODIGO), String(r.REP_NOME ?? '').trim());
+
+    return pendentes.map((o) => {
+      const c = cli.get(Number(o.CLI_CODIGO));
+      const emissao = ymdDe(o.EMISSAO) ?? hojeYmd();
+      return {
+        orcamento: Number(o.ORCAMENTO),
+        emissao,
+        validade: ymdDe(o.DT_VALIDADE),
+        cli_codigo: Number(o.CLI_CODIGO),
+        cli_nome: (c?.CLI_NOME ?? o.CLI_NOME ?? '').toString().trim() || `Cliente ${o.CLI_CODIGO}`,
+        fone: (c?.CELULAR || c?.FONE || null) as string | null,
+        tabela_preco: (c?.TABELA_PRECO ?? '').toString().trim() || null,
+        rep_codigo: o.REP_CODIGO == null ? null : Number(o.REP_CODIGO),
+        rep_nome: o.REP_CODIGO == null ? null : rep_.get(Number(o.REP_CODIGO)) ?? null,
+        total: Math.round(num(o.TOTAL) * 100) / 100,
+        dias_desde_emissao: Math.max(0, Math.round((hoje.getTime() - new Date(`${emissao}T00:00:00`).getTime()) / 86_400_000)),
+      };
+    });
+  }
+
+  /** Itens (não cancelados) de um orçamento do Celta, na ordem do orçamento. */
+  async itensOrcamentoCelta(orcamento: number): Promise<ItemOrcamentoCelta[]> {
+    const r = await this.erp.consultar<Record<string, any>>('orcamentos-itens', {
+      empresa: EMPRESA,
+      campos: ['ITEM', 'PRO_CODIGO', 'PRO_DESCRICAO', 'QUANTIDADE', 'UNITARIO', 'UNITARIO_ORIGINAL', 'PERC_DESCTO', 'TOTAL', 'CANCELADO'],
+      filtros: [{ campo: 'ORCAMENTO', op: 'igual', valor: orcamento }],
+      ordenar: [{ campo: 'ITEM', dir: 'asc' }],
+      limite: 1000,
+      semCache: true,
+    });
+    return r
+      .filter((i) => String(i.CANCELADO ?? '').trim() !== 'S')
+      .map((i) => ({
+        item: Number(i.ITEM),
+        pro_codigo: Number(i.PRO_CODIGO),
+        descricao: String(i.PRO_DESCRICAO ?? '').trim(),
+        quantidade: num(i.QUANTIDADE),
+        unitario: Math.round(num(i.UNITARIO) * 100) / 100,
+        unitario_original: Math.round(num(i.UNITARIO_ORIGINAL) * 100) / 100,
+        perc_descto: num(i.PERC_DESCTO),
+        total: Math.round(num(i.TOTAL) * 100) / 100,
+      }));
+  }
+
+  /** Cabeçalho de um orçamento do Celta (para o import saber o cliente). */
+  async orcamentoCelta(orcamento: number): Promise<{ orcamento: number; cli_codigo: number; rep_codigo: number | null; emissao: string | null; total: number } | null> {
+    const r = await this.erp.consultar<Record<string, any>>('orcamentos', {
+      empresa: EMPRESA,
+      campos: ['ORCAMENTO', 'EMISSAO', 'CLI_CODIGO', 'REP_CODIGO', 'TOTAL'],
+      filtros: [{ campo: 'ORCAMENTO', op: 'igual', valor: orcamento }],
+      limite: 1 + FOLGA,
+      semCache: true,
+    });
+    const o = r[0];
+    if (!o) return null;
+    return { orcamento: Number(o.ORCAMENTO), cli_codigo: Number(o.CLI_CODIGO), rep_codigo: o.REP_CODIGO == null ? null : Number(o.REP_CODIGO), emissao: ymdDe(o.EMISSAO), total: num(o.TOTAL) };
   }
 
   /* ------------------------------------------------------------ imagens */
