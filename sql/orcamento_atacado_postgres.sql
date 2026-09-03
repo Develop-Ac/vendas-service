@@ -165,3 +165,9 @@ CREATE TABLE IF NOT EXISTS ven_subgrupo_relacionado (
 -- SELECT gen_random_uuid()::text, u.id, 'Vendas', '/vendas/orcamento', true, true, true, false
 -- FROM sis_usuarios u WHERE u.codigo IN ('<codigo>') AND NOT EXISTS (
 --   SELECT 1 FROM sis_permissoes p WHERE p.usuario_id = u.id AND p.tela = '/vendas/orcamento');
+
+-- 7) Entrega ao cliente (Estação do WhatsApp, 03/09/2026): quando e por onde o
+--    orçamento foi ENTREGUE ao cliente (mensagem + PDF pelo WhatsApp do vendedor).
+--    `enviado_em` continua sendo o momento em que o vendedor fechou a proposta.
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS entregue_canal TEXT;
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS entregue_em    TIMESTAMPTZ;

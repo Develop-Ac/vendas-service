@@ -2147,6 +2147,8 @@ model ven_orcamento {
   aprovado_por       String?
   aprovado_em        DateTime?            @db.Timestamptz(6)
   enviado_em         DateTime?            @db.Timestamptz(6)
+  entregue_canal     String?
+  entregue_em        DateTime?            @db.Timestamptz(6)
   desfecho_em        DateTime?            @db.Timestamptz(6)
   desfecho_motivo    String?
   desfecho_ref       String?

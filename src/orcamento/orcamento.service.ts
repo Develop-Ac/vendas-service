@@ -1,3 +1,5 @@
+import { gerarPdfOrcamento, PdfOrcamento } from './orcamento.pdf';
+import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca } from './orcamento.erp.repository';
@@ -746,6 +748,97 @@ export class OrcamentoService {
     });
   }
 
+  /** O cliente RECEBEU a proposta (mensagem + PDF pelo WhatsApp da Estação). */
+  async entregue(id: string, canal: string) {
+    const o = await this.obter(id);
+    if (!['ENVIADO', 'FECHADO'].includes(o.status)) {
+      throw new BadRequestException(`Orçamento ${o.status}: só proposta ENVIADA pode ser entregue ao cliente.`);
+    }
+    return this.db.atualizar(id, { entregue_canal: canal, entregue_em: new Date() });
+  }
+
+  /** Texto da mensagem + PDF em base64 — o que a Estação manda no chat ativo. */
+  async mensagem(id: string) {
+    const dados = await this.dadosImpressao(id);
+    const pdf = await gerarPdfOrcamento(dados);
+    return {
+      texto: mensagemWhatsapp(dados),
+      arquivo: { nome: `orcamento-${dados.numero}.pdf`, mime: 'application/pdf', base64: pdf.toString('base64') },
+    };
+  }
+
+  async pdf(id: string): Promise<{ nome: string; dados: Buffer }> {
+    const dados = await this.dadosImpressao(id);
+    return { nome: `orcamento-${dados.numero}.pdf`, dados: await gerarPdfOrcamento(dados) };
+  }
+
+  /**
+   * Orçamento salvo + cadastro do cliente + marca dos itens (a marca não é
+   * gravada no item; vem do ERP na hora — se o ERP falhar, sai em branco).
+   */
+  private async dadosImpressao(id: string): Promise<PdfOrcamento> {
+    const o = await this.obter(id);
+    const itens = o.itens ?? [];
+    const [cli, produtos] = await Promise.all([
+      this.erp.clienteParaPdf(o.cli_codigo).catch(() => null),
+      itens.length
+        ? this.produtosPorCodigo(itens.map((i: any) => Number(i.pro_codigo)), o.tabela_preco, o.cli_codigo).catch(() => [] as ProdutoOrcamento[])
+        : Promise.resolve([] as ProdutoOrcamento[]),
+    ]);
+    const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
+    const dmy = (v: Date | string | null | undefined) => {
+      if (!v) return null;
+      const s = v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
+      const [a, m, d] = s.split('-');
+      return a && m && d ? `${d}/${m}/${a}` : null;
+    };
+    const n = (v: unknown) => Number(v ?? 0);
+    const linhas = itens.map((i: any) => {
+      const p = porCodigo.get(Number(i.pro_codigo));
+      const promoFim = dmy(i.promocao_fim);
+      return {
+        pro_codigo: Number(i.pro_codigo),
+        descricao: String(i.descricao ?? p?.descricao ?? ''),
+        marca: p?.marca ?? null,
+        unidade: i.unidade ?? p?.unidade ?? 'UN',
+        quantidade: n(i.quantidade),
+        preco_tabela: n(i.preco_tabela),
+        desc_pct: n(i.desc_pct),
+        preco_unit: n(i.preco_unit),
+        total: n(i.total),
+        promocao_fim: promoFim,
+        preco_original: promoFim && p && p.preco_original > n(i.preco_tabela) ? p.preco_original : null,
+      };
+    });
+    const numero = String(o.numero).padStart(6, '0');
+    const endereco = cli ? [cli.ENDERECO, cli.NUMERO].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(', ') : null;
+    return {
+      numero,
+      emissao: dmy(o.created_at) ?? '',
+      validade: dmy(o.validade),
+      vendedor: o.rep_nome ? `${o.rep_nome}${o.rep_codigo != null ? ` (${o.rep_codigo})` : ''}` : o.rep_codigo != null ? String(o.rep_codigo) : '—',
+      cliente: {
+        codigo: o.cli_codigo,
+        nome: String(o.cli_nome ?? cli?.CLI_NOME ?? ''),
+        cpf_cnpj: cli?.CPF_CNPJ ?? null,
+        rg_ie: cli?.RG_IE ? String(cli.RG_IE).trim() || null : null,
+        fone: [cli?.FONE, cli?.CELULAR].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(' ') || null,
+        endereco: endereco || null,
+        bairro: cli?.BAIRRO ? String(cli.BAIRRO).trim() : null,
+        cep: cli?.CEP ? String(cli.CEP).trim() : null,
+        cidade: cli?.CIDADE ?? null,
+        uf: cli?.UF ?? null,
+        tabela_nome: nomeTabelaCliente(o.tabela_preco),
+      },
+      itens: linhas,
+      subtotal: n(o.subtotal),
+      desconto: n(o.desconto_total),
+      desc_pct: n(o.desc_pct),
+      total: n(o.total),
+      observacao: o.observacao ?? null,
+    };
+  }
+
   /** Supervisor libera o que está abaixo do mínimo; o orçamento segue como ENVIADO. */
   async aprovar(id: string, usuario?: { usuario_id?: string; usuario_nome?: string }) {
     const o = await this.obter(id);
@@ -797,4 +890,13 @@ export class OrcamentoService {
     });
     return { orcamento: o, produtos, avisos };
   }
+}
+
+/** Mesmo vocabulário da tela: nada de "tabela 2" para o cliente. */
+function nomeTabelaCliente(t: string | null | undefined): string | null {
+  const v = (t ?? '').trim();
+  if (v === '2') return 'Cliente atacado';
+  if (v === '5') return 'Cliente atacado especial';
+  if (v === '1' || v === '') return v ? 'Cliente varejo' : null;
+  return `Tabela ${v}`;
 }

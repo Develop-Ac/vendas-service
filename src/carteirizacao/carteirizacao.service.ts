@@ -174,6 +174,21 @@ export class CarteirizacaoService {
     }
     try {
       const rows = await this.erp.resumoOrcamentosAtacado();
+      // Orçamento feito na intranet vale o mesmo que o do ERP — desde que SALVO
+      // (decisão 03/09/2026): entra no "último orçamento" (fila e resgate fecham
+      // a tarefa por sinal) e na contagem dos 90 dias (quadrante).
+      const intranet = await this.overlay.orcamentosIntranetPorCliente();
+      if (intranet.size) {
+        const porCli = new Map(rows.map((r) => [r.cli_codigo, r]));
+        for (const [cli, i] of intranet) {
+          const l = porCli.get(cli) ?? { cli_codigo: cli, orcamentos_90d: 0, valor_orcado_90d: 0, ult_orcamento: null };
+          l.orcamentos_90d += i.orcamentos_90d;
+          l.valor_orcado_90d += i.valor_orcado_90d;
+          if (!l.ult_orcamento || i.ult_orcamento > l.ult_orcamento) l.ult_orcamento = i.ult_orcamento;
+          porCli.set(cli, l);
+        }
+        rows.splice(0, rows.length, ...porCli.values());
+      }
       this.orcCache = { at: now, rows };
       return new Map(rows.map((r) => [r.cli_codigo, r]));
     } catch (err) {
