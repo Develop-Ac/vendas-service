@@ -42,7 +42,10 @@ function isAllowedOrigin(origin: string | undefined, allowed: (string | RegExp)[
 }
 
 async function bootstrap() {
-  const adapter = new FastifyAdapter({ bodyLimit: BODY_LIMIT });
+  // ignoreTrailingSlash: "/orcamento" e "/orcamento/" são a mesma rota — sem
+  // isso o Fastify responde 404 ("Cannot POST /orcamento/") a um cliente que
+  // monte a URL com barra no fim.
+  const adapter = new FastifyAdapter({ bodyLimit: BODY_LIMIT, ignoreTrailingSlash: true });
 
   const app = await NestFactory.create<NestFastifyApplication>(AppModule, adapter, {
     bufferLogs: true,
