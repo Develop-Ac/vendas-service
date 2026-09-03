@@ -433,7 +433,38 @@ export class OrcamentoErpRepository {
       const emissao = String(o.EMISSAO).slice(0, 10);
       return !(diasComVenda.get(Number(o.CLI_CODIGO)) ?? []).some((dia) => dia >= emissao);
     });
+    return this.enriquecerOrcamentosCelta(pendentes);
+  }
+
+  /**
+   * Orçamentos do Celta do CLIENTE ainda dentro da validade, sem venda
+   * vinculada (NFS) — o que a Estação lista ao apertar Orçar, junto com os da
+   * intranet. Janela de 90 dias de emissão só para não varrer a tabela inteira.
+   */
+  async orcamentosCeltaAtivos(cli: number): Promise<OrcamentoCelta[]> {
+    const hoje = hojeYmd();
+    const desde = new Date(`${hoje}T00:00:00`);
+    desde.setDate(desde.getDate() - 90);
+    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const orcs = await this.erp.consultar<Record<string, any>>('orcamentos', {
+      empresa: EMPRESA,
+      campos: ['ORCAMENTO', 'EMISSAO', 'DT_VALIDADE', 'CLI_CODIGO', 'CLI_NOME', 'REP_CODIGO', 'TOTAL', 'NFS'],
+      filtros: [
+        { campo: 'CLI_CODIGO', op: 'igual', valor: cli },
+        { campo: 'EMISSAO', op: 'maior_igual', valor: ymd(desde) },
+        { campo: 'DT_VALIDADE', op: 'maior_igual', valor: hoje },
+      ],
+      ordenar: [{ campo: 'EMISSAO', dir: 'desc' }, { campo: 'ORCAMENTO', dir: 'desc' }],
+      limite: 200,
+      semCache: true,
+    });
+    return this.enriquecerOrcamentosCelta(orcs.filter((o) => !(o.NFS != null && Number(o.NFS) > 0)));
+  }
+
+  /** Cliente (nome, fone, tabela) e vendedor de cada orçamento cru do ERP. */
+  private async enriquecerOrcamentosCelta(pendentes: Record<string, any>[]): Promise<OrcamentoCelta[]> {
     if (!pendentes.length) return [];
+    const hoje = new Date(`${hojeYmd()}T00:00:00`);
 
     const clis = [...new Set(pendentes.map((o) => Number(o.CLI_CODIGO)))];
     const reps = [...new Set(pendentes.map((o) => Number(o.REP_CODIGO)).filter((r) => Number.isFinite(r) && r > 0))];

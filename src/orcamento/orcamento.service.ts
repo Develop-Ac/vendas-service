@@ -2,7 +2,7 @@ import { gerarPdfOrcamento, PdfOrcamento } from './orcamento.pdf';
 import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca } from './orcamento.erp.repository';
+import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional } from './orcamento.bi.repository';
 import { OrcamentoPrismaRepository, GiroItem } from './orcamento.prisma.repository';
 import {
@@ -411,6 +411,31 @@ export class OrcamentoService {
       valor_total: round2(abertos.reduce((s, o) => s + o.total, 0)),
       itens: abertos,
     };
+  }
+
+  /**
+   * Orçamentos ATIVOS do cliente — o que o vendedor vê ao apertar Orçar na
+   * Estação: os da intranet em aberto (rascunho/enviado/aprovação, dentro da
+   * validade) e os do Celta ainda vigentes (sem venda e sem motivo de perda).
+   * Orçamento do Celta já importado para a intranet não aparece duas vezes
+   * (o import grava "Celta <nº>" na observação).
+   */
+  async ativos(cli: number): Promise<{ intranet: any[]; celta: OrcamentoCelta[] }> {
+    const hoje = hojeYmd();
+    const ymd = (v: unknown) => (v instanceof Date ? v.toISOString().slice(0, 10) : v ? String(v).slice(0, 10) : null);
+    const [lista, celta] = await Promise.all([
+      this.db.listar({ cli_codigo: cli, pageSize: 50 }),
+      this.erp.orcamentosCeltaAtivos(cli).catch(() => [] as OrcamentoCelta[]),
+    ]);
+    const intranet = (lista.itens as any[]).filter((o) => {
+      if (!['RASCUNHO', 'ENVIADO', 'APROVACAO'].includes(o.status)) return false;
+      const v = ymd(o.validade);
+      return !v || v >= hoje;
+    });
+    const comDesfecho = await this.db.celtaComDesfecho(celta.map((o) => o.orcamento)).catch(() => new Set<number>());
+    const importados = new Set<number>();
+    for (const o of intranet) for (const m of String(o.observacao ?? '').matchAll(/Celta (\d+)/g)) importados.add(Number(m[1]));
+    return { intranet, celta: celta.filter((o) => !comDesfecho.has(o.orcamento) && !importados.has(o.orcamento)) };
   }
 
   /**

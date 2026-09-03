@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -97,6 +98,15 @@ export class OrcamentoController {
   @ApiQuery({ name: 'dias', required: false, example: 7 })
   celtaPendentes(@Query('rep') rep?: string, @Query('dias') dias?: string) {
     return this.service.celtaPendentes(toNum(rep), toNum(dias) ?? 7);
+  }
+
+  @Get('ativos')
+  @ApiOperation({ summary: 'Orçamentos ativos do cliente: intranet em aberto + Celta dentro da validade (o "Orçar" da Estação).' })
+  @ApiQuery({ name: 'cli', required: true })
+  ativos(@Query('cli') cli: string) {
+    const n = toNum(cli);
+    if (!n) throw new BadRequestException('Informe o cliente (cli).');
+    return this.service.ativos(n);
   }
 
   @Get('celta/:orcamento/itens')
