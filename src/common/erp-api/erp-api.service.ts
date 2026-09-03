@@ -164,6 +164,16 @@ export class ErpApiService {
   }
 
   /**
+   * GET direto numa rota da API (as rotas de leitura por chave, como
+   * `/erp/encomenda-pecas/produtos/:pro_codigo`). Diferente de {@link consultar},
+   * não trata `truncado`: busca por chave devolve no máximo uma linha, e o
+   * flag vem ligado no meta mesmo assim.
+   */
+  async buscar<T = Record<string, any>>(rota: string): Promise<ResultadoErp<T>> {
+    return this.requisitar<T>(rota, { method: 'GET' });
+  }
+
+  /**
    * Consulta que ACEITA resposta cortada no limite — para busca de tela, onde
    * "mostre os 60 primeiros e avise que há mais" é o comportamento certo.
    * `consultar()` continua estrito para carga/reconciliação.
@@ -178,13 +188,13 @@ export class ErpApiService {
 
   /** GET simples (rotas nomeadas que devolvem JSON, ex.: /erp/produtos/:codigo/imagens). */
   async obterJson<T = unknown>(rota: string): Promise<T> {
-    const r = await this.buscar(rota);
+    const r = await this.buscarBruto(rota);
     return JSON.parse(await r.text()) as T;
   }
 
   /** GET de binário (imagem): devolve o corpo e o Content-Type como vieram. */
   async obterBinario(rota: string): Promise<{ dados: Buffer; contentType: string; etag: string | null }> {
-    const r = await this.buscar(rota);
+    const r = await this.buscarBruto(rota);
     return {
       dados: Buffer.from(await r.arrayBuffer()),
       contentType: r.headers.get('content-type') ?? 'application/octet-stream',
@@ -192,12 +202,16 @@ export class ErpApiService {
     };
   }
 
-  private async buscar(rota: string): Promise<Response> {
+  /**
+   * GET cru: devolve a `Response` para quem precisa do corpo como texto ou
+   * binário, sem passar pelo envelope `ResultadoErp` de {@link buscar}.
+   */
+  private async buscarBruto(rota: string): Promise<Response> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
     try {
       const resp = await fetch(`${this.baseUrl}${rota}`, {
-        headers: { 'x-app-token': process.env.ERP_API_TOKEN ?? '', 'x-servico': 'vendas-service' },
+        headers: { 'x-app-token': process.env.ERP_API_TOKEN ?? '', 'x-servico': 'x-vendas' },
         signal: ctrl.signal,
       });
       if (!resp.ok) {
@@ -217,20 +231,31 @@ export class ErpApiService {
   }
 
   private async chamar<T>(rota: string, corpo: unknown): Promise<ResultadoErp<T>> {
+    return this.requisitar<T>(rota, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(corpo),
+    });
+  }
+
+  private async requisitar<T>(
+    rota: string,
+    init: { method: string; headers?: Record<string, string>; body?: string },
+  ): Promise<ResultadoErp<T>> {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
     const inicio = Date.now();
     try {
       const resp = await fetch(`${this.baseUrl}${rota}`, {
-        method: 'POST',
+        method: init.method,
         headers: {
-          'content-type': 'application/json',
+          ...(init.headers ?? {}),
           'x-app-token': process.env.ERP_API_TOKEN ?? '',
           // Sem este header o /health/n1 da API relata "desconhecido" e o
           // relatório de quem consulta item a item deixa de ser acionável.
-          'x-servico': 'vendas-service',
+          'x-servico': 'x-vendas',
         },
-        body: JSON.stringify(corpo),
+        body: init.body,
         signal: ctrl.signal,
       });
 

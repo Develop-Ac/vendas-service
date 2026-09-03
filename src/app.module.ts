@@ -7,7 +7,7 @@ import { AppService } from './app.service';
 import { PrismaModule } from './prisma/prisma.module';
 import { BuscaItensModule } from './busca-itens/busca-itens.module';
 import { S3Module } from './storage/s3.module';
-import { VendaCasadaModule } from './venda-casada/venda-casada.module';
+import { EncomendaPecasModule } from './venda-casada/encomenda-pecas.module';
 import { B2bModule } from './b2b/b2b.module';
 import { BuscaPlacasModule } from './busca-placas/busca-placas.module';
 import { CarteirizacaoModule } from './carteirizacao/carteirizacao.module';
@@ -21,7 +21,7 @@ import { OrcamentoModule } from './orcamento/orcamento.module';
     PrismaModule,
     BuscaItensModule,
     S3Module,
-    VendaCasadaModule,
+    EncomendaPecasModule,
     B2bModule,
     BuscaPlacasModule,
     CarteirizacaoModule,

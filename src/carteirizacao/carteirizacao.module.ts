@@ -10,7 +10,7 @@ import { CarteirizacaoSyncScheduler } from './carteirizacao.sync.scheduler';
 import { FilaService } from './fila.service';
 import { ResgateService } from './resgate.service';
 import { MssqlService } from 'src/common/mssql/mssql.service';
-
+ 
 @Module({
   imports: [ScheduleModule.forRoot(), WhatsappModule],
   controllers: [CarteirizacaoController],

@@ -1,25 +1,25 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { ven_venda_casada, ven_venda_casada_itens } from '@prisma/client';
+import { ven_encomenda_pecas, ven_encomenda_pecas_itens } from '@prisma/client';
 
-export type CreateVendaCasadaItemInput = Omit<ven_venda_casada_itens, 'id'>;
+export type CreateVendaCasadaItemInput = Omit<ven_encomenda_pecas_itens, 'id'>;
 
-export type VendaCasadaComItens = Omit<ven_venda_casada, 'pecas_cotadas'> & {
-  pecas_cotadas: ven_venda_casada_itens[];
+export type VendaCasadaComItens = Omit<ven_encomenda_pecas, 'pecas_cotadas'> & {
+  pecas_cotadas: ven_encomenda_pecas_itens[];
 };
 
 @Injectable()
-export class VendaCasadaRepository {
+export class EncomendaPecasRepository {
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(): Promise<ven_venda_casada[]> {
-    return this.prisma.ven_venda_casada.findMany({
+  async findAll(): Promise<ven_encomenda_pecas[]> {
+    return this.prisma.ven_encomenda_pecas.findMany({
       orderBy: { id: 'desc' },
     });
   }
 
   async findById(id: number): Promise<VendaCasadaComItens | null> {
-    const venda = await this.prisma.ven_venda_casada.findUnique({
+    const venda = await this.prisma.ven_encomenda_pecas.findUnique({
       where: { id },
     });
     if (!venda) return null;
@@ -29,7 +29,7 @@ export class VendaCasadaRepository {
       .filter((n) => Number.isFinite(n));
 
     const itens = ids.length
-      ? await this.prisma.ven_venda_casada_itens.findMany({
+      ? await this.prisma.ven_encomenda_pecas_itens.findMany({
           where: { id: { in: ids } },
         })
       : [];
@@ -37,27 +37,27 @@ export class VendaCasadaRepository {
     const itensPorId = new Map(itens.map((i) => [i.id, i]));
     const itensOrdenados = ids
       .map((i) => itensPorId.get(i))
-      .filter((i): i is ven_venda_casada_itens => i !== undefined);
+      .filter((i): i is ven_encomenda_pecas_itens => i !== undefined);
 
     return { ...venda, pecas_cotadas: itensOrdenados };
   }
 
-  async create(data: Omit<ven_venda_casada, 'id'>): Promise<ven_venda_casada> {
-    return this.prisma.ven_venda_casada.create({ data });
+  async create(data: Omit<ven_encomenda_pecas, 'id'>): Promise<ven_encomenda_pecas> {
+    return this.prisma.ven_encomenda_pecas.create({ data });
   }
 
   async addPecasCotadas(
     vendaCasadaId: number,
     itens: CreateVendaCasadaItemInput[],
-  ): Promise<{ created: ven_venda_casada_itens[]; venda: ven_venda_casada }> {
+  ): Promise<{ created: ven_encomenda_pecas_itens[]; venda: ven_encomenda_pecas }> {
     return this.prisma.$transaction(async (tx) => {
-      const created: ven_venda_casada_itens[] = [];
+      const created: ven_encomenda_pecas_itens[] = [];
       for (const item of itens) {
-        const novo = await tx.ven_venda_casada_itens.create({ data: item });
+        const novo = await tx.ven_encomenda_pecas_itens.create({ data: item });
         created.push(novo);
       }
 
-      const venda = await tx.ven_venda_casada.findUnique({
+      const venda = await tx.ven_encomenda_pecas.findUnique({
         where: { id: vendaCasadaId },
         select: { pecas_cotadas: true },
       });
@@ -65,7 +65,7 @@ export class VendaCasadaRepository {
       const novosIds = created.map((i) => String(i.id));
       const atualizadas = [...(venda?.pecas_cotadas ?? []), ...novosIds];
 
-      const vendaAtualizada = await tx.ven_venda_casada.update({
+      const vendaAtualizada = await tx.ven_encomenda_pecas.update({
         where: { id: vendaCasadaId },
         data: { pecas_cotadas: atualizadas },
       });

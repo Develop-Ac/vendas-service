@@ -19,7 +19,7 @@ export interface FornecedorSubgrupoRow {
 const EMPRESA = 3;
 
 @Injectable()
-export class VendaCasadaFornecedoresRepository {
+export class EncomendaPecasFornecedoresRepository {
   constructor(private readonly mssql: MssqlService) {}
 
   /** SUBGRP_CODIGO de um produto (Stage_Produtos, staging do ERP no BI). */

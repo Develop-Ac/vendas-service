@@ -1,24 +1,30 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import {
-  VendaCasadaRepository,
+  EncomendaPecasRepository,
   VendaCasadaComItens,
-} from './venda-casada.repository';
+} from './encomenda-pecas.repository';
 import { S3Service } from '../storage/s3.service';
-import { CreateVendaCasadaDto } from './dto/create-venda-casada.dto';
+import { CreateVendaCasadaDto } from './dto/create-encomenda-pecas.dto';
 import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
 import { UploadedFileData } from '../common/types/uploaded-file';
-import { ven_venda_casada, ven_venda_casada_itens } from '@prisma/client';
+import { ven_encomenda_pecas, ven_encomenda_pecas_itens } from '@prisma/client';
+import {
+  EncomendaPecasErpRepository,
+  ProdutoEncomenda,
+  ClienteEncomenda,
+} from './encomenda-pecas.erp.repository';
 
 @Injectable()
-export class VendaCasadaService {
+export class EncomendaPecasService {
   private readonly BUCKET = 'venda-casada';
 
   constructor(
-    private readonly repository: VendaCasadaRepository,
+    private readonly repository: EncomendaPecasRepository,
     private readonly s3: S3Service,
+    private readonly erpRepository: EncomendaPecasErpRepository,
   ) {}
 
-  async findAll(): Promise<ven_venda_casada[]> {
+  async findAll(): Promise<ven_encomenda_pecas[]> {
     return this.repository.findAll();
   }
 
@@ -33,7 +39,7 @@ export class VendaCasadaService {
   async create(
     dto: CreateVendaCasadaDto,
     file?: UploadedFileData,
-  ): Promise<ven_venda_casada> {
+  ): Promise<ven_encomenda_pecas> {
     let imagemKey: string | null = null;
 
     if (file) {
@@ -75,7 +81,7 @@ export class VendaCasadaService {
   async addPecasCotadas(
     id: number,
     dto: AddPecasCotadasDto,
-  ): Promise<{ created: ven_venda_casada_itens[]; venda: ven_venda_casada }> {
+  ): Promise<{ created: ven_encomenda_pecas_itens[]; venda: ven_encomenda_pecas }> {
     const venda = await this.repository.findById(id);
     if (!venda) {
       throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
@@ -92,5 +98,27 @@ export class VendaCasadaService {
     }));
 
     return this.repository.addPecasCotadas(id, itens); 
+  }
+
+  /** Produto do ERP por código, já recortado nos campos usados na encomenda. */
+  async buscarProduto(proCodigo: number, empresa?: number): Promise<ProdutoEncomenda> {
+    const produto = await this.erpRepository.produtoPorCodigo(proCodigo, empresa);
+    if (!produto) {
+      throw new NotFoundException(
+        `Produto ${proCodigo} não encontrado no ERP`,
+      );
+    }
+    return produto;
+  }
+
+  /** Cliente do ERP por código, só com nome e contato. */
+  async buscarCliente(cliCodigo: number, empresa?: number): Promise<ClienteEncomenda> {
+    const cliente = await this.erpRepository.clientePorCodigo(cliCodigo, empresa);
+    if (!cliente) {
+      throw new NotFoundException(
+        `Cliente ${cliCodigo} não encontrado no ERP`,
+      );
+    }
+    return cliente;
   }
 }
