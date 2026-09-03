@@ -1100,6 +1100,7 @@ model ven_resgate {
   @@index([cli_codigo], map: "idx_ven_resgate_cli")
 }
 
+<<<<<<< HEAD
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model avi_aviso_alvo {
   id         String     @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
@@ -2163,6 +2164,81 @@ model ven_orcamento {
 
 model ven_orcamento_item {
   id                 String        @id
+=======
+// ===================== Orçamento do Atacado (precificação v3) =====================
+// DDL manual em sql/orcamento_atacado_postgres.sql. Régua (classe × faixa), exceções
+// da régua, o orçamento feito na intranet e os pares "vendem juntos" do BI.
+
+model ven_regua_atacado {
+  id         Int      @id @default(autoincrement())
+  classe     String
+  faixa      String
+  markup     Decimal  @db.Decimal(6, 3)
+  desc_max   Decimal  @db.Decimal(5, 4)
+  ativo      Boolean  @default(true)
+  updated_at DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+
+  @@unique([classe, faixa], map: "uq_ven_regua_atacado")
+}
+
+model ven_regua_volume {
+  id         Int      @id @default(autoincrement())
+  qtd_min    Int      @unique
+  fracao     Decimal  @db.Decimal(5, 4)
+  ativo      Boolean  @default(true)
+  updated_at DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+}
+
+model ven_regua_item_excecao {
+  pro_codigo  Int       @id
+  classe      String // EXCLUSIVO | OPORTUNIDADE
+  desc_max    Decimal?  @db.Decimal(5, 4)
+  motivo      String?
+  vigente_ate DateTime? @db.Date
+  criado_por  String?
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at  DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+}
+
+model ven_orcamento {
+  id               String    @id @default(cuid())
+  numero           Int       @unique @default(autoincrement())
+  empresa          Int       @default(3)
+  cli_codigo       Int
+  cli_nome         String?
+  tabela_preco     String?
+  rep_codigo       Int?
+  rep_nome         String?
+  status           String    @default("RASCUNHO") // RASCUNHO | ENVIADO | APROVACAO | FECHADO | PERDIDO | CANCELADO
+  validade         DateTime? @db.Date
+  observacao       String?
+  subtotal         Decimal   @default(0) @db.Decimal(15, 2)
+  desconto_total   Decimal   @default(0) @db.Decimal(15, 2)
+  total            Decimal   @default(0) @db.Decimal(15, 2)
+  desc_pct         Decimal   @default(0) @db.Decimal(6, 4)
+  acima_alcada     Boolean   @default(false)
+  bolsa_pct_antes  Decimal?  @db.Decimal(6, 4)
+  bolsa_pct_depois Decimal?  @db.Decimal(6, 4)
+  aprovado_por     String?
+  aprovado_em      DateTime? @db.Timestamptz(6)
+  enviado_em       DateTime? @db.Timestamptz(6)
+  desfecho_em      DateTime? @db.Timestamptz(6)
+  desfecho_motivo  String?
+  desfecho_ref     String?
+  usuario_id       String?
+  usuario_nome     String?
+  created_at       DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at       DateTime  @default(now()) @updatedAt @db.Timestamptz(6)
+  itens            ven_orcamento_item[]
+
+  @@index([rep_codigo, status], map: "idx_ven_orcamento_rep_status")
+  @@index([cli_codigo], map: "idx_ven_orcamento_cli")
+  @@index([created_at], map: "idx_ven_orcamento_created")
+}
+
+model ven_orcamento_item {
+  id                 String        @id @default(cuid())
+>>>>>>> 02d5cd948627ea3cf412194ab856adb15a2c5580
   orcamento_id       String
   item               Int
   pro_codigo         Int
@@ -2186,7 +2262,13 @@ model ven_orcamento_item {
   estoque_disponivel Decimal?      @db.Decimal(15, 3)
   substituto_de      Int?
   observacao         String?
+<<<<<<< HEAD
   ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+=======
+  promocao_codigo    Int?
+  promocao_fim       DateTime?     @db.Date
+  orcamento          ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade)
+>>>>>>> 02d5cd948627ea3cf412194ab856adb15a2c5580
 
   @@index([orcamento_id], map: "idx_ven_orcamento_item_orc")
   @@index([pro_codigo], map: "idx_ven_orcamento_item_pro")
@@ -2202,6 +2284,7 @@ model ven_produto_relacionado {
 
   @@id([pro_codigo, pro_relacionado])
 }
+<<<<<<< HEAD
 
 model ven_regua_atacado {
   id         Int      @id @default(autoincrement())
@@ -2249,3 +2332,5 @@ enum rec_estado_resolucao {
   CONFIRMADA
   DEVOLVIDA
 }
+=======
+>>>>>>> 02d5cd948627ea3cf412194ab856adb15a2c5580

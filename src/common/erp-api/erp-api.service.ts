@@ -1,4 +1,4 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 
 /**
  * Cliente da erp-firebird-api — leitura DIRETA no Firebird do ERP.
@@ -31,6 +31,7 @@ export type OperadorErp =
   | 'entre'
   | 'contem'
   | 'comeca_com'
+  | 'parecido'
   | 'igual_trim'
   | 'nulo'
   | 'nao_nulo';
@@ -163,6 +164,7 @@ export class ErpApiService {
   }
 
   /**
+<<<<<<< HEAD
    * GET direto numa rota da API (as rotas de leitura por chave, como
    * `/erp/encomenda-pecas/produtos/:pro_codigo`). Diferente de {@link consultar},
    * não trata `truncado`: busca por chave devolve no máximo uma linha, e o
@@ -170,6 +172,58 @@ export class ErpApiService {
    */
   async buscar<T = Record<string, any>>(rota: string): Promise<ResultadoErp<T>> {
     return this.requisitar<T>(rota, { method: 'GET' });
+=======
+   * Consulta que ACEITA resposta cortada no limite — para busca de tela, onde
+   * "mostre os 60 primeiros e avise que há mais" é o comportamento certo.
+   * `consultar()` continua estrito para carga/reconciliação.
+   */
+  async consultarPagina<T = Record<string, any>>(
+    recurso: string,
+    consulta: ConsultaErp,
+  ): Promise<{ dados: T[]; truncado: boolean }> {
+    const r = await this.chamar<T>(`/erp/${recurso}/consulta`, consulta);
+    return { dados: r.dados, truncado: r.meta.truncado };
+  }
+
+  /** GET simples (rotas nomeadas que devolvem JSON, ex.: /erp/produtos/:codigo/imagens). */
+  async obterJson<T = unknown>(rota: string): Promise<T> {
+    const r = await this.buscar(rota);
+    return JSON.parse(await r.text()) as T;
+  }
+
+  /** GET de binário (imagem): devolve o corpo e o Content-Type como vieram. */
+  async obterBinario(rota: string): Promise<{ dados: Buffer; contentType: string; etag: string | null }> {
+    const r = await this.buscar(rota);
+    return {
+      dados: Buffer.from(await r.arrayBuffer()),
+      contentType: r.headers.get('content-type') ?? 'application/octet-stream',
+      etag: r.headers.get('etag'),
+    };
+  }
+
+  private async buscar(rota: string): Promise<Response> {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    try {
+      const resp = await fetch(`${this.baseUrl}${rota}`, {
+        headers: { 'x-app-token': process.env.ERP_API_TOKEN ?? '', 'x-servico': 'vendas-service' },
+        signal: ctrl.signal,
+      });
+      if (!resp.ok) {
+        if (resp.status === 404) throw new NotFoundException(`erp-firebird-api: ${rota} não encontrado.`);
+        throw new ServiceUnavailableException(`erp-firebird-api respondeu ${resp.status} em ${rota}.`);
+      }
+      return resp;
+    } catch (err) {
+      const e = err as Error;
+      if (e instanceof ServiceUnavailableException || e instanceof NotFoundException) throw e;
+      throw new ServiceUnavailableException(
+        `erp-firebird-api indisponível (${rota}): ${e.name === 'AbortError' ? `sem resposta em ${this.timeoutMs}ms` : this.causaDeRede(e)}`,
+      );
+    } finally {
+      clearTimeout(t);
+    }
+>>>>>>> 02d5cd948627ea3cf412194ab856adb15a2c5580
   }
 
   private async chamar<T>(rota: string, corpo: unknown): Promise<ResultadoErp<T>> {
