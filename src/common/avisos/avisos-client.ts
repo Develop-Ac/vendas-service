@@ -4,7 +4,7 @@
  * Sem dependências (fetch nativo do Node 20). Serve dentro do Nest (ver
  * avisos.module.ts) e fora dele (worker, script): `criarCliente({...}).emitir(...)`.
  *
- * Fonte única: intranet-workspace/packages/avisos-client. Cada serviço recebe
+ * Fonte única: repositório avisos-service, pasta sdk/avisos-client. Cada serviço recebe
  * uma CÓPIA em src/common/avisos/ (script copiar.mjs) — não edite a cópia;
  * edite aqui e copie de novo.
  *
