@@ -58,6 +58,7 @@ export interface PortalOrder {
   updatedAt: string;
   items: PortalOrderItem[];
   user: PortalUser;
+  comprador: string;
 }
 
 @Injectable()

@@ -18,6 +18,7 @@ export interface PedidoResumo {
   createdAt: string;
   items: PedidoItemResumo[];
   user: PedidoUsuarioResumo;
+  comprador: string;
 }
 
 @Injectable()
@@ -31,6 +32,7 @@ export class B2bService {
       orderNumber: pedido.orderNumber,
       createdAt: pedido.createdAt,
       pedidoId: pedido.id,
+      comprador: pedido.comprador,
       items: pedido.items.map((item) => ({
         pro_codigo: item.product?.proCodigo,
         quantidade: item.quantity,
