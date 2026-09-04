@@ -7,6 +7,8 @@ import { OrcamentoErpRepository } from './orcamento.erp.repository';
 import { OrcamentoBiRepository } from './orcamento.bi.repository';
 import { OrcamentoPrismaRepository } from './orcamento.prisma.repository';
 import { RelacionadosScheduler } from './relacionados.scheduler';
+import { OrcamentoVencendoScheduler } from './vencendo.scheduler';
+import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 
 /**
  * Orçamento do Atacado — a tela de proposta do vendedor com a régua v3 embutida.
@@ -17,6 +19,8 @@ import { RelacionadosScheduler } from './relacionados.scheduler';
   imports: [ScheduleModule.forRoot()],
   controllers: [OrcamentoController],
   providers: [
+    OrcamentoVencendoScheduler,
+    AvisosVendasService,
     OrcamentoService,
     OrcamentoErpRepository,
     OrcamentoBiRepository,

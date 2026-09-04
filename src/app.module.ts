@@ -14,6 +14,8 @@ import { CarteirizacaoModule } from './carteirizacao/carteirizacao.module';
 import { MaisVendidosModule } from './mais-vendidos/mais-vendidos.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { OrcamentoModule } from './orcamento/orcamento.module';
+import { AvisosModule } from './common/avisos/avisos.module';
+import { CATALOGO_VENDAS } from './avisos.catalogo';
 
 @Module({
   imports: [
@@ -28,6 +30,8 @@ import { OrcamentoModule } from './orcamento/orcamento.module';
     MaisVendidosModule,
     WhatsappModule,
     OrcamentoModule,
+    // Avisos da intranet (catálogo em src/avisos.catalogo.ts; regras nascem inativas)
+    AvisosModule.forRoot({ servico: 'vendas', catalogo: CATALOGO_VENDAS }),
 
     PrometheusModule.register({
       defaultMetrics: { enabled: true }, // CPU, memória, event loop, GC
