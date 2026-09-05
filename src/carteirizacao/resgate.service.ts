@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
+import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
 import { WhatsappRepository } from '../whatsapp/whatsapp.repository';
 
@@ -59,6 +60,7 @@ export class ResgateService {
     private readonly repo: CarteirizacaoPrismaRepository,
     private readonly erp: CarteirizacaoErpRepository,
     private readonly wa: WhatsappRepository,
+    private readonly avisosVendas: AvisosVendasService,
   ) {}
 
   private get slaHoras(): number {
@@ -118,7 +120,10 @@ export class ResgateService {
       if (r.sla_em && r.sla_cumprido == null) {
         const prazo = new Date(r.sla_em).getTime();
         if (primeiroSinal && primeiroSinal.getTime() <= prazo) data.sla_cumprido = true;
-        else if (!primeiroSinal && agora.getTime() > prazo) data.sla_cumprido = false;
+        else if (!primeiroSinal && agora.getTime() > prazo) {
+          data.sla_cumprido = false;
+          void this.avisosVendas.resgateSla(cli, r.id, Math.round((agora.getTime() - prazo) / 3_600_000), this.slaHoras);
+        }
         else if (primeiroSinal && primeiroSinal.getTime() > prazo) data.sla_cumprido = false;
       }
 

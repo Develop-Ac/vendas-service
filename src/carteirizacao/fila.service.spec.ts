@@ -1,3 +1,4 @@
+import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { ServiceUnavailableException } from '@nestjs/common';
 import { FilaService } from './fila.service';
 import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
@@ -95,7 +96,8 @@ describe('FilaService', () => {
     snapshotCarteira: jest.fn(async () => clientes),
   } as unknown as CarteirizacaoService;
 
-  const service = new FilaService(carteirizacao, repo);
+  const avisosVendas = { filaDia: jest.fn(async () => undefined), filaEscalada: jest.fn(async () => undefined), resgateSla: jest.fn(async () => undefined), orcamentoVencendo: jest.fn(async () => undefined) } as unknown as AvisosVendasService;
+  const service = new FilaService(carteirizacao, repo, avisosVendas);
 
   beforeEach(() => {
     clientes = [];

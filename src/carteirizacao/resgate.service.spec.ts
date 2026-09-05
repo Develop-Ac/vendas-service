@@ -1,3 +1,4 @@
+import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { ResgateService } from './resgate.service';
 import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
@@ -100,7 +101,8 @@ describe('ResgateService', () => {
     mensagensPorRepDesde: jest.fn(async () => []),
   } as unknown as WhatsappRepository;
 
-  const service = new ResgateService(carteirizacao, repo, erp, wa);
+  const avisosVendas = { filaDia: jest.fn(async () => undefined), filaEscalada: jest.fn(async () => undefined), resgateSla: jest.fn(async () => undefined), orcamentoVencendo: jest.fn(async () => undefined) } as unknown as AvisosVendasService;
+  const service = new ResgateService(carteirizacao, repo, erp, wa, avisosVendas);
 
   beforeEach(() => {
     clientes = [];

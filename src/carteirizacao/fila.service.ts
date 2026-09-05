@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
+import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { DesfechoOrcamentoDto } from './dto/carteirizacao.dto';
 
 /**
@@ -50,6 +51,7 @@ export class FilaService {
   constructor(
     private readonly carteirizacao: CarteirizacaoService,
     private readonly repo: CarteirizacaoPrismaRepository,
+    private readonly avisosVendas: AvisosVendasService,
   ) {}
 
   private get regua(): Record<'A' | 'B' | 'C', number> {
@@ -166,6 +168,17 @@ export class FilaService {
     }
 
     await this.repo.criarTarefas(novas);
+
+    // Aviso "fila do dia" por vendedor (balão na Estação) — fora do caminho crítico.
+    const porRep = new Map<number, { total: number; resgates: number }>();
+    for (const n of novas) {
+      if (n.rep_codigo == null) continue;
+      const a = porRep.get(n.rep_codigo) ?? { total: 0, resgates: 0 };
+      a.total++;
+      if (n.tipo === 'RESGATE') a.resgates++;
+      porRep.set(n.rep_codigo, a);
+    }
+    for (const [rep, a] of porRep) void this.avisosVendas.filaDia(rep, { total: a.total, resgates: a.resgates, escaladas: 0 });
     const resumo = {
       geradas: novas.length,
       resgates: novas.filter((n) => n.tipo === 'RESGATE').length,
@@ -215,6 +228,7 @@ export class FilaService {
       }
       if (t.status === 'ABERTA' && new Date(t.prazo_em) < agora) {
         await this.repo.escalarTarefa(t.id);
+        void this.avisosVendas.filaEscalada(t);
       }
     }
   }
