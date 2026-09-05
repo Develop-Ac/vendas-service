@@ -88,42 +88,113 @@ export class B2bService {
   }
 
   /**
-   * Os pedidos do B2B. A fonte preferencial é o Postgres da intranet
-   * (ven_orcamento_b2b); só quando não há nada gravado — ou quando a leitura do
-   * banco falha — é que se consulta a API do portal, e o que vier de lá fica
-   * gravado para as próximas chamadas.
+   * Os pedidos do B2B, do banco da intranet somados aos do portal.
+   *
+   * ven_orcamento_b2b guarda só `userId` do comprador — nome, telefone e
+   * carteira não têm coluna lá. Então o portal também é consultado e os dois
+   * lados são fundidos por orderNumber: o que está gravado aqui manda, e o que
+   * falta é preenchido com o payload do portal. Pedido que só existe no portal
+   * entra na resposta e fica gravado para as próximas chamadas.
+   *
+   * Se o portal estiver fora, a resposta sai só com o que há no banco (sem os
+   * dados do comprador); se o banco estiver fora, sai só com o do portal. Com
+   * as duas fontes fora, o erro do portal sobe.
    */
   async listarPedidos(): Promise<PedidoResumo[]> {
     const gravados = await this.lerPedidosGravados();
-    if (gravados.length) return gravados;
+    const doPortal = await this.lerPedidosDoPortal(gravados.length > 0);
 
-    const pedidos = await this.b2bRepository.listarPedidos();
+    if (doPortal.length) await this.gravarPedidosNovos(doPortal);
+    if (!gravados.length) return doPortal;
 
-    const resumos: PedidoResumo[] = pedidos.data.map((pedido) => ({
-      orderNumber: pedido.orderNumber,
-      createdAt: pedido.createdAt,
-      pedidoId: pedido.id,
-      comprador: pedido.comprador,
-      status: pedido.status,
-      items: pedido.items.map((item) => ({
-        pro_codigo: item.product?.proCodigo,
-        quantidade: item.quantity,
-        promocao: item.product?.promotion?.textoPromocional || null,
-      })),
-      user: {
-        id: pedido.user?.id,
-        nome: pedido.user?.name,
-        phone: pedido.user?.phone,
-        carteira: pedido.user?.carteira,
-      },
-    }));
+    // Indexado pelas duas chaves porque o portal é localizável tanto pelo
+    // orderNumber quanto pelo id do pedido de lá (pedidoId aqui).
+    const porChave = new Map<string, PedidoResumo>();
+    for (const pedido of doPortal) {
+      if (pedido.orderNumber) porChave.set(pedido.orderNumber, pedido);
+      if (pedido.pedidoId) porChave.set(pedido.pedidoId, pedido);
+    }
 
-    await this.gravarPedidosNovos(resumos);
+    const mesclados = gravados.map((gravado) =>
+      this.mesclar(
+        gravado,
+        porChave.get(gravado.orderNumber) ??
+          (gravado.pedidoId ? porChave.get(gravado.pedidoId) : undefined),
+      ),
+    );
 
-    return resumos;
+    const jaGravados = new Set(gravados.map((p) => p.orderNumber));
+    const somenteNoPortal = doPortal.filter(
+      (p) => !jaGravados.has(p.orderNumber),
+    );
+
+    return [...mesclados, ...somenteNoPortal].sort(
+      (a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''),
+    );
   }
 
-  /** Leitura do banco; se ela falhar, devolve vazio para cair na API do portal. */
+  /**
+   * O que está no banco tem precedência; o portal preenche o que falta ali —
+   * na prática, nome, telefone e carteira do comprador.
+   */
+  private mesclar(
+    gravado: PedidoResumo,
+    portal: PedidoResumo | undefined,
+  ): PedidoResumo {
+    if (!portal) return gravado;
+
+    return {
+      orderNumber: gravado.orderNumber || portal.orderNumber,
+      createdAt: gravado.createdAt || portal.createdAt,
+      pedidoId: gravado.pedidoId || portal.pedidoId,
+      comprador: gravado.comprador || portal.comprador,
+      status: gravado.status || portal.status,
+      items: gravado.items.length ? gravado.items : portal.items,
+      user: {
+        id: gravado.user.id || portal.user?.id,
+        nome: gravado.user.nome || portal.user?.nome,
+        phone: gravado.user.phone || portal.user?.phone,
+        carteira: gravado.user.carteira || portal.user?.carteira,
+      },
+    };
+  }
+
+  /**
+   * Os pedidos do portal. `tolerante` vale quando o banco já respondeu: aí uma
+   * falha do portal vira log e lista vazia, em vez de derrubar a listagem.
+   */
+  private async lerPedidosDoPortal(tolerante: boolean): Promise<PedidoResumo[]> {
+    try {
+      const pedidos = await this.b2bRepository.listarPedidos();
+
+      return pedidos.data.map((pedido) => ({
+        orderNumber: pedido.orderNumber,
+        createdAt: pedido.createdAt,
+        pedidoId: pedido.id,
+        comprador: pedido.comprador,
+        status: pedido.status,
+        items: pedido.items.map((item) => ({
+          pro_codigo: item.product?.proCodigo,
+          quantidade: item.quantity,
+          promocao: item.product?.promotion?.textoPromocional || null,
+        })),
+        user: {
+          id: pedido.user?.id,
+          nome: pedido.user?.name,
+          phone: pedido.user?.phone,
+          carteira: pedido.user?.carteira,
+        },
+      }));
+    } catch (err: any) {
+      if (!tolerante) throw err;
+      this.logger.error(
+        `Erro ao consultar os pedidos no portal B2B, respondendo só com o banco: ${err?.message}`,
+      );
+      return [];
+    }
+  }
+
+  /** Leitura do banco; se ela falhar, devolve vazio e a resposta vem do portal. */
   private async lerPedidosGravados(): Promise<PedidoResumo[]> {
     try {
       const rows = await this.b2bPrismaRepository.listarPedidos();
@@ -148,8 +219,8 @@ export class B2bService {
         quantidade: item.quantidade,
         promocao: item.promocao,
       })),
-      // Só o id do comprador é gravado hoje; nome, telefone e carteira ficam
-      // vazios quando a resposta vem do banco.
+      // A tabela só tem o id do comprador; nome, telefone e carteira vêm do
+      // portal, no `mesclar`.
       user: {
         id: row.userId,
         nome: '',
