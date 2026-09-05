@@ -2011,7 +2011,7 @@ model ven_encomenda_pecas_anexos {
   id                  String              @id(map: "pk_ven_enc_pecas_anexos") @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   ven_encomenda_id    Int
   anexo               String              @db.VarChar(500)
-  tipo                String              @default("comprovante") @db.VarChar(20)
+  tipo                String?
   ven_encomenda_pecas ven_encomenda_pecas @relation(fields: [ven_encomenda_id], references: [id], onDelete: Cascade, map: "fk_ven_enc_pecas_anexos_encomenda")
 
   @@index([ven_encomenda_id], map: "idx_ven_enc_pecas_anexos_encomenda_id")
@@ -2290,6 +2290,53 @@ model ven_wa_mensagem {
   @@index([chave], map: "idx_ven_wa_msg_chave")
   @@index([cli_codigo, direcao, timestamp], map: "idx_ven_wa_msg_cli_dir_ts")
   @@index([sessao, timestamp], map: "idx_ven_wa_msg_sessao_ts")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model api_idempotencia {
+  empresa      Int       @db.SmallInt
+  chave        String    @db.VarChar(128)
+  credencial   String    @db.VarChar(60)
+  hash_payload String    @db.Char(64)
+  reserva      String    @db.Uuid
+  estado       String    @db.Char(1)
+  orcamento    Int?
+  criada_em    DateTime  @default(now()) @db.Timestamptz(6)
+  concluida_em DateTime? @db.Timestamptz(6)
+
+  @@id([empresa, chave], map: "api_idempotencia_pk")
+}
+
+model avi_preferencia {
+  usuario_id    String    @id @db.VarChar(36)
+  desktop       Boolean   @default(true)
+  som           Boolean   @default(true)
+  silenciar_ate DateTime? @db.Timestamp(6)
+  updated_at    DateTime  @default(now()) @db.Timestamp(6)
+}
+
+model ven_orcamento_b2b {
+  id                      String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  orderNumber             String                    @db.VarChar(50)
+  userId                  String                    @db.VarChar(100)
+  createdAt               DateTime                  @default(now()) @db.Timestamptz(6)
+  pedidoId                String?                   @db.VarChar(100)
+  comprador               String?                   @db.VarChar(200)
+  status                  String?                   @db.VarChar(50)
+  ven_orcamento_b2b_itens ven_orcamento_b2b_itens[]
+
+  @@index([userId], map: "idx_orc_b2b_user")
+}
+
+model ven_orcamento_b2b_itens {
+  id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  ven_orcamento_b2b_id String            @db.Uuid
+  pro_codigo           Int
+  quantidade           Int
+  promocao             String?           @db.VarChar(100)
+  ven_orcamento_b2b    ven_orcamento_b2b @relation(fields: [ven_orcamento_b2b_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([ven_orcamento_b2b_id], map: "idx_orc_b2b_itens_orc")
 }
 
 enum rec_estado_resolucao {

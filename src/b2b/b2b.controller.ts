@@ -1,5 +1,12 @@
-import { Controller, Get } from '@nestjs/common';
-import { ApiOperation, ApiProperty, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Param, Put } from '@nestjs/common';
+import {
+  ApiBody,
+  ApiOperation,
+  ApiParam,
+  ApiProperty,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { B2bService } from './b2b.service';
 
 class PedidoItemResumoDto {
@@ -21,6 +28,16 @@ class PedidoResumoDto {
   @ApiProperty({ type: PedidoUsuarioResumoDto }) user!: PedidoUsuarioResumoDto;
 }
 
+class AtualizarStatusPedidoDto {
+  @ApiProperty({ example: 'aprovado', description: 'Novo status do pedido' })
+  status!: string;
+}
+
+class StatusPedidoAtualizadoDto {
+  @ApiProperty({ example: 'ORD-1780402551844' }) id!: string;
+  @ApiProperty({ example: 'aprovado' }) status!: string;
+}
+
 @ApiTags('B2B')
 @Controller('b2b/pedidos')
 export class B2bController {
@@ -39,5 +56,30 @@ export class B2bController {
   })
   async listarPedidos() {
     return this.b2bService.listarPedidos();
+  }
+
+  @Put('status/:id')
+  @ApiOperation({
+    summary: 'Atualiza o status de um pedido B2B',
+    description:
+      'Grava o novo status na tabela ven_orcamento_b2b. O :id pode ser o id do registro, o orderNumber ou o pedidoId do portal.',
+  })
+  @ApiParam({
+    name: 'id',
+    description: 'id do registro, orderNumber ou pedidoId do portal',
+    example: 'ORD-1780402551844',
+  })
+  @ApiBody({ type: AtualizarStatusPedidoDto })
+  @ApiResponse({
+    status: 200,
+    description: 'Status atualizado',
+    type: StatusPedidoAtualizadoDto,
+  })
+  @ApiResponse({ status: 404, description: 'Pedido não encontrado' })
+  async atualizarStatus(
+    @Param('id') id: string,
+    @Body() dto: AtualizarStatusPedidoDto,
+  ) {
+    return this.b2bService.atualizarStatus(id, dto?.status);
   }
 }
