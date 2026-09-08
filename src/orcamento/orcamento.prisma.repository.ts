@@ -135,16 +135,20 @@ export class OrcamentoPrismaRepository {
       WITH ult AS (SELECT MAX(data_processamento) AS d FROM com_fifo_completo),
       eu AS (
         SELECT DISTINCT f.group_id, UPPER(TRIM(f.pro_descricao)) AS descr, COALESCE(f.marca_linha, 2) AS linha
-        FROM com_fifo_completo f, ult
-        WHERE f.data_processamento = ult.d AND f.pro_codigo IN (${Prisma.join(codigos.map(String))})
+        FROM com_fifo_completo f
+        JOIN ult ON f.data_processamento = ult.d
+        WHERE f.pro_codigo IN (${Prisma.join(codigos.map(String))})
       )
       SELECT f.pro_codigo, (eu.group_id || '|' || eu.descr || '|' || eu.linha) AS chave
-      FROM com_fifo_completo f, ult
+      FROM com_fifo_completo f
+      JOIN ult ON f.data_processamento = ult.d
       JOIN eu ON eu.group_id = f.group_id
              AND UPPER(TRIM(f.pro_descricao)) = eu.descr
              AND COALESCE(f.marca_linha, 2) = eu.linha
-      WHERE f.data_processamento = ult.d
     `;
+    // Junção explícita em todas as fontes: com "FROM f, ult JOIN eu ON ... f.x" o Postgres
+    // não enxerga `f` dentro do ON (invalid reference to FROM-clause entry) e a pesquisa
+    // devolvia tudo como grupo de um só.
     return rows.map((r) => ({ pro_codigo: Number(r.pro_codigo), chave: r.chave })).filter((r) => Number.isFinite(r.pro_codigo));
   }
 
