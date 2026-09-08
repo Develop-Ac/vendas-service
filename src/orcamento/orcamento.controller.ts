@@ -83,17 +83,29 @@ export class OrcamentoController {
   @ApiQuery({ name: 'desconto', required: false, description: 'Desconto total do orçamento em edição' })
   @ApiQuery({ name: 'custo', required: false, description: 'Custo (reposição × qtd) dos itens com custo' })
   @ApiQuery({ name: 'sem_custo', required: false, description: 'Total dos itens SEM custo no cadastro (entram neutros)' })
+  @ApiQuery({ name: 'm1a', required: false, description: 'Total líquido dos itens MIX 1 faixa A (idem m1b, m1c, m1d) — projeção da comissão' })
+  @ApiQuery({ name: 'm23', required: false, description: 'Total líquido dos itens MIX 2/3 (e sem faixa) — projeção da comissão' })
   bolsa(
     @Param('rep', ParseIntPipe) rep: number,
     @Query('total') total?: string,
     @Query('desconto') desconto?: string,
     @Query('custo') custo?: string,
     @Query('sem_custo') semCusto?: string,
+    @Query('m1a') m1a?: string,
+    @Query('m1b') m1b?: string,
+    @Query('m1c') m1c?: string,
+    @Query('m1d') m1d?: string,
+    @Query('m23') m23?: string,
   ) {
     const t = toNum(total);
     return this.service.bolsa(
       rep,
-      t != null ? { receita: t, desconto: toNum(desconto) ?? 0, custo: toNum(custo) ?? 0, sem_custo: toNum(semCusto) ?? 0 } : undefined,
+      t != null
+        ? {
+            receita: t, desconto: toNum(desconto) ?? 0, custo: toNum(custo) ?? 0, sem_custo: toNum(semCusto) ?? 0,
+            m1a: toNum(m1a), m1b: toNum(m1b), m1c: toNum(m1c), m1d: toNum(m1d), m23: toNum(m23),
+          }
+        : undefined,
     );
   }
 

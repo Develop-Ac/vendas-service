@@ -4,6 +4,7 @@ import { BadRequestException, Injectable, Logger, NotFoundException } from '@nes
 import { Prisma } from '@prisma/client';
 import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional } from './orcamento.bi.repository';
+import { celulasDoOrcamento, comissaoComOrcamento } from './comissao';
 import { OrcamentoPrismaRepository, GiroItem } from './orcamento.prisma.repository';
 import {
   Avaliacao,
@@ -226,10 +227,13 @@ export class OrcamentoService {
    * que ainda cabe — e, com o orçamento em edição, como fica depois. Também o
    * lucro acima da linha dos 4% (base do prêmio) e o rateio por cliente.
    */
-  async bolsa(rep: number, orc?: { receita: number; desconto: number; custo: number; sem_custo: number }) {
+  async bolsa(
+    rep: number,
+    orc?: { receita: number; desconto: number; custo: number; sem_custo: number; m1a?: number; m1b?: number; m1c?: number; m1d?: number; m23?: number },
+  ) {
     const p = this.parametros();
     const periodo = mesComissional();
-    const [v, clientes, vol, dre] = await Promise.all([
+    const [v, clientes, vol, dre, celulas, cfgComissao] = await Promise.all([
       this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
@@ -242,7 +246,18 @@ export class OrcamentoService {
             return null;
           })
         : Promise.resolve(null),
+      this.bi.celulasComissao(rep, periodo.ano, periodo.mes).catch((e) => {
+        this.logger.warn(`Células da comissão indisponíveis (rep ${rep}): ${(e as Error).message}`);
+        return null;
+      }),
+      this.bi.parametrosComissao().catch((e) => {
+        this.logger.warn(`Parâmetros da comissão indisponíveis: ${(e as Error).message}`);
+        return null;
+      }),
     ]);
+    // Comissão do mês como está e como fica com o orçamento (mesma regra do fechamento;
+    // sem abatimentos manuais e média de férias — é estimativa para decidir na hora).
+    const comissao = celulas && cfgComissao ? comissaoComOrcamento(celulas, celulasDoOrcamento(orc ?? {}), cfgComissao) : null;
     // Piso: pela DRE (custo + fixas + variáveis reais → 4%), pelo degrau de volume, ou fixo.
     // Nos modos dre/degrau a linha dos 4% é o próprio piso: saldo retido = lucro a mais.
     const pisoDre = dre ? pisoPorDre(dre, p.bolsa_dre_meses, p.meta_resultado) : null;
@@ -293,6 +308,7 @@ export class OrcamentoService {
         saldo_se_fechar_tudo: round2(bolsa.saldo + saldoAbertos),
       },
       por_cliente: porCliente,
+      comissao,
       // De onde veio o piso: o degrau do canal (e quanto falta para o próximo) ou o valor fixo.
       volume: pisoDre
         ? { modo: 'dre' as const, ...pisoDre }

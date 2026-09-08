@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { MssqlService } from '../common/mssql/mssql.service';
 import { MesDre } from './regua';
+import { CelulaComissao, ConfigComissao } from './comissao';
 
 /* =============================================================================
    ORÇAMENTO — leitura no BI (SQL Server, somente leitura).
@@ -115,6 +116,50 @@ export class OrcamentoBiRepository {
       custo: Number(r.custo ?? 0),
       mix1_liquido: Number(r.mix1_liquido ?? 0),
     };
+  }
+
+  /**
+   * Venda líquida do vendedor no mês comissional por (mix, faixa) — as células
+   * da comissão do atacado, a mesma leitura do fechamento (liquido_produto).
+   */
+  async celulasComissao(rep: number, ano: number, mes: number): Promise<CelulaComissao[]> {
+    const rows = await this.mssql.query<{ mix: number; faixa: string; valor: number }>(
+      `
+      SELECT v.MIX_CUSTO AS mix, v.FAIXA_MIX AS faixa, COALESCE(SUM(v.liquido_produto), 0) AS valor
+      FROM dbo.vw_analise_vendas v
+      WHERE v.vendedor_venda = @rep
+        AND v.mes_comissional = @mes
+        AND v.ano_comissional = @ano
+        AND v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+      GROUP BY v.MIX_CUSTO, v.FAIXA_MIX
+      `,
+      { rep, mes, ano },
+    );
+    return rows.map((r) => ({ mix: Number(r.mix ?? 0), faixa: String(r.faixa ?? '').trim().toUpperCase(), valor: Number(r.valor ?? 0) }));
+  }
+
+  private cfgComissao: { em: number; cfg: ConfigComissao } | null = null;
+
+  /** Tabelas da comissão do atacado (as mesmas do fechamento), com cache de 10 minutos. */
+  async parametrosComissao(): Promise<ConfigComissao> {
+    if (this.cfgComissao && Date.now() - this.cfgComissao.em < 10 * 60 * 1000) return this.cfgComissao.cfg;
+    const [m1, m23, meta] = await Promise.all([
+      this.mssql.query<{ faixa: string; atingiu_meta: boolean | number; percentual: number }>(
+        `SELECT faixa, atingiu_meta, percentual FROM dbo.ComissaoAtacadoFaixaMix1 WHERE ativo = 1`,
+      ),
+      this.mssql.query<{ valor_min: number; valor_max: number; percentual: number }>(
+        `SELECT valor_min, valor_max, percentual FROM dbo.ComissaoAtacadoFaixaMix23 WHERE ativo = 1 ORDER BY valor_max`,
+      ),
+      this.mssql.query<{ meta_mix1: number }>(`SELECT meta_mix1 FROM dbo.ComissaoAtacadoConfig WHERE id = 1`),
+    ]);
+    const cfg: ConfigComissao = {
+      faixasMix1: m1.map((f) => ({ faixa: String(f.faixa ?? '').trim().toUpperCase(), atingiu_meta: !!Number(f.atingiu_meta), percentual: Number(f.percentual) })),
+      faixasMix23: m23.map((f) => ({ valor_min: Number(f.valor_min), valor_max: Number(f.valor_max), percentual: Number(f.percentual) })),
+      metaMix1: meta.length ? Number(meta[0].meta_mix1) : 0.3,
+    };
+    this.cfgComissao = { em: Date.now(), cfg };
+    return cfg;
   }
 
   /**

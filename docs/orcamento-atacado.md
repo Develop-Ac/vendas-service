@@ -79,6 +79,17 @@ A tela projeta o saldo "depois" com o orçamento em edição (`total`, `desconto
 amarelo = dentro da bolsa, vermelho = bolsa estourada), o rateio por cliente (`por_cliente`,
 quem gerou o saldo) e a participação MIX1 com o degrau da escada (22/26/30% → ×1,25/×1,5/×2,0).
 
+## Comissão estimada (ao lado da bolsa)
+
+`comissao` na resposta da bolsa: `atual` (mês como está) e `com_orcamento` (se o orçamento fechar),
+`delta` e `meta_mix1`. Regra = a do fechamento (`src/orcamento/comissao.ts`, réplica do engine do
+pessoal-service): MIX 1 fixo por faixa A–D (`ComissaoAtacadoFaixaMix1`, dobra com participação ≥
+`ComissaoAtacadoConfig.meta_mix1`), MIX 2/3 progressivo pelo TOTAL do mês (`ComissaoAtacadoFaixaMix23`).
+Células do mês = `liquido_produto` por (MIX_CUSTO, FAIXA_MIX); do orçamento = `m1a..m1d` (MIX 1 por
+faixa) e `m23` (o resto, inclusive item sem faixa). Sem abatimento manual e média de férias: é
+estimativa, mas a diferença "com este orçamento" recalcula o mês inteiro (a alíquota do MIX 2/3 e a
+meta do MIX 1 podem mudar).
+
 ## Pesquisa de produtos (a EST012 do Celta na intranet)
 
 `GET /orcamento/produtos/pesquisa?q=&campo=descricao|referencia&modo=comeca|contem&estoque=1&inativos=0&comercializavel=1&equivalentes=1&tabela=&cli=`
@@ -122,7 +133,7 @@ como hoje e registra o número em "Fechado".
 | GET/PUT | `/regua/excecoes[/:pro_codigo]` | itens fora da régua |
 | GET | `/clientes?q=&todos=` | busca (código, CNPJ/CPF, nome); padrão só atacado |
 | GET | `/clientes/:cli` | cabeçalho: cadastro ao vivo + crédito + histórico |
-| GET | `/vendedor/:rep/bolsa?total=&desconto=&custo=&sem_custo=` | bolsa do mês (+ projeção) |
+| GET | `/vendedor/:rep/bolsa?total=&desconto=&custo=&sem_custo=&m1a..m1d=&m23=` | bolsa do mês (+ projeção) e comissão estimada do mês / com o orçamento |
 | GET | `/produtos?q=&tabela=&cli=` | busca já avaliada na régua |
 | GET | `/produtos/:codigo[/equivalentes|/relacionados]` | detalhe, equivalentes, vendem juntos |
 | POST | `/relacionados/recalcular` | reapura os pares no BI |
