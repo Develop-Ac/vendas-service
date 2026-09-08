@@ -352,6 +352,7 @@ export type Semaforo = 'VERDE' | 'AMARELO' | 'VERMELHO';
  * extra, e é sobre esse lucro que sai o prêmio do vendedor.
  */
 export const BOLSA_PISO_PADRAO = 1.48;
+/** Linha do prêmio quando informada por env; sem ela, a linha é o próprio piso (prêmio sobre todo o saldo retido). */
 export const LINHA_4PCT_PADRAO = 1.586;
 export const PREMIO_PADRAO = 0.25;
 

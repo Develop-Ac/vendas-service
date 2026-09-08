@@ -135,7 +135,8 @@ export class OrcamentoService {
       meta_resultado: num('ORCAMENTO_META_RESULTADO', 0.04),
       bolsa_degraus: parseDegrausBolsa(process.env.ORCAMENTO_BOLSA_DEGRAUS),
       bolsa_piso: num('ORCAMENTO_BOLSA_PISO', BOLSA_PISO_PADRAO),
-      linha_4pct: num('ORCAMENTO_LINHA_4PCT', LINHA_4PCT_PADRAO),
+      // 0 (padrão) = a linha do prêmio é o próprio piso: prêmio sobre TODO o saldo retido.
+      linha_4pct: num('ORCAMENTO_LINHA_4PCT', 0),
       premio_pct: num('ORCAMENTO_PREMIO_PCT', PREMIO_PADRAO),
       piso_item: num('ORCAMENTO_ITEM_PISO', PISO_ITEM_PADRAO),
       validade_dias: num('ORCAMENTO_VALIDADE_DIAS', 7),
@@ -247,7 +248,7 @@ export class OrcamentoService {
     const pisoDre = dre ? pisoPorDre(dre, p.bolsa_dre_meses, p.meta_resultado) : null;
     const degrau = vol ? pisoPorVolume(p.bolsa_degraus, vol.media_mes) : null;
     const piso = pisoDre ? pisoDre.piso : degrau ? degrau.piso : p.bolsa_piso;
-    const linha = pisoDre || degrau ? piso : p.linha_4pct;
+    const linha = pisoDre || degrau || !(p.linha_4pct > 0) ? piso : p.linha_4pct;
     const bolsa = calcularBolsa({
       receita_mtd: v.venda_liquida,
       custo_mtd: v.custo,

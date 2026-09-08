@@ -49,7 +49,7 @@ Exceção (exclusivo/oportunidade): mínimo = tabela × (1 − desc. próprio), 
 ```
 gerada  = venda bruta do mês − custo × piso        (o que a venda a preço cheio rendeu)
 saldo   = venda líquida do mês − custo × piso      (o que sobra depois de TODO desconto dado)
-acima   = venda líquida do mês − custo × linha4%   (lucro acima da linha dos 4%; prêmio = 25% disso)
+acima   = venda líquida do mês − custo × linha     (base do prêmio = 25%; linha = o próprio piso, salvo ORCAMENTO_LINHA_4PCT > 0)
 ```
 
 Mês comissional (26→25), canal ATACADO, base = `liquido_produto` e `custo_produto` da `vw_analise_vendas`
@@ -66,8 +66,8 @@ do canal nos 3 últimos meses comissionais fechados escolhe o degrau — até 56
 560 → 1,538; 645 → 1,48; 700 → 1,45; 763 → 1,421 (`ORCAMENTO_BOLSA_DEGRAUS`, "volume_min:piso").
 Cada piso é o markup que deixa o canal em 4% naquele volume; neste modo a **linha dos 4% é o
 próprio piso** (saldo retido = lucro a mais). A resposta traz `volume` (média, meses, degrau,
-próximo degrau e quanto falta). Modo `fixo`: `ORCAMENTO_BOLSA_PISO` e `ORCAMENTO_LINHA_4PCT`
-(bolsa "adiantada" num degrau). Demais: `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`.
+próximo degrau e quanto falta). Modo `fixo` (**em uso desde 08/09/2026, piso 1,538**): `ORCAMENTO_BOLSA_PISO`; a linha do prêmio é o próprio
+piso (prêmio = 25% de todo o saldo retido) — `ORCAMENTO_LINHA_4PCT` só se quiser uma marca separada. Demais: `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`.
 
 **Todo desconto subtrai da bolsa, dentro ou fora do teto da faixa.** O teto da faixa só define a
 alçada: dentro dele o vendedor decide sozinho; abaixo do mínimo da faixa a bolsa paga (sem
