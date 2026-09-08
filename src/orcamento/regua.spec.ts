@@ -1,6 +1,9 @@
 import {
   avaliarItem,
   calcularBolsa,
+  parseDegrausBolsa,
+  pisoPorDre,
+  pisoPorVolume,
   classeBase,
   colunaTabela,
   degrauMix1,
@@ -163,6 +166,51 @@ describe('calcularBolsa', () => {
   it('item sem custo é neutro na projeção', () => {
     const b = calcularBolsa({ receita_mtd: 0, custo_mtd: 0, desconto_mtd: 0, receita_orc: 1480, sem_custo_orc: 1480, piso: 1.48 });
     expect(b.saldo_apos).toBe(0);
+  });
+});
+
+describe('pisoPorVolume', () => {
+  it('o piso segue o maior degrau alcançado e aponta o próximo', () => {
+    const d = parseDegrausBolsa('0:1.586,560000:1.538,645000:1.48,700000:1.45,763000:1.421');
+    expect(pisoPorVolume(d, 441000)).toMatchObject({ piso: 1.586, degrau_min: 0, proximo_min: 560000, proximo_piso: 1.538, falta: 119000 });
+    expect(pisoPorVolume(d, 645000)).toMatchObject({ piso: 1.48, proximo_min: 700000 });
+    expect(pisoPorVolume(d, 900000)).toMatchObject({ piso: 1.421, proximo_min: null });
+  });
+  it('texto inválido cai no padrão', () => {
+    expect(parseDegrausBolsa('abc')).toHaveLength(5);
+    expect(parseDegrausBolsa(undefined)[0].piso).toBe(1.586);
+  });
+});
+
+describe('pisoPorDre', () => {
+  it('reproduz a DRE 12m do canal: (CMV + fixas) / (CMV × (1 − variáveis − 4%))', () => {
+    // um mês "médio" da DRE ago/25–jul/26 do atacado, repetido 12×, mais 2 meses abertos que devem ser ignorados
+    const mes = { receita_bruta: 534333, abatimento: 14635, cmv: 336503, comerciais: 25804, fixas: 150244, fechado: true };
+    const meses = Array.from({ length: 12 }, (_, i) => ({ ano: 2025 + Math.floor((7 + i) / 12), mes: ((7 + i) % 12) + 1, ...mes }));
+    meses.push({ ano: 2026, mes: 8, ...mes, fechado: false }, { ano: 2026, mes: 9, ...mes, cmv: 0, fechado: false });
+    const p = pisoPorDre(meses, 12, 0.04)!;
+    expect(p.meses).toBe(12);
+    expect(p.ate).toEqual({ ano: 2026, mes: 7 });
+    expect(p.piso).toBeCloseTo(1.59, 2);
+    expect(p.variaveis_pct).toBeCloseTo(0.0497, 3);
+    expect(p.markup_realizado).toBeCloseTo(1.544, 3);
+  });
+  it('fixas maiores sobem o piso; volume maior baixa', () => {
+    const base = { ano: 2026, mes: 1, receita_bruta: 500000, abatimento: 10000, cmv: 320000, comerciais: 25000, fixas: 150000, fechado: true };
+    const p0 = pisoPorDre([base], 1)!.piso;
+    expect(pisoPorDre([{ ...base, fixas: 180000 }], 1)!.piso).toBeGreaterThan(p0);
+    expect(pisoPorDre([{ ...base, receita_bruta: 650000, cmv: 416000, comerciais: 32500 }], 1)!.piso).toBeLessThan(p0);
+  });
+  it('mês meio lançado (fixas < metade da mediana) fica fora da janela', () => {
+    const mes = { receita_bruta: 500000, abatimento: 10000, cmv: 320000, comerciais: 25000, fixas: 150000, fechado: true };
+    const meses = Array.from({ length: 6 }, (_, i) => ({ ano: 2026, mes: i + 1, ...mes }));
+    meses.push({ ano: 2026, mes: 7, ...mes, fixas: 20000 }); // folha lançada pela metade
+    const p = pisoPorDre(meses, 12)!;
+    expect(p.meses).toBe(6);
+    expect(p.ate).toEqual({ ano: 2026, mes: 6 });
+  });
+  it('sem mês fechado, sem piso', () => {
+    expect(pisoPorDre([{ ano: 2026, mes: 9, receita_bruta: 1, abatimento: 0, cmv: 1, comerciais: 0, fixas: 0, fechado: false }])).toBeNull();
   });
 });
 

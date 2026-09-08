@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { MssqlService } from '../common/mssql/mssql.service';
+import { MesDre } from './regua';
 
 /* =============================================================================
    ORÇAMENTO — leitura no BI (SQL Server, somente leitura).
@@ -82,17 +83,21 @@ export class OrcamentoBiRepository {
 
   /**
    * Venda do vendedor no mês comissional corrente, no canal ATACADO.
-   * `total_item` é o valor líquido do item; `total_desconto` vem NEGATIVO na
-   * view — por isso o desconto sai com sinal trocado e o bruto é líquido + desconto.
+   * A base é `liquido_produto` (quantidade × unitário − desconto do item − rateio
+   * do desconto da nota; devolução entra NEGATIVA), a mesma do painel e da
+   * comissão. NÃO usar `total_item`: é o TOTAL do item do ERP, que ignora o
+   * desconto dado na nota e soma a devolução como venda — inflava a bolsa.
+   * `total_desconto` vem NEGATIVO na view, por isso o sinal trocado; o custo
+   * (`custo_produto`) já vem negativo na devolução.
    */
   async bolsaVendedor(rep: number, ano: number, mes: number): Promise<BolsaVendedorRow> {
     const rows = await this.mssql.query<BolsaVendedorRow>(
       `
       SELECT COUNT(DISTINCT CONCAT(v.EMPRESA,'-',v.SERIE,'-',v.NFS)) AS notas,
-             COALESCE(SUM(v.total_item), 0)                          AS venda_liquida,
+             COALESCE(SUM(v.liquido_produto), 0)                     AS venda_liquida,
              COALESCE(-SUM(v.total_desconto), 0)                     AS desconto,
              COALESCE(SUM(v.custo_produto), 0)                       AS custo,
-             COALESCE(SUM(CASE WHEN v.MIX_CUSTO = 1 THEN v.total_item END), 0) AS mix1_liquido
+             COALESCE(SUM(CASE WHEN v.MIX_CUSTO = 1 THEN v.liquido_produto END), 0) AS mix1_liquido
       FROM dbo.vw_analise_vendas v
       WHERE v.vendedor_venda = @rep
         AND v.mes_comissional = @mes
@@ -113,6 +118,94 @@ export class OrcamentoBiRepository {
   }
 
   /**
+   * DRE mensal do canal ATACADO (f_dre_base + receita bruta contábil), últimos
+   * `meses` + 3 de folga — o piso da bolsa é calculado dela. Mês "fechado" =
+   * tem custo e despesa com pessoal contabilizados (pessoal é o último grupo a
+   * fechar; o mês corrente e o anterior costumam estar abertos).
+   */
+  async dreCanalMensal(meses = 12): Promise<MesDre[]> {
+    const rows = await this.mssql.query<{ ano: number; mes: number; grupo: string; valor: number }>(
+      `
+      SELECT b.ANO AS ano, b.MES AS mes, b.GRUPO_SINTETICO_DRE AS grupo, SUM(b.VALOR_CONVERTIDO) AS valor
+      FROM dbo.f_dre_base b
+      WHERE b.LOCAL_VENDA = 'ATACADO'
+        AND b.DATA_COMPETENCIA >= DATEADD(month, -@n, CAST(GETDATE() AS date))
+      GROUP BY b.ANO, b.MES, b.GRUPO_SINTETICO_DRE
+      `,
+      { n: meses + 3 },
+    );
+    const rb = await this.mssql.query<{ ano: number; mes: number; valor: number }>(
+      `
+      SELECT r.ANO AS ano, r.MES AS mes, SUM(r.RECEITA_BRUTA_CONTABIL) AS valor
+      FROM dbo.f_receita_bruta_contabil_canal_mensal r
+      WHERE r.LOCAL_VENDA = 'ATACADO'
+      GROUP BY r.ANO, r.MES
+      `,
+    );
+    const porMes = new Map<string, Record<string, number>>();
+    for (const r of rows) {
+      const k = `${Number(r.ano)}-${Number(r.mes)}`;
+      const g = porMes.get(k) ?? {};
+      g[String(r.grupo)] = (g[String(r.grupo)] ?? 0) + Number(r.valor ?? 0);
+      porMes.set(k, g);
+    }
+    const receita = new Map(rb.map((r) => [`${Number(r.ano)}-${Number(r.mes)}`, Number(r.valor ?? 0)]));
+    const v = (g: Record<string, number>, nome: string) => Number(g[nome] ?? 0);
+    const out: MesDre[] = [];
+    for (const [k, g] of porMes) {
+      const [ano, mes] = k.split('-').map(Number);
+      const cmv = -v(g, 'Custo dos produtos e serviços vendidos');
+      const pessoal = -v(g, 'Despesa Com Pessoal');
+      out.push({
+        ano, mes,
+        receita_bruta: receita.get(k) ?? 0,
+        abatimento: -v(g, 'Abatimento de Receita Bruta'),
+        cmv,
+        comerciais: -v(g, 'Despesas Comerciais'),
+        fixas: pessoal - v(g, 'Despesas Com Ocupação') - v(g, 'Despesas Gerais e Administrativas') - v(g, 'Despesas com Veículos')
+          - v(g, 'Despesas Tributárias') - v(g, 'Resultado Financeiro') - v(g, 'Outras Receitas e Despesas Operacionais Líquidas'),
+        fechado: cmv > 0 && pessoal > 0 && (receita.get(k) ?? 0) > 0,
+      });
+    }
+    return out.sort((a, b) => a.ano * 100 + a.mes - (b.ano * 100 + b.mes));
+  }
+
+  /**
+   * Receita líquida média por mês do canal ATACADO nos 3 meses comissionais
+   * FECHADOS antes de (ano, mes) — decide o degrau do piso da bolsa. Base
+   * `liquido_produto`, como a bolsa.
+   */
+  async volumeCanal3m(ano: number, mes: number): Promise<{ media_mes: number; meses: { ano: number; mes: number; receita: number }[] }> {
+    const chaves: { ano: number; mes: number }[] = [];
+    let a = ano, m = mes;
+    for (let i = 0; i < 3; i++) {
+      m -= 1;
+      if (m === 0) { m = 12; a -= 1; }
+      chaves.push({ ano: a, mes: m });
+    }
+    const rows = await this.mssql.query<{ ano: number; mes: number; receita: number }>(
+      `
+      SELECT v.ano_comissional AS ano, v.mes_comissional AS mes, COALESCE(SUM(v.liquido_produto), 0) AS receita
+      FROM dbo.vw_analise_vendas v
+      WHERE v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+        AND (
+          (v.ano_comissional = @a1 AND v.mes_comissional = @m1) OR
+          (v.ano_comissional = @a2 AND v.mes_comissional = @m2) OR
+          (v.ano_comissional = @a3 AND v.mes_comissional = @m3)
+        )
+      GROUP BY v.ano_comissional, v.mes_comissional
+      `,
+      { a1: chaves[0].ano, m1: chaves[0].mes, a2: chaves[1].ano, m2: chaves[1].mes, a3: chaves[2].ano, m3: chaves[2].mes },
+    );
+    const meses = chaves.map((c) => ({
+      ...c,
+      receita: Number(rows.find((r) => Number(r.ano) === c.ano && Number(r.mes) === c.mes)?.receita ?? 0),
+    }));
+    return { media_mes: meses.reduce((s, x) => s + x.receita, 0) / 3, meses };
+  }
+
+  /**
    * A mesma venda do mês, por cliente — para o vendedor ver quem "gerou" a bolsa
    * (o saldo é dele, não do cliente; o rateio é só informação).
    */
@@ -121,7 +214,7 @@ export class OrcamentoBiRepository {
       `
       SELECT v.CLI_CODIGO                                   AS cli_codigo,
              MAX(v.CLI_NOME)                                AS cli_nome,
-             COALESCE(SUM(v.total_item), 0)                 AS venda_liquida,
+             COALESCE(SUM(v.liquido_produto), 0)            AS venda_liquida,
              COALESCE(-SUM(v.total_desconto), 0)            AS desconto,
              COALESCE(SUM(v.custo_produto), 0)              AS custo
       FROM dbo.vw_analise_vendas v

@@ -52,11 +52,22 @@ saldo   = venda líquida do mês − custo × piso      (o que sobra depois de T
 acima   = venda líquida do mês − custo × linha4%   (lucro acima da linha dos 4%; prêmio = 25% disso)
 ```
 
-Mês comissional (26→25), canal ATACADO, custo = `custo_produto` da `vw_analise_vendas`.
-Piso = markup do degrau da escada da meta em vigor (T1, R$ 645 mil/mês → **1,48**); linha dos 4% =
-markup que deixa o canal em 4% no volume real do trimestre (hoje **1,586**; coincide com o piso
-quando o degrau chega). Parâmetros: `ORCAMENTO_BOLSA_PISO`, `ORCAMENTO_LINHA_4PCT`,
-`ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`.
+Mês comissional (26→25), canal ATACADO, base = `liquido_produto` e `custo_produto` da `vw_analise_vendas`
+(devolução entra negativa nos dois). **Não usar `total_item`**: é o TOTAL do item do ERP — ignora o desconto
+dado na nota e soma a devolução como venda; inflava a bolsa (Alisson, set/26: R$ 10,5 mil → R$ 1,1 mil corrigido).
+**Piso pela DRE** (`ORCAMENTO_BOLSA_MODO=dre`, padrão): `piso = (CMV + fixas) ÷ (CMV × (1 − variáveis − meta))`
+com a DRE real do canal (`f_dre_base` + receita contábil, `ORCAMENTO_BOLSA_DRE_MESES=12` meses fechados,
+`ORCAMENTO_META_RESULTADO=0.04`). Fixas = pessoal, ocupação, G&A, veículos, tributárias, financeiro
+(menos outras receitas); variáveis = comerciais ÷ RL. Despesa maior sobe o piso; volume maior baixa — todo
+mês fechado. A resposta traz `volume` com a janela, RL, CMV, fixas, variáveis e o markup realizado.
+
+**Piso por degrau de volume** (`ORCAMENTO_BOLSA_MODO=degrau`): a média da receita líquida
+do canal nos 3 últimos meses comissionais fechados escolhe o degrau — até 560 mil/mês → 1,586;
+560 → 1,538; 645 → 1,48; 700 → 1,45; 763 → 1,421 (`ORCAMENTO_BOLSA_DEGRAUS`, "volume_min:piso").
+Cada piso é o markup que deixa o canal em 4% naquele volume; neste modo a **linha dos 4% é o
+próprio piso** (saldo retido = lucro a mais). A resposta traz `volume` (média, meses, degrau,
+próximo degrau e quanto falta). Modo `fixo`: `ORCAMENTO_BOLSA_PISO` e `ORCAMENTO_LINHA_4PCT`
+(bolsa "adiantada" num degrau). Demais: `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`.
 
 **Todo desconto subtrai da bolsa, dentro ou fora do teto da faixa.** O teto da faixa só define a
 alçada: dentro dele o vendedor decide sozinho; abaixo do mínimo da faixa a bolsa paga (sem
@@ -125,7 +136,7 @@ como hoje e registra o número em "Fechado".
 2. `npx prisma generate` (o schema já tem os modelos `ven_regua_*`, `ven_orcamento*`, `ven_produto_relacionado`).
 3. Deploy da `erp-firebird-api` com `PRECO1..PRECO10`, `CUSTO_NOTA`, `DESCTO_MAXIMO`, `INATIVO`
    em `PRODUTOS` (catálogo `produtos.tabela.ts`).
-4. Variáveis (opcionais, com padrão): `ORCAMENTO_BOLSA_PISO`, `ORCAMENTO_LINHA_4PCT`,
+4. Variáveis (opcionais, com padrão): `ORCAMENTO_BOLSA_MODO`, `ORCAMENTO_BOLSA_DRE_MESES`, `ORCAMENTO_META_RESULTADO`, `ORCAMENTO_BOLSA_DEGRAUS`, `ORCAMENTO_BOLSA_PISO`, `ORCAMENTO_LINHA_4PCT`,
    `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`, `ORCAMENTO_VALIDADE_DIAS`,
    `ORCAMENTO_RELACIONADOS_CRON`, `ORCAMENTO_RELACIONADOS_MESES`.
 5. Rodar uma vez `POST /orcamento/relacionados/recalcular` (senão "vendem juntos" só aparece

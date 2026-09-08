@@ -13,6 +13,9 @@ import {
   LINHA_4PCT_PADRAO,
   PISO_ITEM_PADRAO,
   PREMIO_PADRAO,
+  parseDegrausBolsa,
+  pisoPorDre,
+  pisoPorVolume,
   degrauMix1,
   FAIXAS,
   FaixaVolume,
@@ -123,8 +126,14 @@ export class OrcamentoService {
       return Number.isFinite(v) && v > 0 ? v : d;
     };
     return {
-      // Bolsa: markup-piso do degrau da escada em vigor; linha dos 4% no volume real do trimestre;
-      // fração do lucro acima da linha que vira prêmio; piso absoluto de um item pago pela bolsa.
+      // Bolsa. Modo 'dre' (padrão): o piso sai da DRE do canal (janela de meses fechados) — custo,
+      // despesas fixas e variáveis REAIS, meta de 4% — e a linha dos 4% é o próprio piso. Modo
+      // 'degrau': tabela volume→piso pela média dos 3 últimos meses. Modo 'fixo': piso e linha por
+      // env (bolsa "adiantada"). Prêmio = fração do lucro acima da linha; piso absoluto do item.
+      bolsa_modo: (['fixo', 'degrau', 'dre'].find((m) => m === (process.env.ORCAMENTO_BOLSA_MODO ?? 'dre').toLowerCase()) ?? 'dre') as 'fixo' | 'degrau' | 'dre',
+      bolsa_dre_meses: Math.max(1, Math.round(num('ORCAMENTO_BOLSA_DRE_MESES', 12))),
+      meta_resultado: num('ORCAMENTO_META_RESULTADO', 0.04),
+      bolsa_degraus: parseDegrausBolsa(process.env.ORCAMENTO_BOLSA_DEGRAUS),
       bolsa_piso: num('ORCAMENTO_BOLSA_PISO', BOLSA_PISO_PADRAO),
       linha_4pct: num('ORCAMENTO_LINHA_4PCT', LINHA_4PCT_PADRAO),
       premio_pct: num('ORCAMENTO_PREMIO_PCT', PREMIO_PADRAO),
@@ -219,13 +228,26 @@ export class OrcamentoService {
   async bolsa(rep: number, orc?: { receita: number; desconto: number; custo: number; sem_custo: number }) {
     const p = this.parametros();
     const periodo = mesComissional();
-    const [v, clientes] = await Promise.all([
+    const [v, clientes, vol, dre] = await Promise.all([
       this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
         return [];
       }),
+      p.bolsa_modo === 'degrau' ? this.bi.volumeCanal3m(periodo.ano, periodo.mes) : Promise.resolve(null),
+      p.bolsa_modo === 'dre'
+        ? this.bi.dreCanalMensal(p.bolsa_dre_meses).catch((e) => {
+            this.logger.warn(`DRE do canal indisponível — piso cai para o fixo: ${(e as Error).message}`);
+            return null;
+          })
+        : Promise.resolve(null),
     ]);
+    // Piso: pela DRE (custo + fixas + variáveis reais → 4%), pelo degrau de volume, ou fixo.
+    // Nos modos dre/degrau a linha dos 4% é o próprio piso: saldo retido = lucro a mais.
+    const pisoDre = dre ? pisoPorDre(dre, p.bolsa_dre_meses, p.meta_resultado) : null;
+    const degrau = vol ? pisoPorVolume(p.bolsa_degraus, vol.media_mes) : null;
+    const piso = pisoDre ? pisoDre.piso : degrau ? degrau.piso : p.bolsa_piso;
+    const linha = pisoDre || degrau ? piso : p.linha_4pct;
     const bolsa = calcularBolsa({
       receita_mtd: v.venda_liquida,
       custo_mtd: v.custo,
@@ -234,8 +256,8 @@ export class OrcamentoService {
       desconto_orc: orc?.desconto ?? 0,
       custo_orc: orc?.custo ?? 0,
       sem_custo_orc: orc?.sem_custo ?? 0,
-      piso: p.bolsa_piso,
-      linha: p.linha_4pct,
+      piso,
+      linha,
       premio_pct: p.premio_pct,
     });
     const part = v.venda_liquida > 0 ? v.mix1_liquido / v.venda_liquida : 0;
@@ -245,7 +267,7 @@ export class OrcamentoService {
     for (const o of abertos) {
       for (const i of o.itens ?? []) {
         const total = Number(i.total), custo = i.custo_ref != null ? Number(i.custo_ref) : null;
-        saldoAbertos += custo != null && custo > 0 ? total - custo * Number(i.quantidade) * p.bolsa_piso : 0;
+        saldoAbertos += custo != null && custo > 0 ? total - custo * Number(i.quantidade) * piso : 0;
       }
     }
     const porCliente = clientes
@@ -254,7 +276,7 @@ export class OrcamentoService {
         cli_nome: c.cli_nome,
         venda_liquida: round2(c.venda_liquida),
         desconto: round2(c.desconto),
-        saldo: round2(c.venda_liquida - c.custo * p.bolsa_piso),
+        saldo: round2(c.venda_liquida - c.custo * piso),
       }))
       .sort((a, b) => b.saldo - a.saldo);
     return {
@@ -270,6 +292,21 @@ export class OrcamentoService {
         saldo_se_fechar_tudo: round2(bolsa.saldo + saldoAbertos),
       },
       por_cliente: porCliente,
+      // De onde veio o piso: o degrau do canal (e quanto falta para o próximo) ou o valor fixo.
+      volume: pisoDre
+        ? { modo: 'dre' as const, ...pisoDre }
+        : degrau && vol
+        ? {
+            modo: 'degrau' as const,
+            media_3m: round2(vol.media_mes),
+            meses: vol.meses.map((m) => ({ ...m, receita: round2(m.receita) })),
+            piso: degrau.piso,
+            degrau_min: degrau.degrau_min,
+            proximo_min: degrau.proximo_min,
+            proximo_piso: degrau.proximo_piso,
+            falta: degrau.falta,
+          }
+        : { modo: 'fixo' as const, piso, linha },
     };
   }
 

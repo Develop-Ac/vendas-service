@@ -354,6 +354,125 @@ export type Semaforo = 'VERDE' | 'AMARELO' | 'VERMELHO';
 export const BOLSA_PISO_PADRAO = 1.48;
 export const LINHA_4PCT_PADRAO = 1.586;
 export const PREMIO_PADRAO = 0.25;
+
+/**
+ * Piso por DEGRAU de volume do canal (escada da meta): as despesas fixas são as
+ * mesmas em qualquer volume, então o markup que garante 4% cai conforme o canal
+ * vende mais. `volume_min` = receita líquida média por mês do canal (últimos 3
+ * meses comissionais fechados); o piso é o do maior degrau alcançado. Neste
+ * modo a linha dos 4% É o piso: saldo retido = lucro a mais, um para um.
+ */
+export interface DegrauBolsa {
+  volume_min: number;
+  piso: number;
+}
+export const DEGRAUS_BOLSA_PADRAO: DegrauBolsa[] = [
+  { volume_min: 0, piso: 1.586 },
+  { volume_min: 560_000, piso: 1.538 },
+  { volume_min: 645_000, piso: 1.48 },
+  { volume_min: 700_000, piso: 1.45 },
+  { volume_min: 763_000, piso: 1.421 },
+];
+
+/** "0:1.586,560000:1.538,…" → degraus ordenados; texto inválido cai no padrão. */
+export function parseDegrausBolsa(texto?: string | null): DegrauBolsa[] {
+  if (!texto) return DEGRAUS_BOLSA_PADRAO;
+  const out: DegrauBolsa[] = [];
+  for (const par of texto.split(',')) {
+    const [v, p] = par.split(':').map((x) => Number(String(x).trim()));
+    if (Number.isFinite(v) && v >= 0 && Number.isFinite(p) && p > 1) out.push({ volume_min: v, piso: p });
+  }
+  return out.length ? out.sort((a, b) => a.volume_min - b.volume_min) : DEGRAUS_BOLSA_PADRAO;
+}
+
+/**
+ * Piso pela DRE do canal: o markup sobre o custo que deixa o atacado na meta de
+ * resultado (4% da receita líquida, antes das retiradas) com as despesas REAIS
+ * da janela — não só o volume. Da DRE:
+ *   RL × (1 − variáveis − meta) = CMV + fixas  →  piso = (CMV + fixas) / (CMV × (1 − variáveis − meta))
+ * `variáveis` = despesas comerciais (frete, cartão, comissões, prêmios, ST/DIFAL…) ÷ RL.
+ * Se as fixas sobem, o piso sobe; se o volume cresce, cai — todo mês fechado.
+ */
+export interface MesDre {
+  ano: number;
+  mes: number;
+  /** Receita bruta contábil do canal. */
+  receita_bruta: number;
+  /** Abatimentos (devoluções, PIS/COFINS…), POSITIVO. */
+  abatimento: number;
+  /** Custo das mercadorias vendidas, POSITIVO. */
+  cmv: number;
+  /** Despesas comerciais (variáveis), POSITIVO. */
+  comerciais: number;
+  /** Pessoal + ocupação + G&A + veículos + tributárias + financeiro − outras receitas, POSITIVO. */
+  fixas: number;
+  /** Mês com todos os grupos contabilizados (pessoal é o último a fechar). */
+  fechado: boolean;
+}
+
+export interface PisoDre {
+  piso: number;
+  meta: number;
+  meses: number;
+  de: { ano: number; mes: number } | null;
+  ate: { ano: number; mes: number } | null;
+  receita_liquida: number;
+  cmv: number;
+  fixas: number;
+  comerciais: number;
+  variaveis_pct: number;
+  /** Markup contábil realizado na janela (RL ÷ CMV) — para comparar com o piso. */
+  markup_realizado: number | null;
+}
+
+export function pisoPorDre(meses: MesDre[], janela = 12, meta = 0.04): PisoDre | null {
+  // A DRE não é tempo real: a folha entra por lançamento manual, então o mês
+  // corrente (e às vezes o anterior) chega sem pessoal. Só entram meses fechados;
+  // e um mês "fechado" com fixas abaixo de metade da mediana dos demais está
+  // meio lançado — fica de fora até completar.
+  const candidatos = meses.filter((m) => m.fechado && m.cmv > 0);
+  const ordenadas = candidatos.map((m) => m.fixas).sort((a, b) => a - b);
+  const mediana = ordenadas.length ? ordenadas[Math.floor(ordenadas.length / 2)] : 0;
+  const fechados = candidatos
+    .filter((m) => candidatos.length < 3 || m.fixas >= mediana * 0.5)
+    .sort((a, b) => a.ano * 100 + a.mes - (b.ano * 100 + b.mes))
+    .slice(-janela);
+  if (!fechados.length) return null;
+  const soma = (k: keyof MesDre) => fechados.reduce((t, m) => t + Number(m[k] ?? 0), 0);
+  const rl = soma('receita_bruta') - soma('abatimento');
+  const cmv = soma('cmv'), fixas = soma('fixas'), comerciais = soma('comerciais');
+  if (!(rl > 0) || !(cmv > 0)) return null;
+  const variaveis = comerciais / rl;
+  const denominador = 1 - variaveis - meta;
+  if (denominador <= 0) return null;
+  return {
+    piso: round4((cmv + fixas) / (cmv * denominador)),
+    meta,
+    meses: fechados.length,
+    de: { ano: fechados[0].ano, mes: fechados[0].mes },
+    ate: { ano: fechados[fechados.length - 1].ano, mes: fechados[fechados.length - 1].mes },
+    receita_liquida: round2(rl),
+    cmv: round2(cmv),
+    fixas: round2(fixas),
+    comerciais: round2(comerciais),
+    variaveis_pct: round4(variaveis),
+    markup_realizado: round4(rl / cmv),
+  };
+}
+
+export function pisoPorVolume(degraus: DegrauBolsa[], volumeMes: number) {
+  const ordem = [...degraus].sort((a, b) => a.volume_min - b.volume_min);
+  const v = Math.max(0, volumeMes);
+  const atual = [...ordem].reverse().find((d) => v >= d.volume_min) ?? ordem[0];
+  const proximo = ordem.find((d) => d.volume_min > v && d.piso < atual.piso) ?? null;
+  return {
+    piso: atual.piso,
+    degrau_min: atual.volume_min,
+    proximo_min: proximo?.volume_min ?? null,
+    proximo_piso: proximo?.piso ?? null,
+    falta: proximo ? round2(proximo.volume_min - v) : 0,
+  };
+}
 /** Piso absoluto de um item pago pela bolsa: custo × 1,25. Abaixo disso, aprovação. */
 export const PISO_ITEM_PADRAO = 1.25;
 
