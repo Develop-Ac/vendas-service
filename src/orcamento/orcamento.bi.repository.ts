@@ -15,7 +15,16 @@ export interface BolsaVendedorRow {
   notas: number;
   venda_liquida: number;
   desconto: number;
+  custo: number;
   mix1_liquido: number;
+}
+
+export interface BolsaClienteRow {
+  cli_codigo: number;
+  cli_nome: string;
+  venda_liquida: number;
+  desconto: number;
+  custo: number;
 }
 
 export interface ResumoClienteBi {
@@ -82,6 +91,7 @@ export class OrcamentoBiRepository {
       SELECT COUNT(DISTINCT CONCAT(v.EMPRESA,'-',v.SERIE,'-',v.NFS)) AS notas,
              COALESCE(SUM(v.total_item), 0)                          AS venda_liquida,
              COALESCE(-SUM(v.total_desconto), 0)                     AS desconto,
+             COALESCE(SUM(v.custo_produto), 0)                       AS custo,
              COALESCE(SUM(CASE WHEN v.MIX_CUSTO = 1 THEN v.total_item END), 0) AS mix1_liquido
       FROM dbo.vw_analise_vendas v
       WHERE v.vendedor_venda = @rep
@@ -92,13 +102,45 @@ export class OrcamentoBiRepository {
       `,
       { rep, mes, ano },
     );
-    const r = rows[0] ?? { notas: 0, venda_liquida: 0, desconto: 0, mix1_liquido: 0 };
+    const r = rows[0] ?? { notas: 0, venda_liquida: 0, desconto: 0, custo: 0, mix1_liquido: 0 };
     return {
       notas: Number(r.notas ?? 0),
       venda_liquida: Number(r.venda_liquida ?? 0),
       desconto: Number(r.desconto ?? 0),
+      custo: Number(r.custo ?? 0),
       mix1_liquido: Number(r.mix1_liquido ?? 0),
     };
+  }
+
+  /**
+   * A mesma venda do mês, por cliente — para o vendedor ver quem "gerou" a bolsa
+   * (o saldo é dele, não do cliente; o rateio é só informação).
+   */
+  async bolsaPorCliente(rep: number, ano: number, mes: number): Promise<BolsaClienteRow[]> {
+    const rows = await this.mssql.query<BolsaClienteRow>(
+      `
+      SELECT v.CLI_CODIGO                                   AS cli_codigo,
+             MAX(v.CLI_NOME)                                AS cli_nome,
+             COALESCE(SUM(v.total_item), 0)                 AS venda_liquida,
+             COALESCE(-SUM(v.total_desconto), 0)            AS desconto,
+             COALESCE(SUM(v.custo_produto), 0)              AS custo
+      FROM dbo.vw_analise_vendas v
+      WHERE v.vendedor_venda = @rep
+        AND v.mes_comissional = @mes
+        AND v.ano_comissional = @ano
+        AND v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+      GROUP BY v.CLI_CODIGO
+      `,
+      { rep, mes, ano },
+    );
+    return rows.map((r) => ({
+      cli_codigo: Number(r.cli_codigo),
+      cli_nome: String(r.cli_nome ?? ''),
+      venda_liquida: Number(r.venda_liquida ?? 0),
+      desconto: Number(r.desconto ?? 0),
+      custo: Number(r.custo ?? 0),
+    }));
   }
 
   /** Crédito em aberto, faturamento e última compra do cliente. */

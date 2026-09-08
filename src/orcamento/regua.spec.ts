@@ -142,17 +142,27 @@ describe('escala por volume', () => {
 });
 
 describe('calcularBolsa', () => {
-  it('saldo para ficar no bônus e projeção com o orçamento', () => {
-    const b = calcularBolsa({ bruto_mtd: 100000, desconto_mtd: 2000, bruto_orc: 10000, desconto_orc: 1500 });
-    expect(b.pct_atual).toBe(0.02);
-    expect(b.saldo_bonus).toBe(1000);
-    expect(b.saldo_teto).toBe(4000);
-    expect(b.pct_apos).toBeCloseTo(3500 / 110000, 4);
+  it('bolsa = receita − custo × piso; todo desconto subtrai; projeção com o orçamento', () => {
+    // mês: R$ 100 mil a preço cheio, R$ 4 mil de desconto, custo R$ 60 mil → gerada 100 − 88,8 = 11,2; saldo 96 − 88,8 = 7,2
+    const b = calcularBolsa({ receita_mtd: 96000, custo_mtd: 60000, desconto_mtd: 4000, piso: 1.48, linha: 1.586, premio_pct: 0.25,
+      receita_orc: 9000, desconto_orc: 1000, custo_orc: 5000 });
+    expect(b.gerada).toBe(11200);
+    expect(b.saldo).toBe(7200);
+    expect(b.pct_desconto).toBe(0.04);
+    // orçamento: 9.000 − 5.000 × 1,48 = +1.600
+    expect(b.saldo_apos).toBe(8800);
+    // linha dos 4%: 96.000 − 60.000 × 1,586 = +840 → prêmio 25% = 210
+    expect(b.acima_linha).toBe(840);
+    expect(b.premio_estimado).toBe(210);
     expect(b.semaforo_atual).toBe('VERDE');
-    expect(b.semaforo_apos).toBe('AMARELO');
   });
-  it('acima de 6% é vermelho', () => {
-    expect(calcularBolsa({ bruto_mtd: 1000, desconto_mtd: 70 }).semaforo_atual).toBe('VERMELHO');
+  it('dentro da bolsa mas abaixo da linha é amarelo; bolsa estourada é vermelho', () => {
+    expect(calcularBolsa({ receita_mtd: 90000, custo_mtd: 60000, desconto_mtd: 10000 }).semaforo_atual).toBe('AMARELO');
+    expect(calcularBolsa({ receita_mtd: 85000, custo_mtd: 60000, desconto_mtd: 15000 }).semaforo_atual).toBe('VERMELHO');
+  });
+  it('item sem custo é neutro na projeção', () => {
+    const b = calcularBolsa({ receita_mtd: 0, custo_mtd: 0, desconto_mtd: 0, receita_orc: 1480, sem_custo_orc: 1480, piso: 1.48 });
+    expect(b.saldo_apos).toBe(0);
   });
 });
 

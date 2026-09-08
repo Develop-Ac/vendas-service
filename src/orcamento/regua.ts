@@ -8,7 +8,7 @@
      subgrupo/descrição  -> classe (GERAL | PB)       classeBase()
      classe × faixa      -> markup + desconto máximo  regraDe()
      item                -> preço mínimo, alçada      avaliarItem()
-     mês do vendedor     -> bolsa de desconto         calcularBolsa()
+     mês do vendedor     -> bolsa de desconto         calcularBolsa()  (receita − custo × piso)
      participação MIX1   -> degrau da comissão        degrauMix1()
 
    As faixas são as MESMAS do ETL do BI (FAIXA_MIX em Stage_Produtos/Stage_Vendas),
@@ -188,6 +188,8 @@ export interface EntradaAvaliacao {
   volume?: FaixaVolume[];
   /** Quantidade da linha — define o degrau de volume aplicado. Padrão 1. */
   quantidade?: number;
+  /** Markup do piso absoluto de um item pago pela bolsa (custo × piso). Padrão PISO_ITEM_PADRAO. */
+  piso_item?: number;
 }
 
 export interface Avaliacao {
@@ -202,6 +204,8 @@ export interface Avaliacao {
   /** Desconto máximo que cabe SOBRE O PREÇO DE TABELA sem furar o piso da régua. */
   desc_max_efetivo_pct: number;
   preco_minimo: number;
+  /** Abaixo do mínimo da faixa a bolsa paga; abaixo DESTE piso (custo × 1,25) só com aprovação. */
+  preco_piso_bolsa: number;
   markup_tabela: number | null;
   /** Tabela do ERP já está abaixo do preço de lista da régua (item ainda não carregado). */
   tabela_abaixo_regua: boolean;
@@ -253,6 +257,7 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
   const regra = fx ? regraDe(regua, base, fx.chave) : null;
   const tabela = e.preco_tabela > 0 ? e.preco_tabela : 0;
   const markupTabela = custo && tabela > 0 ? round4(tabela / custo) : null;
+  const pisoBolsa = custo ? Math.min(round2(custo * (e.piso_item ?? PISO_ITEM_PADRAO)), tabela > 0 ? tabela : Number.POSITIVE_INFINITY) : 0;
 
   const semPrecoOuCusto = tabela <= 0 || !custo;
 
@@ -269,6 +274,7 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
       desc_max_pct: descMax,
       desc_max_efetivo_pct: tabela > 0 ? round4(1 - minimo / tabela) : 0,
       preco_minimo: minimo,
+      preco_piso_bolsa: pisoBolsa,
       markup_tabela: markupTabela,
       tabela_abaixo_regua: false,
       motivo:
@@ -290,6 +296,7 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
       desc_max_pct: 0,
       desc_max_efetivo_pct: 0,
       preco_minimo: minimo,
+      preco_piso_bolsa: pisoBolsa,
       markup_tabela: markupTabela,
       tabela_abaixo_regua: false,
       motivo: !custo
@@ -320,6 +327,7 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
     desc_max_pct: descMax,
     desc_max_efetivo_pct: descEfetivo,
     preco_minimo: minimo,
+    preco_piso_bolsa: pisoBolsa,
     markup_tabela: markupTabela,
     tabela_abaixo_regua: abaixo,
     motivo: abaixo
@@ -334,61 +342,102 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
 
 export type Semaforo = 'VERDE' | 'AMARELO' | 'VERMELHO';
 
+/**
+ * A bolsa de desconto é a margem que o vendedor gera ACIMA de um markup-piso:
+ *   bolsa = Σ (preço vendido − custo × piso)        no mês comissional
+ * Toda venda a preço cheio soma; todo desconto subtrai (dentro ou fora do teto
+ * da faixa — o teto só define a alçada). O piso é o markup do degrau da escada
+ * da meta em vigor (T1: R$ 645 mil/mês → 1,48). A "linha dos 4%" é o markup
+ * que deixa o canal em 4% no volume REAL do trimestre; só acima dela há lucro
+ * extra, e é sobre esse lucro que sai o prêmio do vendedor.
+ */
+export const BOLSA_PISO_PADRAO = 1.48;
+export const LINHA_4PCT_PADRAO = 1.586;
+export const PREMIO_PADRAO = 0.25;
+/** Piso absoluto de um item pago pela bolsa: custo × 1,25. Abaixo disso, aprovação. */
+export const PISO_ITEM_PADRAO = 1.25;
+
 export interface BolsaEntrada {
-  /** Venda BRUTA do mês comissional (antes do desconto). */
-  bruto_mtd: number;
-  /** Desconto já concedido no mês (positivo). */
+  /** Venda líquida do mês comissional (já com o desconto tirado). */
+  receita_mtd: number;
+  /** Custo (reposição na venda) das mercadorias vendidas no mês. */
+  custo_mtd: number;
+  /** Desconto concedido no mês (positivo). */
   desconto_mtd: number;
-  /** O orçamento em edição, para projetar. */
-  bruto_orc?: number;
+  /** O orçamento em edição: total líquido e custo dos itens. Itens sem custo entram em `sem_custo_orc` (neutros). */
+  receita_orc?: number;
   desconto_orc?: number;
-  /** Limiares da disciplina de desconto (comissão): bônus ≤ 3%, pena > 6%. */
-  bonus_pct?: number;
-  pena_pct?: number;
+  custo_orc?: number;
+  sem_custo_orc?: number;
+  piso?: number;
+  linha?: number;
+  premio_pct?: number;
 }
 
 export interface Bolsa {
-  bonus_pct: number;
-  pena_pct: number;
+  piso: number;
+  linha: number;
+  premio_pct: number;
   bruto_mtd: number;
+  receita_mtd: number;
+  custo_mtd: number;
   desconto_mtd: number;
-  pct_atual: number;
-  /** Quanto ainda pode dar de desconto no mês e continuar dentro do bônus (pode ser negativo). */
-  saldo_bonus: number;
-  /** Idem, antes de cair na pena. */
-  saldo_teto: number;
-  pct_apos: number;
+  /** desconto ÷ bruto — só informação. */
+  pct_desconto: number;
+  markup_mtd: number | null;
+  /** O que a venda do mês gerou a preço cheio: bruto − custo × piso. */
+  gerada: number;
+  /** O que sobra depois do desconto dado: receita − custo × piso. É o que ainda cabe. */
+  saldo: number;
+  saldo_apos: number;
+  /** Lucro acima da linha dos 4%: receita − custo × linha (negativo = abaixo da linha). */
+  acima_linha: number;
+  acima_linha_apos: number;
+  premio_estimado: number;
+  premio_estimado_apos: number;
   semaforo_atual: Semaforo;
   semaforo_apos: Semaforo;
 }
 
-export function semaforoDe(pct: number, bonus: number, pena: number): Semaforo {
-  if (pct <= bonus + 1e-9) return 'VERDE';
-  if (pct <= pena + 1e-9) return 'AMARELO';
-  return 'VERMELHO';
+/** VERDE = acima da linha dos 4% (gera prêmio); AMARELO = dentro da bolsa; VERMELHO = bolsa estourada. */
+export function semaforoBolsa(saldo: number, acimaLinha: number): Semaforo {
+  if (saldo < -0.005) return 'VERMELHO';
+  return acimaLinha > 0.005 ? 'VERDE' : 'AMARELO';
 }
 
 export function calcularBolsa(e: BolsaEntrada): Bolsa {
-  const bonus = e.bonus_pct ?? 0.03;
-  const pena = e.pena_pct ?? 0.06;
-  const bruto = Math.max(0, e.bruto_mtd);
+  const piso = e.piso ?? BOLSA_PISO_PADRAO;
+  const linha = e.linha ?? LINHA_4PCT_PADRAO;
+  const premio = e.premio_pct ?? PREMIO_PADRAO;
+  const receita = Math.max(0, e.receita_mtd);
+  const custo = Math.max(0, e.custo_mtd);
   const desc = Math.max(0, e.desconto_mtd);
-  const brutoOrc = Math.max(0, e.bruto_orc ?? 0);
-  const descOrc = Math.max(0, e.desconto_orc ?? 0);
-  const pct = bruto > 0 ? desc / bruto : 0;
-  const totalBruto = bruto + brutoOrc;
-  const pctApos = totalBruto > 0 ? (desc + descOrc) / totalBruto : 0;
+  const recOrc = Math.max(0, e.receita_orc ?? 0);
+  // Item sem custo no cadastro é neutro: conta como vendido exatamente no piso.
+  const custoOrc = Math.max(0, e.custo_orc ?? 0) + Math.max(0, e.sem_custo_orc ?? 0) / piso;
+  const saldo = receita - custo * piso;
+  const saldoApos = saldo + (recOrc - custoOrc * piso);
+  const acima = receita - custo * linha;
+  const acimaApos = acima + (recOrc - custoOrc * linha);
   return {
-    bonus_pct: bonus,
-    pena_pct: pena,
-    bruto_mtd: round2(bruto),
+    piso,
+    linha,
+    premio_pct: premio,
+    bruto_mtd: round2(receita + desc),
+    receita_mtd: round2(receita),
+    custo_mtd: round2(custo),
     desconto_mtd: round2(desc),
-    pct_atual: round4(pct),
-    saldo_bonus: round2(bonus * bruto - desc),
-    saldo_teto: round2(pena * bruto - desc),
-    pct_apos: round4(pctApos),
-    semaforo_atual: semaforoDe(pct, bonus, pena),
-    semaforo_apos: semaforoDe(pctApos, bonus, pena),
+    pct_desconto: receita + desc > 0 ? round4(desc / (receita + desc)) : 0,
+    markup_mtd: custo > 0 ? round4(receita / custo) : null,
+    gerada: round2(receita + desc - custo * piso),
+    saldo: round2(saldo),
+    saldo_apos: round2(saldoApos),
+    acima_linha: round2(acima),
+    acima_linha_apos: round2(acimaApos),
+    premio_estimado: round2(premio * Math.max(0, acima)),
+    premio_estimado_apos: round2(premio * Math.max(0, acimaApos)),
+    semaforo_atual: semaforoBolsa(saldo, acima),
+    semaforo_apos: semaforoBolsa(saldoApos, acimaApos),
   };
 }
 

@@ -78,16 +78,23 @@ export class OrcamentoController {
   /* ----------------------------------------------------------- vendedor */
 
   @Get('vendedor/:rep/bolsa')
-  @ApiOperation({ summary: 'Bolsa de desconto do vendedor no mês comissional (+ projeção com o orçamento).' })
-  @ApiQuery({ name: 'bruto', required: false, description: 'Subtotal (a preço de tabela) do orçamento em edição' })
+  @ApiOperation({ summary: 'Bolsa de desconto do vendedor no mês comissional: receita − custo × piso (+ projeção com o orçamento).' })
+  @ApiQuery({ name: 'total', required: false, description: 'Total líquido do orçamento em edição' })
   @ApiQuery({ name: 'desconto', required: false, description: 'Desconto total do orçamento em edição' })
+  @ApiQuery({ name: 'custo', required: false, description: 'Custo (reposição × qtd) dos itens com custo' })
+  @ApiQuery({ name: 'sem_custo', required: false, description: 'Total dos itens SEM custo no cadastro (entram neutros)' })
   bolsa(
     @Param('rep', ParseIntPipe) rep: number,
-    @Query('bruto') bruto?: string,
+    @Query('total') total?: string,
     @Query('desconto') desconto?: string,
+    @Query('custo') custo?: string,
+    @Query('sem_custo') semCusto?: string,
   ) {
-    const b = toNum(bruto), d = toNum(desconto);
-    return this.service.bolsa(rep, b != null ? { bruto: b, desconto: d ?? 0 } : undefined);
+    const t = toNum(total);
+    return this.service.bolsa(
+      rep,
+      t != null ? { receita: t, desconto: toNum(desconto) ?? 0, custo: toNum(custo) ?? 0, sem_custo: toNum(semCusto) ?? 0 } : undefined,
+    );
   }
 
   /* -------------------------------------------------- orçamentos do Celta */

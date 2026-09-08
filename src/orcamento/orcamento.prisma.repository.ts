@@ -391,7 +391,10 @@ export class OrcamentoPrismaRepository {
   async abertosDoVendedor(rep: number) {
     return this.prisma.ven_orcamento.findMany({
       where: { rep_codigo: rep, status: { in: ['ENVIADO', 'APROVACAO'] } },
-      select: { id: true, numero: true, cli_nome: true, total: true, desconto_total: true, subtotal: true },
+      select: {
+        id: true, numero: true, cli_nome: true, total: true, desconto_total: true, subtotal: true,
+        itens: { select: { quantidade: true, custo_ref: true, total: true } },
+      },
     });
   }
 }
