@@ -20,7 +20,7 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 | Markup e desconto máximo | Postgres `ven_regua_atacado` | seed = régua v3 aprovada (GERAL 2,85→1,42 / PB 2,30→1,38; desc. 3→10%) |
 | Itens fora da régua | Postgres `ven_regua_item_excecao` | LANÇAMENTO/EXCLUSIVO e OPORTUNIDADE: markup atual congelado, desconto próprio |
 | Equivalentes | Postgres `com_fifo_completo` (última execução) | mesmo `group_id` **e** mesma descrição **e** mesma `marca_linha` (a regra do worker). Só o `group_id` não basta: grupos mesclados à mão viraram "grupões" |
-| Desconto por volume | Postgres `ven_regua_volume` | o máximo da faixa é o teto; a quantidade libera uma fração dele: 50% até 2 un, 75% de 3 a 5, 100% a partir de 6 (ex.: 1D 3% → 1,5% / 2,25% / 3%). A API devolve `escala_volume` por item |
+| Desconto por volume | Postgres `ven_regua_volume` | o máximo da faixa é o teto; a quantidade libera uma fração dele: 50% até 2 un, 75% de 3 a 5, 100% a partir de 6 (ex.: 1D 3% → 1,5% / 2,25% / 3%). A API devolve `escala_volume` por item. **Só vale sem bolsa**: com saldo (já com o orçamento) ≥ 0 o limite é o máximo inteiro da faixa |
 | Vendem juntos | Postgres `ven_produto_relacionado` | pares apurados no BI (`vw_analise_vendas`, atacado, 12 meses, ≥3 notas juntos), cron semanal seg 04:30 |
 | Bolsa de desconto do vendedor | BI | `vw_analise_vendas` no mês comissional (26→25), canal ATACADO: receita, custo, desconto, MIX1, por cliente |
 | Crédito do cliente | BI + ERP | limite (ERP) − títulos em aberto (`Stage_ContasReceber_Titulos`), bloqueio de crediário |
@@ -30,7 +30,8 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 ## Regra do preço mínimo (a que o vendedor decide sozinho)
 
 O vendedor **nunca digita preço**: só quantidade e desconto (%). `preco = tabela × (1 − desc_pct)`;
-`desc_max` da linha = máximo da faixa × fração liberada pela quantidade (nunca acima do máximo).
+`desc_max` da linha = máximo da faixa × fração liberada pela quantidade (nunca acima do máximo) —
+fração que só se aplica quando o vendedor está **sem bolsa** (ver "Alçada" abaixo).
 
 ```
 lista da régua = custo × markup(classe, faixa)
@@ -70,9 +71,19 @@ próximo degrau e quanto falta). Modo `fixo` (**em uso desde 08/09/2026, piso 1,
 piso (prêmio = 25% de todo o saldo retido) — `ORCAMENTO_LINHA_4PCT` só se quiser uma marca separada. Demais: `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`.
 
 **Todo desconto subtrai da bolsa, dentro ou fora do teto da faixa.** O teto da faixa só define a
-alçada: dentro dele o vendedor decide sozinho; abaixo do mínimo da faixa a bolsa paga (sem
-aprovação enquanto `saldo_apos ≥ 0`); abaixo de `preco_piso_bolsa` (custo × 1,25) só com o gestor.
-`acima_alcada` do cabeçalho = item abaixo do piso absoluto **ou** bolsa que não cobre.
+alçada, e qual teto vale depende da bolsa (`alcadaDoItem()` em regua.ts, decidido em
+`aplicarAlcada()` depois de conhecer o saldo):
+
+- **com bolsa** (`saldo_apos ≥ 0`, já contando este orçamento): o limite é o **máximo inteiro da
+  faixa** — a escala por quantidade não trava; o desconto é decisão do vendedor e sai da bolsa;
+- **sem bolsa** (saldo negativo ou indisponível): vale a escala por quantidade
+  (`escala_volume`: 50% / 75% / 100% do máximo);
+- abaixo do limite em vigor, ou abaixo de `preco_piso_bolsa` (custo × 1,25), só com o gestor.
+
+A linha gravada guarda o limite que valeu (`desc_max_pct`, `preco_minimo`) e `acima_alcada`
+por item; `acima_alcada` do cabeçalho = alguma linha abaixo do limite em vigor ou do piso.
+A tela aplica a mesma regra (`degrauVigente`/`situacaoLinha` em comum.tsx) a partir do
+`saldo_apos` da resposta da bolsa.
 
 A tela projeta o saldo "depois" com o orçamento em edição (`total`, `desconto`, `custo`,
 `sem_custo` — item sem custo é neutro), mostra o semáforo (verde = acima da linha dos 4%,

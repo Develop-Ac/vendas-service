@@ -477,6 +477,59 @@ export function pisoPorVolume(degraus: DegrauBolsa[], volumeMes: number) {
 /** Piso absoluto de um item pago pela bolsa: custo × 1,25. Abaixo disso, aprovação. */
 export const PISO_ITEM_PADRAO = 1.25;
 
+/* ---------------------------------------------------------------------------
+   Alçada de um item: até onde o vendedor decide sozinho.
+
+   Com BOLSA (saldo do mês, já com este orçamento, ≥ 0) o limite é o máximo
+   inteiro da faixa — a escala por quantidade não vale; o desconto sai da bolsa
+   e é decisão do vendedor. Sem bolsa (saldo negativo ou desconhecido) vale a
+   escala por quantidade (50% / 75% / 100% do máximo). Abaixo do limite em
+   vigor, ou abaixo do piso absoluto (custo × 1,25), só com o gestor.
+   --------------------------------------------------------------------------- */
+export interface EntradaAlcada {
+  preco: number;
+  /** mínimo da faixa para ESTA quantidade (escala por volume). */
+  minimo_qtd: number;
+  /** mínimo com o máximo inteiro da faixa (fração 1). */
+  minimo_cheio: number;
+  /** custo × piso do item (0 = sem custo). */
+  piso_bolsa: number;
+  /** saldo da bolsa depois deste orçamento; null = bolsa indisponível. */
+  saldo_apos: number | null;
+}
+
+export interface Alcada {
+  /** o saldo cobre: vale o máximo inteiro da faixa. */
+  bolsa_cobre: boolean;
+  /** limite em vigor para o item (mínimo cheio com bolsa; por quantidade sem). */
+  minimo_vigente: number;
+  /** abaixo do limite em vigor ou do piso absoluto → gestor. */
+  precisa_aprovacao: boolean;
+  /** abaixo do piso absoluto (custo × 1,25). */
+  abaixo_piso: boolean;
+  /** passou do limite por quantidade — com bolsa é ela que paga. */
+  usa_bolsa: boolean;
+}
+
+export function bolsaCobre(saldoApos: number | null | undefined): boolean {
+  return saldoApos != null && saldoApos >= -0.005;
+}
+
+export function alcadaDoItem(e: EntradaAlcada): Alcada {
+  const cobre = bolsaCobre(e.saldo_apos);
+  const minimo = cobre ? e.minimo_cheio : e.minimo_qtd;
+  const abaixoPiso = e.piso_bolsa > 0 && e.preco < e.piso_bolsa - 0.005;
+  const abaixoQtd = e.minimo_qtd > 0 && e.preco < e.minimo_qtd - 0.005;
+  const abaixoVigente = minimo > 0 && e.preco < minimo - 0.005;
+  return {
+    bolsa_cobre: cobre,
+    minimo_vigente: minimo,
+    precisa_aprovacao: abaixoPiso || abaixoVigente,
+    abaixo_piso: abaixoPiso,
+    usa_bolsa: cobre && abaixoQtd,
+  };
+}
+
 export interface BolsaEntrada {
   /** Venda líquida do mês comissional (já com o desconto tirado). */
   receita_mtd: number;

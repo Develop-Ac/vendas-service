@@ -1,4 +1,5 @@
 import {
+  alcadaDoItem,
   avaliarItem,
   calcularBolsa,
   parseDegrausBolsa,
@@ -141,6 +142,35 @@ describe('escala por volume', () => {
   it('nunca abaixo do custo mesmo com volume', () => {
     const a = avaliarItem({ custo: 100, preco_tabela: 102, subgrp_codigo: 1, descricao: 'X', quantidade: 50 });
     expect(a.preco_minimo).toBeGreaterThanOrEqual(100);
+  });
+});
+
+describe('alcadaDoItem', () => {
+  // faixa com máximo 15%: tabela 1000 → mínimo cheio 850; 1 unidade (50%) → 925; piso absoluto 812,50 (custo 650 × 1,25)
+  const base = { minimo_qtd: 925, minimo_cheio: 850, piso_bolsa: 812.5 };
+  it('com bolsa vale o máximo inteiro da faixa; a escala por quantidade não trava', () => {
+    const a = alcadaDoItem({ ...base, preco: 860, saldo_apos: 120 });
+    expect(a.bolsa_cobre).toBe(true);
+    expect(a.minimo_vigente).toBe(850);
+    expect(a.precisa_aprovacao).toBe(false);
+    expect(a.usa_bolsa).toBe(true); // passou do limite por quantidade: a bolsa paga
+  });
+  it('com bolsa, abaixo do máximo da faixa é gestor', () => {
+    expect(alcadaDoItem({ ...base, preco: 840, saldo_apos: 120 }).precisa_aprovacao).toBe(true);
+  });
+  it('sem bolsa (negativa ou desconhecida) vale a escala por quantidade', () => {
+    const neg = alcadaDoItem({ ...base, preco: 860, saldo_apos: -10 });
+    expect(neg.bolsa_cobre).toBe(false);
+    expect(neg.minimo_vigente).toBe(925);
+    expect(neg.precisa_aprovacao).toBe(true);
+    expect(neg.usa_bolsa).toBe(false);
+    expect(alcadaDoItem({ ...base, preco: 930, saldo_apos: -10 }).precisa_aprovacao).toBe(false);
+    expect(alcadaDoItem({ ...base, preco: 860, saldo_apos: null }).precisa_aprovacao).toBe(true);
+  });
+  it('abaixo do piso absoluto é gestor mesmo com bolsa sobrando', () => {
+    const a = alcadaDoItem({ ...base, preco: 800, saldo_apos: 9999 });
+    expect(a.abaixo_piso).toBe(true);
+    expect(a.precisa_aprovacao).toBe(true);
   });
 });
 

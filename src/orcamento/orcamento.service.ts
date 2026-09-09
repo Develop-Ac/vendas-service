@@ -8,6 +8,7 @@ import { celulasDoOrcamento, comissaoComOrcamento } from './comissao';
 import { OrcamentoPrismaRepository, GiroItem } from './orcamento.prisma.repository';
 import {
   Avaliacao,
+  alcadaDoItem,
   avaliarItem,
   calcularBolsa,
   BOLSA_PISO_PADRAO,
@@ -681,7 +682,9 @@ export class OrcamentoService {
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
     const erros: string[] = [];
     const linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[] = [];
-    let subtotal = 0, total = 0, usaBolsa = false, abaixoPiso = false, custoOrc = 0, semCusto = 0;
+    // Insumos da alçada de cada linha; a decisão fica para depois de conhecer a bolsa (aplicarAlcada).
+    const alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> = [];
+    let subtotal = 0, total = 0, custoOrc = 0, semCusto = 0;
 
     itens.forEach((i, idx) => {
       const p = porCodigo.get(i.pro_codigo);
@@ -701,16 +704,21 @@ export class OrcamentoService {
         return;
       }
       const descPct = tabela > 0 ? Math.max(0, Math.round((1 - preco / tabela) * 10000) / 10000) : 0;
-      // Desconto máximo e mínimo valem para ESTA quantidade (escala por volume).
-      const degrau = [...p.avaliacao.escala_volume].reverse().find((d) => qtd >= d.qtd_min) ?? p.avaliacao.escala_volume[0];
+      // Dois limites por linha: o desta quantidade (escala por volume) e o máximo
+      // inteiro da faixa. Qual vale depende da bolsa — decidido em aplicarAlcada().
+      const escala = p.avaliacao.escala_volume;
+      const degrau = [...escala].reverse().find((d) => qtd >= d.qtd_min) ?? escala[0];
+      const cheio = escala[escala.length - 1];
       const minimo = degrau?.preco_minimo ?? p.avaliacao.preco_minimo;
       const descMaxQtd = degrau?.desc_max_efetivo_pct ?? p.avaliacao.desc_max_efetivo_pct;
-      // Abaixo do mínimo da faixa a BOLSA paga (sem aprovação enquanto cobrir);
-      // abaixo do piso absoluto (custo × 1,25) só com o gestor.
-      const itemAcima = minimo > 0 && preco < minimo - 0.005;
-      const pisoBolsa = p.avaliacao.preco_piso_bolsa ?? 0;
-      usaBolsa = usaBolsa || itemAcima;
-      abaixoPiso = abaixoPiso || (pisoBolsa > 0 && preco < pisoBolsa - 0.005);
+      alcadas.push({
+        preco,
+        minimo_qtd: minimo,
+        minimo_cheio: cheio?.preco_minimo ?? p.avaliacao.preco_minimo,
+        piso_bolsa: p.avaliacao.preco_piso_bolsa ?? 0,
+        desc_max_qtd: descMaxQtd,
+        desc_max_cheio: cheio?.desc_max_efetivo_pct ?? p.avaliacao.desc_max_efetivo_pct,
+      });
       const linhaTotal = round2(preco * qtd);
       if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
       else semCusto += linhaTotal;
@@ -736,7 +744,7 @@ export class OrcamentoService {
         markup_regua: p.avaliacao.markup_regua,
         desc_max_pct: descMaxQtd,
         preco_minimo: minimo,
-        acima_alcada: itemAcima,
+        acima_alcada: false, // fechado em aplicarAlcada()
         estoque_disponivel: p.estoque_disponivel,
         substituto_de: i.substituto_de ?? null,
         observacao: i.observacao ?? null,
@@ -753,8 +761,7 @@ export class OrcamentoService {
       total,
       desconto_total: desconto,
       desc_pct: subtotal > 0 ? Math.round((desconto / subtotal) * 10000) / 10000 : 0,
-      usa_bolsa: usaBolsa,
-      abaixo_piso: abaixoPiso,
+      alcadas,
       custo: round2(custoOrc),
       sem_custo: round2(semCusto),
       produtos,
@@ -797,11 +804,28 @@ export class OrcamentoService {
     }
   }
 
-  /** Precisa do gestor: item abaixo do piso absoluto, ou bolsa que não cobre o que passou do teto da faixa. */
-  private precisaAprovacao(m: { usa_bolsa: boolean; abaixo_piso: boolean }, saldoApos: number | null) {
-    if (m.abaixo_piso) return true;
-    if (!m.usa_bolsa) return false;
-    return saldoApos == null || saldoApos < -0.005;
+  /**
+   * Fecha a alçada de cada linha depois de conhecer a bolsa: com saldo (já com
+   * este orçamento) ≥ 0 vale o máximo inteiro da faixa; sem saldo vale a escala
+   * por quantidade. Grava na linha o limite que valeu (desc_max_pct / preco_minimo)
+   * e devolve se o orçamento precisa do gestor (alguma linha abaixo do limite em
+   * vigor ou do piso absoluto).
+   */
+  private aplicarAlcada(
+    m: { linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[]; alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> },
+    saldoApos: number | null,
+  ) {
+    let precisa = false;
+    m.linhas.forEach((l, i) => {
+      const e = m.alcadas[i];
+      if (!e) return;
+      const a = alcadaDoItem({ preco: e.preco, minimo_qtd: e.minimo_qtd, minimo_cheio: e.minimo_cheio, piso_bolsa: e.piso_bolsa, saldo_apos: saldoApos });
+      l.acima_alcada = a.precisa_aprovacao;
+      l.preco_minimo = a.minimo_vigente;
+      l.desc_max_pct = a.bolsa_cobre ? e.desc_max_cheio : e.desc_max_qtd;
+      precisa = precisa || a.precisa_aprovacao;
+    });
+    return precisa;
   }
 
   async criar(dto: SalvarOrcamentoDto) {
@@ -823,7 +847,7 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: this.precisaAprovacao(m, bolsa.saldo_apos),
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         usuario_id: dto.usuario_id ?? null,
@@ -858,7 +882,7 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: this.precisaAprovacao(m, bolsa.saldo_apos),
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         aprovado_por: null,
