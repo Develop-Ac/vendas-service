@@ -2,7 +2,7 @@ import { gerarPdfOrcamento, PdfOrcamento } from './orcamento.pdf';
 import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta } from './orcamento.erp.repository';
+import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta, ordenarBuscaClientes } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional } from './orcamento.bi.repository';
 import { celulasDoOrcamento, comissaoComOrcamento } from './comissao';
 import { OrcamentoPrismaRepository, GiroItem } from './orcamento.prisma.repository';
@@ -105,7 +105,13 @@ export interface ClienteOrcamento {
   limite_credito: number;
   crediario_bloqueado: boolean;
   data_ult_compra: string | null;
+  /** Venda líquida dos últimos 12 meses (BI) — só na busca; ausente se o BI não respondeu. */
+  compras_12m?: number;
 }
+
+/** Quantos candidatos a busca de cliente pede ao ERP antes de ordenar por canal/compras e cortar. */
+const BUSCA_CLIENTES_CANDIDATOS = 60;
+const BUSCA_CLIENTES_LIMITE = 20;
 
 const CONCEITO: Record<number, string> = { 1: 'BOM', 2: 'REGULAR', 3: 'RUIM' };
 const STATUS_EDITAVEL = new Set(['RASCUNHO', 'ENVIADO', 'APROVACAO']);
@@ -184,9 +190,25 @@ export class OrcamentoService {
     };
   }
 
+  /**
+   * Busca de cliente ordenada: canal (2/5) → compras 12 m → nome. O ERP devolve
+   * até 60 candidatos; só esses vão ao BI (uma consulta), e a lista é cortada em
+   * 20. BI fora do ar não derruba a busca — fica sem o critério de compras.
+   */
   async buscarClientes(q: string, todos = false) {
-    const r = await this.erp.buscarClientes(q, todos);
-    return r.map((c) => this.mapCliente(c));
+    const r = await this.erp.buscarClientes(q, todos, BUSCA_CLIENTES_CANDIDATOS);
+    let compras = new Map<number, number>();
+    try {
+      compras = await this.bi.comprasClientes12m(r.clientes.map((c) => c.CLI_CODIGO));
+    } catch (e) {
+      this.logger.warn(`BI indisponível para as compras 12m da busca de cliente: ${(e as Error).message}`);
+    }
+    const o = ordenarBuscaClientes(r.clientes, compras, BUSCA_CLIENTES_LIMITE, r.truncado);
+    return {
+      clientes: o.clientes.map((c) => ({ ...this.mapCliente(c), compras_12m: compras.get(c.CLI_CODIGO) ?? 0 })),
+      truncado: o.truncado,
+      limite: BUSCA_CLIENTES_LIMITE,
+    };
   }
 
   /** Cabeçalho do cliente: cadastro ao vivo + crédito em aberto e histórico do BI. */
@@ -661,14 +683,30 @@ export class OrcamentoService {
 
   /* ----------------------------------------------------------- orçamento */
 
-  listar(f: { rep_codigo?: number; cli_codigo?: number; status?: string; page?: number; pageSize?: number }) {
-    return this.db.listar(f);
+  async listar(f: { rep_codigo?: number; cli_codigo?: number; status?: string; page?: number; pageSize?: number }) {
+    const r = await this.db.listar(f);
+    return { ...r, itens: await this.comRepNome(r.itens) };
   }
 
   async obter(id: string) {
     const o = await this.db.obter(id);
     if (!o) throw new NotFoundException('Orçamento não encontrado.');
-    return o;
+    return (await this.comRepNome([o]))[0];
+  }
+
+  /**
+   * Orçamento gravado sem o nome do vendedor (a tela só manda o código) sai com
+   * o nome resolvido no ERP na leitura; o registro não é alterado.
+   */
+  private async comRepNome<T extends { rep_codigo: number | null; rep_nome: string | null }>(rows: T[]): Promise<T[]> {
+    if (!rows.some((o) => !o.rep_nome && o.rep_codigo != null)) return rows;
+    let reps = new Map<number, string>();
+    try {
+      reps = await this.erp.representantes();
+    } catch (e) {
+      this.logger.warn(`nome dos representantes indisponível: ${(e as Error).message}`);
+    }
+    return rows.map((o) => (!o.rep_nome && o.rep_codigo != null ? { ...o, rep_nome: reps.get(o.rep_codigo) ?? null } : o));
   }
 
   /**
@@ -839,7 +877,7 @@ export class OrcamentoService {
         cli_nome: cliente.CLI_NOME,
         tabela_preco: cliente.TABELA_PRECO,
         rep_codigo: dto.rep_codigo,
-        rep_nome: dto.rep_nome ?? null,
+        rep_nome: dto.rep_nome || (await this.erp.nomeRepresentante(dto.rep_codigo)),
         status: 'RASCUNHO',
         validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
@@ -874,7 +912,8 @@ export class OrcamentoService {
         cli_nome: cliente.CLI_NOME,
         tabela_preco: cliente.TABELA_PRECO,
         rep_codigo: dto.rep_codigo,
-        rep_nome: dto.rep_nome ?? atual.rep_nome,
+        // Vendedor trocado na edição: o nome gravado antes não serve mais.
+        rep_nome: dto.rep_nome || (atual.rep_codigo === dto.rep_codigo && atual.rep_nome) || (await this.erp.nomeRepresentante(dto.rep_codigo)),
         status: 'RASCUNHO',
         validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,

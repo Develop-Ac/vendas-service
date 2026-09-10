@@ -62,10 +62,27 @@ export class OrcamentoController {
   /* ----------------------------------------------------------- clientes */
 
   @Get('clientes')
-  @ApiOperation({ summary: 'Busca de cliente (código, CNPJ/CPF ou nome) na base inteira; o preço segue a tabela de cada um.' })
+  @ApiOperation({
+    summary: 'Busca de cliente (código, CNPJ/CPF ou nome) — forma antiga: só o array. Prefira /clientes/busca.',
+    description: 'Mesma ordem de /clientes/busca (canal 2/5 → compras 12 m → nome), até 20; sem a flag de corte.',
+  })
   @ApiQuery({ name: 'q', required: true })
   @ApiQuery({ name: 'todos', required: false, description: '0 = só atacado (tabela 2/5). Padrão: base inteira.' })
-  clientes(@Query('q') q: string, @Query('todos') todos?: string) {
+  async clientes(@Query('q') q: string, @Query('todos') todos?: string) {
+    return (await this.service.buscarClientes(q ?? '', !(todos === '0' || todos === 'false'))).clientes;
+  }
+
+  @Get('clientes/busca')
+  @ApiOperation({
+    summary: 'Busca de cliente com a flag de corte: { clientes, truncado, limite }.',
+    description:
+      'Ordem: clientes do atacado (tabela 2/5) primeiro, depois venda líquida dos últimos 12 meses (BI), depois nome. ' +
+      'O ERP devolve até 60 candidatos (com `todos`, o atacado é buscado à parte e entra inteiro); a lista é cortada em `limite` (20). ' +
+      '`truncado` = ficou gente de fora — a tela pede para refinar. `compras_12m` acompanha cada cliente.',
+  })
+  @ApiQuery({ name: 'q', required: true })
+  @ApiQuery({ name: 'todos', required: false, description: '0 = só atacado (tabela 2/5). Padrão: base inteira.' })
+  clientesBusca(@Query('q') q: string, @Query('todos') todos?: string) {
     return this.service.buscarClientes(q ?? '', !(todos === '0' || todos === 'false'));
   }
 

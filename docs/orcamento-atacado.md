@@ -117,6 +117,24 @@ no CELTA.FDB + `IMAGENS` no **CELTAAUXILIAR.FDB** (segunda conexão, `FB_DATABAS
 Pré-requisito no banco auxiliar: `GRANT SELECT ON IMAGENS TO USER_CONSULTA;`
 (erp-firebird-api/docs/grant-celtaauxiliar.sql).
 
+## Busca de cliente
+
+`GET /orcamento/clientes/busca?q=&todos=` devolve `{ clientes, truncado, limite }`. `todos=0` restringe ao
+atacado (tabela 2/5); ausente = base inteira. A ordem é sempre **canal primeiro** (2/5), depois **venda
+líquida dos últimos 12 meses** (BI, `vw_analise_vendas`, devolução negativa — vai em `compras_12m`),
+depois o nome. O ERP corta em ordem alfabética, então o serviço pede até 60 candidatos (com `todos`,
+o atacado é buscado à parte e entra inteiro), enriquece só esses no BI (uma consulta) e corta em
+`limite` (20). `truncado` = ficou gente de fora (o ERP passou de 60 ou a ordenação passou de 20) —
+a tela pede para refinar. BI fora do ar não derruba a busca: fica sem o critério de compras.
+`GET /orcamento/clientes` é a mesma busca devolvendo só o array (compatibilidade com a tela publicada).
+
+## Vendedor do orçamento
+
+A tela manda só `rep_codigo`. Ao criar/regravar, `rep_nome` vazio é resolvido em `REPRESENTANTES`
+(cache de 10 min em memória; ao trocar o vendedor na edição o nome é resolvido de novo). Orçamento
+antigo gravado sem nome sai de `GET /orcamento` e `GET /orcamento/:id` com o nome resolvido na leitura,
+sem alterar o registro.
+
 ## Validade
 
 Sempre **hoje + 7 dias** (`ORCAMENTO_VALIDADE_DIAS`). Com item em promoção, encolhe para a
@@ -142,7 +160,8 @@ como hoje e registra o número em "Fechado".
 |---|---|---|
 | GET | `/regua` | régua vigente, cortes de faixa, parâmetros |
 | GET/PUT | `/regua/excecoes[/:pro_codigo]` | itens fora da régua |
-| GET | `/clientes?q=&todos=` | busca (código, CNPJ/CPF, nome); padrão só atacado |
+| GET | `/clientes/busca?q=&todos=` | busca (código, CNPJ/CPF, nome) → `{ clientes, truncado, limite }` (ver "Busca de cliente") |
+| GET | `/clientes?q=&todos=` | a mesma busca na forma antiga (só o array) — mantida para a tela publicada |
 | GET | `/clientes/:cli` | cabeçalho: cadastro ao vivo + crédito + histórico |
 | GET | `/vendedor/:rep/bolsa?total=&desconto=&custo=&sem_custo=&m1a..m1d=&m23=` | bolsa do mês (+ projeção) e comissão estimada do mês / com o orçamento |
 | GET | `/produtos?q=&tabela=&cli=` | busca já avaliada na régua |

@@ -329,6 +329,28 @@ export class OrcamentoBiRepository {
     };
   }
 
+  /**
+   * Venda líquida dos últimos 12 meses por cliente (lista de códigos, uma ida ao
+   * BI) — o critério de ordem da busca de cliente. Devolução entra negativa.
+   */
+  async comprasClientes12m(codigos: number[]): Promise<Map<number, number>> {
+    const lista = [...new Set(codigos.filter((c) => Number.isFinite(c)))].slice(0, 500);
+    const saida = new Map<number, number>();
+    if (!lista.length) return saida;
+    const rows = await this.mssql.query<{ cli_codigo: number; total: number }>(
+      `
+      SELECT v.CLI_CODIGO AS cli_codigo, COALESCE(SUM(v.liquido_produto), 0) AS total
+      FROM dbo.vw_analise_vendas v
+      WHERE v.CLI_CODIGO IN (${lista.join(',')})
+        AND v.DT_CANCELAMENTO IS NULL
+        AND v.dt_emissao_convertida >= DATEADD(MONTH, -12, CAST(GETDATE() AS date))
+      GROUP BY v.CLI_CODIGO
+      `,
+    );
+    for (const r of rows) saida.set(Number(r.cli_codigo), Math.round(Number(r.total ?? 0) * 100) / 100);
+    return saida;
+  }
+
   /** Último preço unitário pago por este cliente em cada produto (argumento de negociação). */
   async ultimosPrecosCliente(cli: number, codigos: number[]): Promise<UltimoPrecoRow[]> {
     const lista = [...new Set(codigos.filter((c) => Number.isFinite(c)))].slice(0, 500);
