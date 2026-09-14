@@ -52,6 +52,26 @@ export class VendaCasadaItemDto {
   @IsString()
   transpostadora?: string;
 
+  @ApiProperty({ description: 'Custo da peça', required: false, example: 120.5 })
+  @IsOptional()
+  @IsNumber()
+  custo?: number;
+
+  @ApiProperty({ description: 'Margem', required: false, example: 35 })
+  @IsOptional()
+  @IsNumber()
+  margem?: number;
+
+  @ApiProperty({ description: 'Frete', required: false, example: 25 })
+  @IsOptional()
+  @IsNumber()
+  frete?: number;
+
+  @ApiProperty({ description: 'Imposto', required: false, example: 18 })
+  @IsOptional()
+  @IsNumber()
+  imposto?: number;
+
   @ApiProperty({ description: 'Se o item cotado foi autorizado', required: false })
   @IsOptional()
   @IsBoolean()

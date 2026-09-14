@@ -2035,6 +2035,10 @@ model ven_encomenda_pecas_itens_cotados {
   encomenda_pecas_id  Int?
   transpostadora      String?
   autorizado          Boolean?
+  custo               Float?
+  margem              Float?
+  frete               Float?
+  imposto             Float?
   ven_encomenda_pecas ven_encomenda_pecas? @relation(fields: [encomenda_pecas_id], references: [id], onDelete: Cascade, map: "fk_ven_enc_pecas_itens_cotados_encomenda")
 
   @@index([encomenda_pecas_id], map: "idx_ven_enc_pecas_itens_cotados_encomenda_id")

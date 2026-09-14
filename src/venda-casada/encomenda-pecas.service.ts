@@ -260,6 +260,17 @@ export class EncomendaPecasService {
     return itens;
   }
 
+  /** Campo numérico opcional do item cotado: vazio vira null; texto não numérico é 400. */
+  private numeroOpcional(valor: unknown, campo: string, indice: number): number | null {
+    const n = toNumberOrNull(valor);
+    if (n === null && valor !== null && valor !== undefined && valor !== '') {
+      throw new BadRequestException(
+        `Peça cotada ${indice + 1}: "${campo}" deve ser um número.`,
+      );
+    }
+    return n;
+  }
+
   /** `pecas_cotadas` é opcional na criação: ausente ou vazia não cria nada. */
   private normalizarPecasCotadas(pecasCotadas: unknown): CreateVendaCasadaItemInput[] {
     return achatarListaJson(pecasCotadas, 'pecas_cotadas').map((entrada, i) => {
@@ -282,6 +293,10 @@ export class EncomendaPecasService {
         fornecedor: toStringOrNull(item.fornecedor),
         marca: toStringOrNull(item.marca),
         transpostadora: toStringOrNull(item.transpostadora),
+        custo: this.numeroOpcional(item.custo, 'custo', i),
+        margem: this.numeroOpcional(item.margem, 'margem', i),
+        frete: this.numeroOpcional(item.frete, 'frete', i),
+        imposto: this.numeroOpcional(item.imposto, 'imposto', i),
         autorizado: toBooleanOrNull(item.autorizado),
       };
     });
@@ -301,13 +316,17 @@ export class EncomendaPecasService {
 
     const lista = Array.isArray(dto.itens) ? dto.itens : [dto.itens];
 
-    const itens = lista.map((item) => ({
+    const itens = lista.map((item, i) => ({
       nome: item.nome,
       valor: Number(item.valor),
       prazo: item.prazo ?? null,
       fornecedor: item.fornecedor ?? null,
       marca: item.marca ?? null,
       transpostadora: item.transpostadora ?? null,
+      custo: this.numeroOpcional(item.custo, 'custo', i),
+      margem: this.numeroOpcional(item.margem, 'margem', i),
+      frete: this.numeroOpcional(item.frete, 'frete', i),
+      imposto: this.numeroOpcional(item.imposto, 'imposto', i),
       autorizado: item.autorizado ?? null,
     }));
 
