@@ -29,6 +29,7 @@ import { CreateVendaCasadaDto } from './dto/create-encomenda-pecas.dto';
 import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { UpdateItemCotadoDto } from './dto/update-item-cotado.dto';
+import { UpdateNfeDto } from './dto/update-nfe.dto';
 
 @ApiTags('Encomenda de Peças')
 @Controller('encomenda-pecas')
@@ -222,6 +223,25 @@ export class EncomendaPecasController {
     @Body() dto: UpdateStatusDto,
   ) {
     return this.service.updateStatus(id, dto);
+  }
+
+  @Put('nfe/:id')
+  @ApiOperation({
+    summary: 'Salva a NF-e de uma encomenda de peça',
+    description:
+      'Grava `nfe` na coluna de mesmo nome em ven_encomenda_pecas e devolve a encomenda ' +
+      'atualizada. Enviar vazio ou null limpa o valor.',
+  })
+  @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
+  @ApiBody({ type: UpdateNfeDto })
+  @ApiResponse({ status: 200, description: 'NF-e salva com sucesso' })
+  @ApiResponse({ status: 400, description: 'Campo "nfe" ausente ou inválido' })
+  @ApiResponse({ status: 404, description: 'Encomenda de peça não encontrada' })
+  updateNfe(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateNfeDto,
+  ) {
+    return this.service.updateNfe(id, dto);
   }
 
   @Patch('item_cotado/:id')

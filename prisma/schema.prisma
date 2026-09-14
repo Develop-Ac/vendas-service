@@ -2010,6 +2010,7 @@ model ven_encomenda_pecas {
   created_at                             DateTime?                                @default(now()) @db.Date
   motivoCancelamento                     String?
   motivoDenaoCotar                       String?
+  nfe                                    String?
   ven_encomenda_pecas_anexos             ven_encomenda_pecas_anexos[]
   ven_encomenda_pecas_itens_cotados      ven_encomenda_pecas_itens_cotados[]
   ven_encomenda_pecas_itens_encomendados ven_encomenda_pecas_itens_encomendados[]

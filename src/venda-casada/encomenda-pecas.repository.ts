@@ -139,6 +139,15 @@ export class EncomendaPecasRepository {
     return toVendaCasadaComItens(encomenda);
   }
 
+  async updateNfe(id: number, nfe: string | null): Promise<VendaCasadaComItens> {
+    const encomenda = await this.prisma.ven_encomenda_pecas.update({
+      where: { id },
+      data: { nfe },
+      include: INCLUDE_ITENS,
+    });
+    return toVendaCasadaComItens(encomenda);
+  }
+
   async findItemCotadoById(
     id: number,
   ): Promise<ven_encomenda_pecas_itens_cotados | null> {

@@ -16,6 +16,7 @@ import {
 import { AddPecasCotadasDto, VendaCasadaItemDto } from './dto/add-pecas-cotadas.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { UpdateItemCotadoDto } from './dto/update-item-cotado.dto';
+import { UpdateNfeDto } from './dto/update-nfe.dto';
 import { UploadedFileData } from '../common/types/uploaded-file';
 import {
   ven_encomenda_pecas_anexos,
@@ -183,6 +184,7 @@ export class EncomendaPecasService {
         status: 'Aguardando cotação',
         motivoCancelamento: null,
         motivoDenaoCotar: null,
+        nfe: null,
       },
       itens,
       itensCotados,
@@ -362,6 +364,24 @@ export class EncomendaPecasService {
       motivoCancelamento: cancelado ? motivo : null,
       motivoDenaoCotar,
     });
+  }
+
+  /** Grava a NF-e da encomenda; vazio ou null limpa a coluna. */
+  async updateNfe(id: number, dto: UpdateNfeDto): Promise<VendaCasadaComUrls> {
+    if (!dto || dto.nfe === undefined) {
+      throw new BadRequestException('Informe o campo "nfe".');
+    }
+    if (dto.nfe !== null && typeof dto.nfe !== 'string') {
+      throw new BadRequestException('"nfe" deve ser uma string.');
+    }
+
+    const venda = await this.repository.findById(id);
+    if (!venda) {
+      throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
+    }
+
+    await this.repository.updateNfe(id, toStringOrNull(dto.nfe?.trim()));
+    return this.findById(id);
   }
 
   async updateItemCotadoAutorizado(
