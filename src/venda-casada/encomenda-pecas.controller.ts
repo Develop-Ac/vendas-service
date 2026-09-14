@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Param,
   Query,
   ParseIntPipe,
@@ -198,11 +199,19 @@ export class EncomendaPecasController {
     return this.service.addPecasCotadas(id, dto);
   }
 
-  @Patch('status/:id')
-  @ApiOperation({ summary: 'Atualiza o status de uma encomenda de peça' })
+  @Put('status/:id')
+  @ApiOperation({
+    summary: 'Atualiza o status de uma encomenda de peça',
+    description:
+      'Recebe `status` e `motivo`. Quando o status é "Cancelado", `motivo` é obrigatório e é ' +
+      'gravado em `motivoCancelamento` (retornado no GET e GET /:id). Em qualquer outro status ' +
+      'o `motivoCancelamento` é limpo. `motivoDenaoCotar` é opcional e grava na coluna de mesmo ' +
+      'nome (se não vier, mantém o valor atual).',
+  })
   @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
   @ApiBody({ type: UpdateStatusDto })
   @ApiResponse({ status: 200, description: 'Status atualizado com sucesso' })
+  @ApiResponse({ status: 400, description: 'Status vazio ou cancelamento sem motivo' })
   @ApiResponse({ status: 404, description: 'Encomenda de peça não encontrada' })
   updateStatus(
     @Param('id', ParseIntPipe) id: number,

@@ -91,7 +91,8 @@ export class B2bPrismaRepository {
         userId: pedido.userId,
         pedidoId: pedido.pedidoId,
         comprador: pedido.comprador,
-        status: pedido.status,
+        // Sem status no payload, fica o default do banco ('PENDING').
+        ...(pedido.status ? { status: pedido.status } : {}),
         ...(pedido.createdAt ? { createdAt: pedido.createdAt } : {}),
         ven_orcamento_b2b_itens: {
           create: pedido.itens.map((item) => ({

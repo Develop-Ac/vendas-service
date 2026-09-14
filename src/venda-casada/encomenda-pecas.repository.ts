@@ -122,10 +122,18 @@ export class EncomendaPecasRepository {
     });
   }
 
-  async updateStatus(id: number, status: string): Promise<VendaCasadaComItens> {
+  /** `motivoDenaoCotar` undefined não altera a coluna (o Prisma ignora campos undefined). */
+  async updateStatus(
+    id: number,
+    data: {
+      status: string;
+      motivoCancelamento: string | null;
+      motivoDenaoCotar?: string | null;
+    },
+  ): Promise<VendaCasadaComItens> {
     const encomenda = await this.prisma.ven_encomenda_pecas.update({
       where: { id },
-      data: { status },
+      data,
       include: INCLUDE_ITENS,
     });
     return toVendaCasadaComItens(encomenda);

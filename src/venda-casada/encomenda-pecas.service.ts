@@ -30,6 +30,9 @@ import {
 /** Sentinela usado quando a peça não tem código de produto no ERP. */
 const PRO_CODIGO_SEM_ERP = 99999;
 
+/** Status que exige `motivo` (gravado em motivoCancelamento). */
+const STATUS_CANCELADO = 'Cancelado';
+
 /** Em multipart os valores chegam como string; nos GETs/POST JSON já vêm tipados. */
 function toNumberOrNull(valor: unknown): number | null {
   if (valor === null || valor === undefined || valor === '') return null;
@@ -178,6 +181,8 @@ export class EncomendaPecasService {
         numero: dto.numero ?? null,
         imagem: null,
         status: 'Aguardando cotação',
+        motivoCancelamento: null,
+        motivoDenaoCotar: null,
       },
       itens,
       itensCotados,
@@ -314,7 +319,30 @@ export class EncomendaPecasService {
     if (!venda) {
       throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
     }
-    return this.repository.updateStatus(id, dto.status);
+
+    const status = toStringOrNull(dto.status?.trim());
+    if (status === null) {
+      throw new BadRequestException('Informe o "status".');
+    }
+
+    // O motivo só faz sentido no cancelamento; em qualquer outro status ele é limpo.
+    const cancelado = status.toLowerCase() === STATUS_CANCELADO.toLowerCase();
+    const motivo = toStringOrNull(dto.motivo?.trim());
+    if (cancelado && motivo === null) {
+      throw new BadRequestException('Informe o "motivo" do cancelamento.');
+    }
+
+    // Opcional: ausente mantém o que já está gravado; string vazia limpa.
+    const motivoDenaoCotar =
+      dto.motivoDenaoCotar === undefined
+        ? undefined
+        : toStringOrNull(String(dto.motivoDenaoCotar ?? '').trim());
+
+    return this.repository.updateStatus(id, {
+      status,
+      motivoCancelamento: cancelado ? motivo : null,
+      motivoDenaoCotar,
+    });
   }
 
   async updateItemCotadoAutorizado(
