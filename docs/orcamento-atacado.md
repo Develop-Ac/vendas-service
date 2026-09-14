@@ -164,6 +164,7 @@ como hoje e registra o número em "Fechado".
 | GET | `/clientes?q=&todos=` | a mesma busca na forma antiga (só o array) — mantida para a tela publicada |
 | GET | `/clientes/:cli` | cabeçalho: cadastro ao vivo + crédito + histórico |
 | GET | `/vendedor/:rep/bolsa?total=&desconto=&custo=&sem_custo=&m1a..m1d=&m23=` | bolsa do mês (+ projeção) e comissão estimada do mês / com o orçamento |
+| GET | `/vendedor/:rep/bolsa/cliente/:cli?meses=6` | bolsa que o cliente gerou para o vendedor nos meses comissionais fechados (1 a 12, mais recente primeiro) + total; **piso de hoje em todos os meses** — compara o cliente, não reproduz o fechamento |
 | GET | `/produtos?q=&tabela=&cli=` | busca já avaliada na régua |
 | GET | `/produtos/:codigo[/equivalentes|/relacionados]` | detalhe, equivalentes, vendem juntos |
 | POST | `/relacionados/recalcular` | reapura os pares no BI |

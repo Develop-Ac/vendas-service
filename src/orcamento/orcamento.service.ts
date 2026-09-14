@@ -3,7 +3,7 @@ import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta, ordenarBuscaClientes } from './orcamento.erp.repository';
-import { OrcamentoBiRepository, mesComissional } from './orcamento.bi.repository';
+import { OrcamentoBiRepository, mesComissional, mesesAnteriores } from './orcamento.bi.repository';
 import { celulasDoOrcamento, comissaoComOrcamento } from './comissao';
 import { OrcamentoPrismaRepository, GiroItem } from './orcamento.prisma.repository';
 import {
@@ -256,19 +256,13 @@ export class OrcamentoService {
   ) {
     const p = this.parametros();
     const periodo = mesComissional();
-    const [v, clientes, vol, dre, celulas, cfgComissao] = await Promise.all([
+    const [v, clientes, { piso, linha, pisoDre, degrau, vol }, celulas, cfgComissao] = await Promise.all([
       this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
         return [];
       }),
-      p.bolsa_modo === 'degrau' ? this.bi.volumeCanal3m(periodo.ano, periodo.mes) : Promise.resolve(null),
-      p.bolsa_modo === 'dre'
-        ? this.bi.dreCanalMensal(p.bolsa_dre_meses).catch((e) => {
-            this.logger.warn(`DRE do canal indisponível — piso cai para o fixo: ${(e as Error).message}`);
-            return null;
-          })
-        : Promise.resolve(null),
+      this.pisoVigente(periodo),
       this.bi.celulasComissao(rep, periodo.ano, periodo.mes).catch((e) => {
         this.logger.warn(`Células da comissão indisponíveis (rep ${rep}): ${(e as Error).message}`);
         return null;
@@ -281,12 +275,6 @@ export class OrcamentoService {
     // Comissão do mês como está e como fica com o orçamento (mesma regra do fechamento;
     // sem abatimentos manuais e média de férias — é estimativa para decidir na hora).
     const comissao = celulas && cfgComissao ? comissaoComOrcamento(celulas, celulasDoOrcamento(orc ?? {}), cfgComissao) : null;
-    // Piso: pela DRE (custo + fixas + variáveis reais → 4%), pelo degrau de volume, ou fixo.
-    // Nos modos dre/degrau a linha dos 4% é o próprio piso: saldo retido = lucro a mais.
-    const pisoDre = dre ? pisoPorDre(dre, p.bolsa_dre_meses, p.meta_resultado) : null;
-    const degrau = vol ? pisoPorVolume(p.bolsa_degraus, vol.media_mes) : null;
-    const piso = pisoDre ? pisoDre.piso : degrau ? degrau.piso : p.bolsa_piso;
-    const linha = pisoDre || degrau || !(p.linha_4pct > 0) ? piso : p.linha_4pct;
     const bolsa = calcularBolsa({
       receita_mtd: v.venda_liquida,
       custo_mtd: v.custo,
@@ -347,6 +335,65 @@ export class OrcamentoService {
             falta: degrau.falta,
           }
         : { modo: 'fixo' as const, piso, linha },
+    };
+  }
+
+  /**
+   * Piso da bolsa em vigor: pela DRE (custo + fixas + variáveis reais → 4%), pelo
+   * degrau de volume do canal, ou fixo. Nos modos dre/degrau a linha dos 4% é o
+   * próprio piso: saldo retido = lucro a mais.
+   */
+  private async pisoVigente(periodo: { ano: number; mes: number }) {
+    const p = this.parametros();
+    const [vol, dre] = await Promise.all([
+      p.bolsa_modo === 'degrau' ? this.bi.volumeCanal3m(periodo.ano, periodo.mes) : Promise.resolve(null),
+      p.bolsa_modo === 'dre'
+        ? this.bi.dreCanalMensal(p.bolsa_dre_meses).catch((e) => {
+            this.logger.warn(`DRE do canal indisponível — piso cai para o fixo: ${(e as Error).message}`);
+            return null;
+          })
+        : Promise.resolve(null),
+    ]);
+    const pisoDre = dre ? pisoPorDre(dre, p.bolsa_dre_meses, p.meta_resultado) : null;
+    const degrau = vol ? pisoPorVolume(p.bolsa_degraus, vol.media_mes) : null;
+    const piso = pisoDre ? pisoDre.piso : degrau ? degrau.piso : p.bolsa_piso;
+    const linha = pisoDre || degrau || !(p.linha_4pct > 0) ? piso : p.linha_4pct;
+    return { piso, linha, pisoDre, degrau, vol };
+  }
+
+  /**
+   * Bolsa que UM cliente gerou para o vendedor nos `n` meses comissionais fechados
+   * antes do atual (mais recente primeiro), com o total. Mês sem venda sai zerado,
+   * para a relação ter sempre `n` linhas.
+   *
+   * ponytail: todos os meses usam o piso de HOJE — o piso de cada mês passado
+   * dependeria da DRE/volume daquela data, que a leitura atual não reconstrói.
+   * Serve para comparar o cliente mês a mês; não é o valor apurado no fechamento.
+   * Se precisar do apurado, calcular o piso por mês a partir de dreCanalMensal.
+   */
+  async bolsaCliente(rep: number, cli: number, n = 6) {
+    const meses = Math.min(12, Math.max(1, Math.trunc(n) || 6));
+    const periodo = mesComissional();
+    const chaves = mesesAnteriores(periodo.ano, periodo.mes, meses);
+    const [rows, { piso }] = await Promise.all([
+      this.bi.bolsaClienteMensal(rep, cli, chaves[chaves.length - 1], chaves[0]),
+      this.pisoVigente(periodo),
+    ]);
+    const linhas = chaves.map(({ ano, mes }) => {
+      const r = rows.find((x) => x.ano === ano && x.mes === mes);
+      const venda = r?.venda_liquida ?? 0, custo = r?.custo ?? 0;
+      return {
+        ano,
+        mes,
+        venda_liquida: round2(venda),
+        desconto: round2(r?.desconto ?? 0),
+        saldo: round2(venda - custo * piso),
+      };
+    });
+    return {
+      piso,
+      meses: linhas,
+      total: round2(linhas.reduce((s, l) => s + l.saldo, 0)),
     };
   }
 

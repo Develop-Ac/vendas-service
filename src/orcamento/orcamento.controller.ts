@@ -94,6 +94,17 @@ export class OrcamentoController {
 
   /* ----------------------------------------------------------- vendedor */
 
+  @Get('vendedor/:rep/bolsa/cliente/:cli')
+  @ApiOperation({ summary: 'Bolsa que o cliente gerou para o vendedor, mês a mês, nos meses comissionais fechados (piso de hoje).' })
+  @ApiQuery({ name: 'meses', required: false, description: 'Quantos meses fechados (1 a 12; padrão 6)' })
+  bolsaCliente(
+    @Param('rep', ParseIntPipe) rep: number,
+    @Param('cli', ParseIntPipe) cli: number,
+    @Query('meses') meses?: string,
+  ) {
+    return this.service.bolsaCliente(rep, cli, toNum(meses) ?? 6);
+  }
+
   @Get('vendedor/:rep/bolsa')
   @ApiOperation({ summary: 'Bolsa de desconto do vendedor no mês comissional: receita − custo × piso (+ projeção com o orçamento).' })
   @ApiQuery({ name: 'total', required: false, description: 'Total líquido do orçamento em edição' })
