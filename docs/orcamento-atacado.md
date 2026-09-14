@@ -20,9 +20,9 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 | Markup e desconto máximo | Postgres `ven_regua_atacado` | seed = régua v3 aprovada (GERAL 2,85→1,42 / PB 2,30→1,38; desc. 3→10%) |
 | Itens fora da régua | Postgres `ven_regua_item_excecao` | LANÇAMENTO/EXCLUSIVO e OPORTUNIDADE: markup atual congelado, desconto próprio |
 | Equivalentes | Postgres `com_fifo_completo` (última execução) | mesmo `group_id` **e** mesma descrição **e** mesma `marca_linha` (a regra do worker). Só o `group_id` não basta: grupos mesclados à mão viraram "grupões" |
-| Desconto por volume | Postgres `ven_regua_volume` | o máximo da faixa é o teto; a quantidade libera uma fração dele: 50% até 2 un, 75% de 3 a 5, 100% a partir de 6 (ex.: 1D 3% → 1,5% / 2,25% / 3%). A API devolve `escala_volume` por item |
+| Desconto por volume | Postgres `ven_regua_volume` | o máximo da faixa é o teto; a quantidade libera uma fração dele: 50% até 2 un, 75% de 3 a 5, 100% a partir de 6 (ex.: 1D 3% → 1,5% / 2,25% / 3%). A API devolve `escala_volume` por item. **Só vale sem bolsa**: com saldo (já com o orçamento) ≥ 0 o limite é o máximo inteiro da faixa |
 | Vendem juntos | Postgres `ven_produto_relacionado` | pares apurados no BI (`vw_analise_vendas`, atacado, 12 meses, ≥3 notas juntos), cron semanal seg 04:30 |
-| Bolsa de desconto do vendedor | BI | `vw_analise_vendas` no mês comissional (26→25), canal ATACADO: bruto, desconto, MIX1 |
+| Bolsa de desconto do vendedor | BI | `vw_analise_vendas` no mês comissional (26→25), canal ATACADO: receita, custo, desconto, MIX1, por cliente |
 | Crédito do cliente | BI + ERP | limite (ERP) − títulos em aberto (`Stage_ContasReceber_Titulos`), bloqueio de crediário |
 | Último preço pago pelo cliente | BI | última nota do cliente com o item |
 | Promoção | ERP `PROMOCOES` + `PROMOCOES_ITENS` | vigente (ATIVA, período) **e com preço na tabela do cliente** (`PROM_VALOR2`/`PROM_VALOR5`; zero = não vale). O preço passa a ser o promocional, sem desconto por cima. `PROM_VALOR` (balcão) nunca vale para cliente 2/5 |
@@ -30,7 +30,8 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 ## Regra do preço mínimo (a que o vendedor decide sozinho)
 
 O vendedor **nunca digita preço**: só quantidade e desconto (%). `preco = tabela × (1 − desc_pct)`;
-`desc_max` da linha = máximo da faixa × fração liberada pela quantidade (nunca acima do máximo).
+`desc_max` da linha = máximo da faixa × fração liberada pela quantidade (nunca acima do máximo) —
+fração que só se aplica quando o vendedor está **sem bolsa** (ver "Alçada" abaixo).
 
 ```
 lista da régua = custo × markup(classe, faixa)
@@ -44,17 +45,61 @@ o desconto permitido encolhe até zero: não se dá desconto sobre preço que j�
 
 Exceção (exclusivo/oportunidade): mínimo = tabela × (1 − desc. próprio), sem piso da régua.
 
-## Bolsa de desconto (disciplina da comissão)
+## Bolsa de desconto (receita − custo × piso)
 
 ```
-% do mês = desconto concedido / venda bruta (mês comissional, atacado)
-saldo p/ bônus = 3% × bruto − desconto     (≤ 3%  → +0,15 p.p. na comissão MIX2/3)
-saldo p/ teto  = 6% × bruto − desconto     (> 6%  → −0,15 p.p.)
+gerada  = venda bruta do mês − custo × piso        (o que a venda a preço cheio rendeu)
+saldo   = venda líquida do mês − custo × piso      (o que sobra depois de TODO desconto dado)
+acima   = venda líquida do mês − custo × linha     (base do prêmio = 25%; linha = o próprio piso, salvo ORCAMENTO_LINHA_4PCT > 0)
 ```
 
-A tela projeta o "% depois" com o orçamento em edição e mostra o semáforo
-(verde ≤3%, amarelo ≤6%, vermelho >6%). Também mostra a participação MIX1 e o degrau
-da escada (22/26/30% → ×1,25/×1,5/×2,0) — e quanto falta para o próximo.
+Mês comissional (26→25), canal ATACADO, base = `liquido_produto` e `custo_produto` da `vw_analise_vendas`
+(devolução entra negativa nos dois). **Não usar `total_item`**: é o TOTAL do item do ERP — ignora o desconto
+dado na nota e soma a devolução como venda; inflava a bolsa (Alisson, set/26: R$ 10,5 mil → R$ 1,1 mil corrigido).
+**Piso pela DRE** (`ORCAMENTO_BOLSA_MODO=dre`, padrão): `piso = (CMV + fixas) ÷ (CMV × (1 − variáveis − meta))`
+com a DRE real do canal (`f_dre_base` + receita contábil, `ORCAMENTO_BOLSA_DRE_MESES=12` meses fechados,
+`ORCAMENTO_META_RESULTADO=0.04`). Fixas = pessoal, ocupação, G&A, veículos, tributárias, financeiro
+(menos outras receitas); variáveis = comerciais ÷ RL. Despesa maior sobe o piso; volume maior baixa — todo
+mês fechado. A resposta traz `volume` com a janela, RL, CMV, fixas, variáveis e o markup realizado.
+
+**Piso por degrau de volume** (`ORCAMENTO_BOLSA_MODO=degrau`): a média da receita líquida
+do canal nos 3 últimos meses comissionais fechados escolhe o degrau — até 560 mil/mês → 1,586;
+560 → 1,538; 645 → 1,48; 700 → 1,45; 763 → 1,421 (`ORCAMENTO_BOLSA_DEGRAUS`, "volume_min:piso").
+Cada piso é o markup que deixa o canal em 4% naquele volume; neste modo a **linha dos 4% é o
+próprio piso** (saldo retido = lucro a mais). A resposta traz `volume` (média, meses, degrau,
+próximo degrau e quanto falta). Modo `fixo` (**em uso desde 08/09/2026, piso 1,538**): `ORCAMENTO_BOLSA_PISO`; a linha do prêmio é o próprio
+piso (prêmio = 25% de todo o saldo retido) — `ORCAMENTO_LINHA_4PCT` só se quiser uma marca separada. Demais: `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`.
+
+**Todo desconto subtrai da bolsa, dentro ou fora do teto da faixa.** O teto da faixa só define a
+alçada, e qual teto vale depende da bolsa (`alcadaDoItem()` em regua.ts, decidido em
+`aplicarAlcada()` depois de conhecer o saldo):
+
+- **com bolsa** (`saldo_apos ≥ 0`, já contando este orçamento): o limite é o **máximo inteiro da
+  faixa** — a escala por quantidade não trava; o desconto é decisão do vendedor e sai da bolsa;
+- **sem bolsa** (saldo negativo ou indisponível): vale a escala por quantidade
+  (`escala_volume`: 50% / 75% / 100% do máximo);
+- abaixo do limite em vigor, ou abaixo de `preco_piso_bolsa` (custo × 1,25), só com o gestor.
+
+A linha gravada guarda o limite que valeu (`desc_max_pct`, `preco_minimo`) e `acima_alcada`
+por item; `acima_alcada` do cabeçalho = alguma linha abaixo do limite em vigor ou do piso.
+A tela aplica a mesma regra (`degrauVigente`/`situacaoLinha` em comum.tsx) a partir do
+`saldo_apos` da resposta da bolsa.
+
+A tela projeta o saldo "depois" com o orçamento em edição (`total`, `desconto`, `custo`,
+`sem_custo` — item sem custo é neutro), mostra o semáforo (verde = acima da linha dos 4%,
+amarelo = dentro da bolsa, vermelho = bolsa estourada), o rateio por cliente (`por_cliente`,
+quem gerou o saldo) e a participação MIX1 com o degrau da escada (22/26/30% → ×1,25/×1,5/×2,0).
+
+## Comissão estimada (ao lado da bolsa)
+
+`comissao` na resposta da bolsa: `atual` (mês como está) e `com_orcamento` (se o orçamento fechar),
+`delta` e `meta_mix1`. Regra = a do fechamento (`src/orcamento/comissao.ts`, réplica do engine do
+pessoal-service): MIX 1 fixo por faixa A–D (`ComissaoAtacadoFaixaMix1`, dobra com participação ≥
+`ComissaoAtacadoConfig.meta_mix1`), MIX 2/3 progressivo pelo TOTAL do mês (`ComissaoAtacadoFaixaMix23`).
+Células do mês = `liquido_produto` por (MIX_CUSTO, FAIXA_MIX); do orçamento = `m1a..m1d` (MIX 1 por
+faixa) e `m23` (o resto, inclusive item sem faixa). Sem abatimento manual e média de férias: é
+estimativa, mas a diferença "com este orçamento" recalcula o mês inteiro (a alíquota do MIX 2/3 e a
+meta do MIX 1 podem mudar).
 
 ## Pesquisa de produtos (a EST012 do Celta na intranet)
 
@@ -71,6 +116,24 @@ passa nos filtros da tela (inativo / sem saldo) não entra.
 no CELTA.FDB + `IMAGENS` no **CELTAAUXILIAR.FDB** (segunda conexão, `FB_DATABASE_AUX`).
 Pré-requisito no banco auxiliar: `GRANT SELECT ON IMAGENS TO USER_CONSULTA;`
 (erp-firebird-api/docs/grant-celtaauxiliar.sql).
+
+## Busca de cliente
+
+`GET /orcamento/clientes/busca?q=&todos=` devolve `{ clientes, truncado, limite }`. `todos=0` restringe ao
+atacado (tabela 2/5); ausente = base inteira. A ordem é sempre **canal primeiro** (2/5), depois **venda
+líquida dos últimos 12 meses** (BI, `vw_analise_vendas`, devolução negativa — vai em `compras_12m`),
+depois o nome. O ERP corta em ordem alfabética, então o serviço pede até 60 candidatos (com `todos`,
+o atacado é buscado à parte e entra inteiro), enriquece só esses no BI (uma consulta) e corta em
+`limite` (20). `truncado` = ficou gente de fora (o ERP passou de 60 ou a ordenação passou de 20) —
+a tela pede para refinar. BI fora do ar não derruba a busca: fica sem o critério de compras.
+`GET /orcamento/clientes` é a mesma busca devolvendo só o array (compatibilidade com a tela publicada).
+
+## Vendedor do orçamento
+
+A tela manda só `rep_codigo`. Ao criar/regravar, `rep_nome` vazio é resolvido em `REPRESENTANTES`
+(cache de 10 min em memória; ao trocar o vendedor na edição o nome é resolvido de novo). Orçamento
+antigo gravado sem nome sai de `GET /orcamento` e `GET /orcamento/:id` com o nome resolvido na leitura,
+sem alterar o registro.
 
 ## Validade
 
@@ -97,9 +160,10 @@ como hoje e registra o número em "Fechado".
 |---|---|---|
 | GET | `/regua` | régua vigente, cortes de faixa, parâmetros |
 | GET/PUT | `/regua/excecoes[/:pro_codigo]` | itens fora da régua |
-| GET | `/clientes?q=&todos=` | busca (código, CNPJ/CPF, nome); padrão só atacado |
+| GET | `/clientes/busca?q=&todos=` | busca (código, CNPJ/CPF, nome) → `{ clientes, truncado, limite }` (ver "Busca de cliente") |
+| GET | `/clientes?q=&todos=` | a mesma busca na forma antiga (só o array) — mantida para a tela publicada |
 | GET | `/clientes/:cli` | cabeçalho: cadastro ao vivo + crédito + histórico |
-| GET | `/vendedor/:rep/bolsa?bruto=&desconto=` | bolsa do mês (+ projeção) |
+| GET | `/vendedor/:rep/bolsa?total=&desconto=&custo=&sem_custo=&m1a..m1d=&m23=` | bolsa do mês (+ projeção) e comissão estimada do mês / com o orçamento |
 | GET | `/produtos?q=&tabela=&cli=` | busca já avaliada na régua |
 | GET | `/produtos/:codigo[/equivalentes|/relacionados]` | detalhe, equivalentes, vendem juntos |
 | POST | `/relacionados/recalcular` | reapura os pares no BI |
@@ -113,8 +177,9 @@ como hoje e registra o número em "Fechado".
 2. `npx prisma generate` (o schema já tem os modelos `ven_regua_*`, `ven_orcamento*`, `ven_produto_relacionado`).
 3. Deploy da `erp-firebird-api` com `PRECO1..PRECO10`, `CUSTO_NOTA`, `DESCTO_MAXIMO`, `INATIVO`
    em `PRODUTOS` (catálogo `produtos.tabela.ts`).
-4. Variáveis (opcionais, com padrão): `ORCAMENTO_DESC_BONUS_PCT`, `ORCAMENTO_DESC_PENA_PCT`,
-   `ORCAMENTO_VALIDADE_DIAS`, `ORCAMENTO_RELACIONADOS_CRON`, `ORCAMENTO_RELACIONADOS_MESES`.
+4. Variáveis (opcionais, com padrão): `ORCAMENTO_BOLSA_MODO`, `ORCAMENTO_BOLSA_DRE_MESES`, `ORCAMENTO_META_RESULTADO`, `ORCAMENTO_BOLSA_DEGRAUS`, `ORCAMENTO_BOLSA_PISO`, `ORCAMENTO_LINHA_4PCT`,
+   `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`, `ORCAMENTO_VALIDADE_DIAS`,
+   `ORCAMENTO_RELACIONADOS_CRON`, `ORCAMENTO_RELACIONADOS_MESES`.
 5. Rodar uma vez `POST /orcamento/relacionados/recalcular` (senão "vendem juntos" só aparece
    após o primeiro cron).
 6. Liberar a tela por usuário em `sis_permissoes` (`tela = '/vendas/orcamento'`) — o módulo

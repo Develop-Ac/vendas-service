@@ -1,6 +1,10 @@
 import {
+  alcadaDoItem,
   avaliarItem,
   calcularBolsa,
+  parseDegrausBolsa,
+  pisoPorDre,
+  pisoPorVolume,
   classeBase,
   colunaTabela,
   degrauMix1,
@@ -141,18 +145,102 @@ describe('escala por volume', () => {
   });
 });
 
-describe('calcularBolsa', () => {
-  it('saldo para ficar no bônus e projeção com o orçamento', () => {
-    const b = calcularBolsa({ bruto_mtd: 100000, desconto_mtd: 2000, bruto_orc: 10000, desconto_orc: 1500 });
-    expect(b.pct_atual).toBe(0.02);
-    expect(b.saldo_bonus).toBe(1000);
-    expect(b.saldo_teto).toBe(4000);
-    expect(b.pct_apos).toBeCloseTo(3500 / 110000, 4);
-    expect(b.semaforo_atual).toBe('VERDE');
-    expect(b.semaforo_apos).toBe('AMARELO');
+describe('alcadaDoItem', () => {
+  // faixa com máximo 15%: tabela 1000 → mínimo cheio 850; 1 unidade (50%) → 925; piso absoluto 812,50 (custo 650 × 1,25)
+  const base = { minimo_qtd: 925, minimo_cheio: 850, piso_bolsa: 812.5 };
+  it('com bolsa vale o máximo inteiro da faixa; a escala por quantidade não trava', () => {
+    const a = alcadaDoItem({ ...base, preco: 860, saldo_apos: 120 });
+    expect(a.bolsa_cobre).toBe(true);
+    expect(a.minimo_vigente).toBe(850);
+    expect(a.precisa_aprovacao).toBe(false);
+    expect(a.usa_bolsa).toBe(true); // passou do limite por quantidade: a bolsa paga
   });
-  it('acima de 6% é vermelho', () => {
-    expect(calcularBolsa({ bruto_mtd: 1000, desconto_mtd: 70 }).semaforo_atual).toBe('VERMELHO');
+  it('com bolsa, abaixo do máximo da faixa é gestor', () => {
+    expect(alcadaDoItem({ ...base, preco: 840, saldo_apos: 120 }).precisa_aprovacao).toBe(true);
+  });
+  it('sem bolsa (negativa ou desconhecida) vale a escala por quantidade', () => {
+    const neg = alcadaDoItem({ ...base, preco: 860, saldo_apos: -10 });
+    expect(neg.bolsa_cobre).toBe(false);
+    expect(neg.minimo_vigente).toBe(925);
+    expect(neg.precisa_aprovacao).toBe(true);
+    expect(neg.usa_bolsa).toBe(false);
+    expect(alcadaDoItem({ ...base, preco: 930, saldo_apos: -10 }).precisa_aprovacao).toBe(false);
+    expect(alcadaDoItem({ ...base, preco: 860, saldo_apos: null }).precisa_aprovacao).toBe(true);
+  });
+  it('abaixo do piso absoluto é gestor mesmo com bolsa sobrando', () => {
+    const a = alcadaDoItem({ ...base, preco: 800, saldo_apos: 9999 });
+    expect(a.abaixo_piso).toBe(true);
+    expect(a.precisa_aprovacao).toBe(true);
+  });
+});
+
+describe('calcularBolsa', () => {
+  it('bolsa = receita − custo × piso; todo desconto subtrai; projeção com o orçamento', () => {
+    // mês: R$ 100 mil a preço cheio, R$ 4 mil de desconto, custo R$ 60 mil → gerada 100 − 88,8 = 11,2; saldo 96 − 88,8 = 7,2
+    const b = calcularBolsa({ receita_mtd: 96000, custo_mtd: 60000, desconto_mtd: 4000, piso: 1.48, linha: 1.586, premio_pct: 0.25,
+      receita_orc: 9000, desconto_orc: 1000, custo_orc: 5000 });
+    expect(b.gerada).toBe(11200);
+    expect(b.saldo).toBe(7200);
+    expect(b.pct_desconto).toBe(0.04);
+    // orçamento: 9.000 − 5.000 × 1,48 = +1.600
+    expect(b.saldo_apos).toBe(8800);
+    // linha dos 4%: 96.000 − 60.000 × 1,586 = +840 → prêmio 25% = 210
+    expect(b.acima_linha).toBe(840);
+    expect(b.premio_estimado).toBe(210);
+    expect(b.semaforo_atual).toBe('VERDE');
+  });
+  it('dentro da bolsa mas abaixo da linha é amarelo; bolsa estourada é vermelho', () => {
+    expect(calcularBolsa({ receita_mtd: 90000, custo_mtd: 60000, desconto_mtd: 10000 }).semaforo_atual).toBe('AMARELO');
+    expect(calcularBolsa({ receita_mtd: 85000, custo_mtd: 60000, desconto_mtd: 15000 }).semaforo_atual).toBe('VERMELHO');
+  });
+  it('item sem custo é neutro na projeção', () => {
+    const b = calcularBolsa({ receita_mtd: 0, custo_mtd: 0, desconto_mtd: 0, receita_orc: 1480, sem_custo_orc: 1480, piso: 1.48 });
+    expect(b.saldo_apos).toBe(0);
+  });
+});
+
+describe('pisoPorVolume', () => {
+  it('o piso segue o maior degrau alcançado e aponta o próximo', () => {
+    const d = parseDegrausBolsa('0:1.586,560000:1.538,645000:1.48,700000:1.45,763000:1.421');
+    expect(pisoPorVolume(d, 441000)).toMatchObject({ piso: 1.586, degrau_min: 0, proximo_min: 560000, proximo_piso: 1.538, falta: 119000 });
+    expect(pisoPorVolume(d, 645000)).toMatchObject({ piso: 1.48, proximo_min: 700000 });
+    expect(pisoPorVolume(d, 900000)).toMatchObject({ piso: 1.421, proximo_min: null });
+  });
+  it('texto inválido cai no padrão', () => {
+    expect(parseDegrausBolsa('abc')).toHaveLength(5);
+    expect(parseDegrausBolsa(undefined)[0].piso).toBe(1.586);
+  });
+});
+
+describe('pisoPorDre', () => {
+  it('reproduz a DRE 12m do canal: (CMV + fixas) / (CMV × (1 − variáveis − 4%))', () => {
+    // um mês "médio" da DRE ago/25–jul/26 do atacado, repetido 12×, mais 2 meses abertos que devem ser ignorados
+    const mes = { receita_bruta: 534333, abatimento: 14635, cmv: 336503, comerciais: 25804, fixas: 150244, fechado: true };
+    const meses = Array.from({ length: 12 }, (_, i) => ({ ano: 2025 + Math.floor((7 + i) / 12), mes: ((7 + i) % 12) + 1, ...mes }));
+    meses.push({ ano: 2026, mes: 8, ...mes, fechado: false }, { ano: 2026, mes: 9, ...mes, cmv: 0, fechado: false });
+    const p = pisoPorDre(meses, 12, 0.04)!;
+    expect(p.meses).toBe(12);
+    expect(p.ate).toEqual({ ano: 2026, mes: 7 });
+    expect(p.piso).toBeCloseTo(1.59, 2);
+    expect(p.variaveis_pct).toBeCloseTo(0.0497, 3);
+    expect(p.markup_realizado).toBeCloseTo(1.544, 3);
+  });
+  it('fixas maiores sobem o piso; volume maior baixa', () => {
+    const base = { ano: 2026, mes: 1, receita_bruta: 500000, abatimento: 10000, cmv: 320000, comerciais: 25000, fixas: 150000, fechado: true };
+    const p0 = pisoPorDre([base], 1)!.piso;
+    expect(pisoPorDre([{ ...base, fixas: 180000 }], 1)!.piso).toBeGreaterThan(p0);
+    expect(pisoPorDre([{ ...base, receita_bruta: 650000, cmv: 416000, comerciais: 32500 }], 1)!.piso).toBeLessThan(p0);
+  });
+  it('mês meio lançado (fixas < metade da mediana) fica fora da janela', () => {
+    const mes = { receita_bruta: 500000, abatimento: 10000, cmv: 320000, comerciais: 25000, fixas: 150000, fechado: true };
+    const meses = Array.from({ length: 6 }, (_, i) => ({ ano: 2026, mes: i + 1, ...mes }));
+    meses.push({ ano: 2026, mes: 7, ...mes, fixas: 20000 }); // folha lançada pela metade
+    const p = pisoPorDre(meses, 12)!;
+    expect(p.meses).toBe(6);
+    expect(p.ate).toEqual({ ano: 2026, mes: 6 });
+  });
+  it('sem mês fechado, sem piso', () => {
+    expect(pisoPorDre([{ ano: 2026, mes: 9, receita_bruta: 1, abatimento: 0, cmv: 1, comerciais: 0, fixas: 0, fechado: false }])).toBeNull();
   });
 });
 

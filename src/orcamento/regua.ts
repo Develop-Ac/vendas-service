@@ -8,7 +8,7 @@
      subgrupo/descrição  -> classe (GERAL | PB)       classeBase()
      classe × faixa      -> markup + desconto máximo  regraDe()
      item                -> preço mínimo, alçada      avaliarItem()
-     mês do vendedor     -> bolsa de desconto         calcularBolsa()
+     mês do vendedor     -> bolsa de desconto         calcularBolsa()  (receita − custo × piso)
      participação MIX1   -> degrau da comissão        degrauMix1()
 
    As faixas são as MESMAS do ETL do BI (FAIXA_MIX em Stage_Produtos/Stage_Vendas),
@@ -188,6 +188,8 @@ export interface EntradaAvaliacao {
   volume?: FaixaVolume[];
   /** Quantidade da linha — define o degrau de volume aplicado. Padrão 1. */
   quantidade?: number;
+  /** Markup do piso absoluto de um item pago pela bolsa (custo × piso). Padrão PISO_ITEM_PADRAO. */
+  piso_item?: number;
 }
 
 export interface Avaliacao {
@@ -202,6 +204,8 @@ export interface Avaliacao {
   /** Desconto máximo que cabe SOBRE O PREÇO DE TABELA sem furar o piso da régua. */
   desc_max_efetivo_pct: number;
   preco_minimo: number;
+  /** Abaixo do mínimo da faixa a bolsa paga; abaixo DESTE piso (custo × 1,25) só com aprovação. */
+  preco_piso_bolsa: number;
   markup_tabela: number | null;
   /** Tabela do ERP já está abaixo do preço de lista da régua (item ainda não carregado). */
   tabela_abaixo_regua: boolean;
@@ -253,6 +257,7 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
   const regra = fx ? regraDe(regua, base, fx.chave) : null;
   const tabela = e.preco_tabela > 0 ? e.preco_tabela : 0;
   const markupTabela = custo && tabela > 0 ? round4(tabela / custo) : null;
+  const pisoBolsa = custo ? Math.min(round2(custo * (e.piso_item ?? PISO_ITEM_PADRAO)), tabela > 0 ? tabela : Number.POSITIVE_INFINITY) : 0;
 
   const semPrecoOuCusto = tabela <= 0 || !custo;
 
@@ -269,6 +274,7 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
       desc_max_pct: descMax,
       desc_max_efetivo_pct: tabela > 0 ? round4(1 - minimo / tabela) : 0,
       preco_minimo: minimo,
+      preco_piso_bolsa: pisoBolsa,
       markup_tabela: markupTabela,
       tabela_abaixo_regua: false,
       motivo:
@@ -290,6 +296,7 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
       desc_max_pct: 0,
       desc_max_efetivo_pct: 0,
       preco_minimo: minimo,
+      preco_piso_bolsa: pisoBolsa,
       markup_tabela: markupTabela,
       tabela_abaixo_regua: false,
       motivo: !custo
@@ -320,6 +327,7 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
     desc_max_pct: descMax,
     desc_max_efetivo_pct: descEfetivo,
     preco_minimo: minimo,
+    preco_piso_bolsa: pisoBolsa,
     markup_tabela: markupTabela,
     tabela_abaixo_regua: abaixo,
     motivo: abaixo
@@ -334,61 +342,275 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
 
 export type Semaforo = 'VERDE' | 'AMARELO' | 'VERMELHO';
 
+/**
+ * A bolsa de desconto é a margem que o vendedor gera ACIMA de um markup-piso:
+ *   bolsa = Σ (preço vendido − custo × piso)        no mês comissional
+ * Toda venda a preço cheio soma; todo desconto subtrai (dentro ou fora do teto
+ * da faixa — o teto só define a alçada). O piso é o markup do degrau da escada
+ * da meta em vigor (T1: R$ 645 mil/mês → 1,48). A "linha dos 4%" é o markup
+ * que deixa o canal em 4% no volume REAL do trimestre; só acima dela há lucro
+ * extra, e é sobre esse lucro que sai o prêmio do vendedor.
+ */
+export const BOLSA_PISO_PADRAO = 1.48;
+/** Linha do prêmio quando informada por env; sem ela, a linha é o próprio piso (prêmio sobre todo o saldo retido). */
+export const LINHA_4PCT_PADRAO = 1.586;
+export const PREMIO_PADRAO = 0.25;
+
+/**
+ * Piso por DEGRAU de volume do canal (escada da meta): as despesas fixas são as
+ * mesmas em qualquer volume, então o markup que garante 4% cai conforme o canal
+ * vende mais. `volume_min` = receita líquida média por mês do canal (últimos 3
+ * meses comissionais fechados); o piso é o do maior degrau alcançado. Neste
+ * modo a linha dos 4% É o piso: saldo retido = lucro a mais, um para um.
+ */
+export interface DegrauBolsa {
+  volume_min: number;
+  piso: number;
+}
+export const DEGRAUS_BOLSA_PADRAO: DegrauBolsa[] = [
+  { volume_min: 0, piso: 1.586 },
+  { volume_min: 560_000, piso: 1.538 },
+  { volume_min: 645_000, piso: 1.48 },
+  { volume_min: 700_000, piso: 1.45 },
+  { volume_min: 763_000, piso: 1.421 },
+];
+
+/** "0:1.586,560000:1.538,…" → degraus ordenados; texto inválido cai no padrão. */
+export function parseDegrausBolsa(texto?: string | null): DegrauBolsa[] {
+  if (!texto) return DEGRAUS_BOLSA_PADRAO;
+  const out: DegrauBolsa[] = [];
+  for (const par of texto.split(',')) {
+    const [v, p] = par.split(':').map((x) => Number(String(x).trim()));
+    if (Number.isFinite(v) && v >= 0 && Number.isFinite(p) && p > 1) out.push({ volume_min: v, piso: p });
+  }
+  return out.length ? out.sort((a, b) => a.volume_min - b.volume_min) : DEGRAUS_BOLSA_PADRAO;
+}
+
+/**
+ * Piso pela DRE do canal: o markup sobre o custo que deixa o atacado na meta de
+ * resultado (4% da receita líquida, antes das retiradas) com as despesas REAIS
+ * da janela — não só o volume. Da DRE:
+ *   RL × (1 − variáveis − meta) = CMV + fixas  →  piso = (CMV + fixas) / (CMV × (1 − variáveis − meta))
+ * `variáveis` = despesas comerciais (frete, cartão, comissões, prêmios, ST/DIFAL…) ÷ RL.
+ * Se as fixas sobem, o piso sobe; se o volume cresce, cai — todo mês fechado.
+ */
+export interface MesDre {
+  ano: number;
+  mes: number;
+  /** Receita bruta contábil do canal. */
+  receita_bruta: number;
+  /** Abatimentos (devoluções, PIS/COFINS…), POSITIVO. */
+  abatimento: number;
+  /** Custo das mercadorias vendidas, POSITIVO. */
+  cmv: number;
+  /** Despesas comerciais (variáveis), POSITIVO. */
+  comerciais: number;
+  /** Pessoal + ocupação + G&A + veículos + tributárias + financeiro − outras receitas, POSITIVO. */
+  fixas: number;
+  /** Mês com todos os grupos contabilizados (pessoal é o último a fechar). */
+  fechado: boolean;
+}
+
+export interface PisoDre {
+  piso: number;
+  meta: number;
+  meses: number;
+  de: { ano: number; mes: number } | null;
+  ate: { ano: number; mes: number } | null;
+  receita_liquida: number;
+  cmv: number;
+  fixas: number;
+  comerciais: number;
+  variaveis_pct: number;
+  /** Markup contábil realizado na janela (RL ÷ CMV) — para comparar com o piso. */
+  markup_realizado: number | null;
+}
+
+export function pisoPorDre(meses: MesDre[], janela = 12, meta = 0.04): PisoDre | null {
+  // A DRE não é tempo real: a folha entra por lançamento manual, então o mês
+  // corrente (e às vezes o anterior) chega sem pessoal. Só entram meses fechados;
+  // e um mês "fechado" com fixas abaixo de metade da mediana dos demais está
+  // meio lançado — fica de fora até completar.
+  const candidatos = meses.filter((m) => m.fechado && m.cmv > 0);
+  const ordenadas = candidatos.map((m) => m.fixas).sort((a, b) => a - b);
+  const mediana = ordenadas.length ? ordenadas[Math.floor(ordenadas.length / 2)] : 0;
+  const fechados = candidatos
+    .filter((m) => candidatos.length < 3 || m.fixas >= mediana * 0.5)
+    .sort((a, b) => a.ano * 100 + a.mes - (b.ano * 100 + b.mes))
+    .slice(-janela);
+  if (!fechados.length) return null;
+  const soma = (k: keyof MesDre) => fechados.reduce((t, m) => t + Number(m[k] ?? 0), 0);
+  const rl = soma('receita_bruta') - soma('abatimento');
+  const cmv = soma('cmv'), fixas = soma('fixas'), comerciais = soma('comerciais');
+  if (!(rl > 0) || !(cmv > 0)) return null;
+  const variaveis = comerciais / rl;
+  const denominador = 1 - variaveis - meta;
+  if (denominador <= 0) return null;
+  return {
+    piso: round4((cmv + fixas) / (cmv * denominador)),
+    meta,
+    meses: fechados.length,
+    de: { ano: fechados[0].ano, mes: fechados[0].mes },
+    ate: { ano: fechados[fechados.length - 1].ano, mes: fechados[fechados.length - 1].mes },
+    receita_liquida: round2(rl),
+    cmv: round2(cmv),
+    fixas: round2(fixas),
+    comerciais: round2(comerciais),
+    variaveis_pct: round4(variaveis),
+    markup_realizado: round4(rl / cmv),
+  };
+}
+
+export function pisoPorVolume(degraus: DegrauBolsa[], volumeMes: number) {
+  const ordem = [...degraus].sort((a, b) => a.volume_min - b.volume_min);
+  const v = Math.max(0, volumeMes);
+  const atual = [...ordem].reverse().find((d) => v >= d.volume_min) ?? ordem[0];
+  const proximo = ordem.find((d) => d.volume_min > v && d.piso < atual.piso) ?? null;
+  return {
+    piso: atual.piso,
+    degrau_min: atual.volume_min,
+    proximo_min: proximo?.volume_min ?? null,
+    proximo_piso: proximo?.piso ?? null,
+    falta: proximo ? round2(proximo.volume_min - v) : 0,
+  };
+}
+/** Piso absoluto de um item pago pela bolsa: custo × 1,25. Abaixo disso, aprovação. */
+export const PISO_ITEM_PADRAO = 1.25;
+
+/* ---------------------------------------------------------------------------
+   Alçada de um item: até onde o vendedor decide sozinho.
+
+   Com BOLSA (saldo do mês, já com este orçamento, ≥ 0) o limite é o máximo
+   inteiro da faixa — a escala por quantidade não vale; o desconto sai da bolsa
+   e é decisão do vendedor. Sem bolsa (saldo negativo ou desconhecido) vale a
+   escala por quantidade (50% / 75% / 100% do máximo). Abaixo do limite em
+   vigor, ou abaixo do piso absoluto (custo × 1,25), só com o gestor.
+   --------------------------------------------------------------------------- */
+export interface EntradaAlcada {
+  preco: number;
+  /** mínimo da faixa para ESTA quantidade (escala por volume). */
+  minimo_qtd: number;
+  /** mínimo com o máximo inteiro da faixa (fração 1). */
+  minimo_cheio: number;
+  /** custo × piso do item (0 = sem custo). */
+  piso_bolsa: number;
+  /** saldo da bolsa depois deste orçamento; null = bolsa indisponível. */
+  saldo_apos: number | null;
+}
+
+export interface Alcada {
+  /** o saldo cobre: vale o máximo inteiro da faixa. */
+  bolsa_cobre: boolean;
+  /** limite em vigor para o item (mínimo cheio com bolsa; por quantidade sem). */
+  minimo_vigente: number;
+  /** abaixo do limite em vigor ou do piso absoluto → gestor. */
+  precisa_aprovacao: boolean;
+  /** abaixo do piso absoluto (custo × 1,25). */
+  abaixo_piso: boolean;
+  /** passou do limite por quantidade — com bolsa é ela que paga. */
+  usa_bolsa: boolean;
+}
+
+export function bolsaCobre(saldoApos: number | null | undefined): boolean {
+  return saldoApos != null && saldoApos >= -0.005;
+}
+
+export function alcadaDoItem(e: EntradaAlcada): Alcada {
+  const cobre = bolsaCobre(e.saldo_apos);
+  const minimo = cobre ? e.minimo_cheio : e.minimo_qtd;
+  const abaixoPiso = e.piso_bolsa > 0 && e.preco < e.piso_bolsa - 0.005;
+  const abaixoQtd = e.minimo_qtd > 0 && e.preco < e.minimo_qtd - 0.005;
+  const abaixoVigente = minimo > 0 && e.preco < minimo - 0.005;
+  return {
+    bolsa_cobre: cobre,
+    minimo_vigente: minimo,
+    precisa_aprovacao: abaixoPiso || abaixoVigente,
+    abaixo_piso: abaixoPiso,
+    usa_bolsa: cobre && abaixoQtd,
+  };
+}
+
 export interface BolsaEntrada {
-  /** Venda BRUTA do mês comissional (antes do desconto). */
-  bruto_mtd: number;
-  /** Desconto já concedido no mês (positivo). */
+  /** Venda líquida do mês comissional (já com o desconto tirado). */
+  receita_mtd: number;
+  /** Custo (reposição na venda) das mercadorias vendidas no mês. */
+  custo_mtd: number;
+  /** Desconto concedido no mês (positivo). */
   desconto_mtd: number;
-  /** O orçamento em edição, para projetar. */
-  bruto_orc?: number;
+  /** O orçamento em edição: total líquido e custo dos itens. Itens sem custo entram em `sem_custo_orc` (neutros). */
+  receita_orc?: number;
   desconto_orc?: number;
-  /** Limiares da disciplina de desconto (comissão): bônus ≤ 3%, pena > 6%. */
-  bonus_pct?: number;
-  pena_pct?: number;
+  custo_orc?: number;
+  sem_custo_orc?: number;
+  piso?: number;
+  linha?: number;
+  premio_pct?: number;
 }
 
 export interface Bolsa {
-  bonus_pct: number;
-  pena_pct: number;
+  piso: number;
+  linha: number;
+  premio_pct: number;
   bruto_mtd: number;
+  receita_mtd: number;
+  custo_mtd: number;
   desconto_mtd: number;
-  pct_atual: number;
-  /** Quanto ainda pode dar de desconto no mês e continuar dentro do bônus (pode ser negativo). */
-  saldo_bonus: number;
-  /** Idem, antes de cair na pena. */
-  saldo_teto: number;
-  pct_apos: number;
+  /** desconto ÷ bruto — só informação. */
+  pct_desconto: number;
+  markup_mtd: number | null;
+  /** O que a venda do mês gerou a preço cheio: bruto − custo × piso. */
+  gerada: number;
+  /** O que sobra depois do desconto dado: receita − custo × piso. É o que ainda cabe. */
+  saldo: number;
+  saldo_apos: number;
+  /** Lucro acima da linha dos 4%: receita − custo × linha (negativo = abaixo da linha). */
+  acima_linha: number;
+  acima_linha_apos: number;
+  premio_estimado: number;
+  premio_estimado_apos: number;
   semaforo_atual: Semaforo;
   semaforo_apos: Semaforo;
 }
 
-export function semaforoDe(pct: number, bonus: number, pena: number): Semaforo {
-  if (pct <= bonus + 1e-9) return 'VERDE';
-  if (pct <= pena + 1e-9) return 'AMARELO';
-  return 'VERMELHO';
+/** VERDE = acima da linha dos 4% (gera prêmio); AMARELO = dentro da bolsa; VERMELHO = bolsa estourada. */
+export function semaforoBolsa(saldo: number, acimaLinha: number): Semaforo {
+  if (saldo < -0.005) return 'VERMELHO';
+  return acimaLinha > 0.005 ? 'VERDE' : 'AMARELO';
 }
 
 export function calcularBolsa(e: BolsaEntrada): Bolsa {
-  const bonus = e.bonus_pct ?? 0.03;
-  const pena = e.pena_pct ?? 0.06;
-  const bruto = Math.max(0, e.bruto_mtd);
+  const piso = e.piso ?? BOLSA_PISO_PADRAO;
+  const linha = e.linha ?? LINHA_4PCT_PADRAO;
+  const premio = e.premio_pct ?? PREMIO_PADRAO;
+  const receita = Math.max(0, e.receita_mtd);
+  const custo = Math.max(0, e.custo_mtd);
   const desc = Math.max(0, e.desconto_mtd);
-  const brutoOrc = Math.max(0, e.bruto_orc ?? 0);
-  const descOrc = Math.max(0, e.desconto_orc ?? 0);
-  const pct = bruto > 0 ? desc / bruto : 0;
-  const totalBruto = bruto + brutoOrc;
-  const pctApos = totalBruto > 0 ? (desc + descOrc) / totalBruto : 0;
+  const recOrc = Math.max(0, e.receita_orc ?? 0);
+  // Item sem custo no cadastro é neutro: conta como vendido exatamente no piso.
+  const custoOrc = Math.max(0, e.custo_orc ?? 0) + Math.max(0, e.sem_custo_orc ?? 0) / piso;
+  const saldo = receita - custo * piso;
+  const saldoApos = saldo + (recOrc - custoOrc * piso);
+  const acima = receita - custo * linha;
+  const acimaApos = acima + (recOrc - custoOrc * linha);
   return {
-    bonus_pct: bonus,
-    pena_pct: pena,
-    bruto_mtd: round2(bruto),
+    piso,
+    linha,
+    premio_pct: premio,
+    bruto_mtd: round2(receita + desc),
+    receita_mtd: round2(receita),
+    custo_mtd: round2(custo),
     desconto_mtd: round2(desc),
-    pct_atual: round4(pct),
-    saldo_bonus: round2(bonus * bruto - desc),
-    saldo_teto: round2(pena * bruto - desc),
-    pct_apos: round4(pctApos),
-    semaforo_atual: semaforoDe(pct, bonus, pena),
-    semaforo_apos: semaforoDe(pctApos, bonus, pena),
+    pct_desconto: receita + desc > 0 ? round4(desc / (receita + desc)) : 0,
+    markup_mtd: custo > 0 ? round4(receita / custo) : null,
+    gerada: round2(receita + desc - custo * piso),
+    saldo: round2(saldo),
+    saldo_apos: round2(saldoApos),
+    acima_linha: round2(acima),
+    acima_linha_apos: round2(acimaApos),
+    premio_estimado: round2(premio * Math.max(0, acima)),
+    premio_estimado_apos: round2(premio * Math.max(0, acimaApos)),
+    semaforo_atual: semaforoBolsa(saldo, acima),
+    semaforo_apos: semaforoBolsa(saldoApos, acimaApos),
   };
 }
 

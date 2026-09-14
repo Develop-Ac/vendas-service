@@ -62,10 +62,27 @@ export class OrcamentoController {
   /* ----------------------------------------------------------- clientes */
 
   @Get('clientes')
-  @ApiOperation({ summary: 'Busca de cliente (código, CNPJ/CPF ou nome) na base inteira; o preço segue a tabela de cada um.' })
+  @ApiOperation({
+    summary: 'Busca de cliente (código, CNPJ/CPF ou nome) — forma antiga: só o array. Prefira /clientes/busca.',
+    description: 'Mesma ordem de /clientes/busca (canal 2/5 → compras 12 m → nome), até 20; sem a flag de corte.',
+  })
   @ApiQuery({ name: 'q', required: true })
   @ApiQuery({ name: 'todos', required: false, description: '0 = só atacado (tabela 2/5). Padrão: base inteira.' })
-  clientes(@Query('q') q: string, @Query('todos') todos?: string) {
+  async clientes(@Query('q') q: string, @Query('todos') todos?: string) {
+    return (await this.service.buscarClientes(q ?? '', !(todos === '0' || todos === 'false'))).clientes;
+  }
+
+  @Get('clientes/busca')
+  @ApiOperation({
+    summary: 'Busca de cliente com a flag de corte: { clientes, truncado, limite }.',
+    description:
+      'Ordem: clientes do atacado (tabela 2/5) primeiro, depois venda líquida dos últimos 12 meses (BI), depois nome. ' +
+      'O ERP devolve até 60 candidatos (com `todos`, o atacado é buscado à parte e entra inteiro); a lista é cortada em `limite` (20). ' +
+      '`truncado` = ficou gente de fora — a tela pede para refinar. `compras_12m` acompanha cada cliente.',
+  })
+  @ApiQuery({ name: 'q', required: true })
+  @ApiQuery({ name: 'todos', required: false, description: '0 = só atacado (tabela 2/5). Padrão: base inteira.' })
+  clientesBusca(@Query('q') q: string, @Query('todos') todos?: string) {
     return this.service.buscarClientes(q ?? '', !(todos === '0' || todos === 'false'));
   }
 
@@ -78,16 +95,35 @@ export class OrcamentoController {
   /* ----------------------------------------------------------- vendedor */
 
   @Get('vendedor/:rep/bolsa')
-  @ApiOperation({ summary: 'Bolsa de desconto do vendedor no mês comissional (+ projeção com o orçamento).' })
-  @ApiQuery({ name: 'bruto', required: false, description: 'Subtotal (a preço de tabela) do orçamento em edição' })
+  @ApiOperation({ summary: 'Bolsa de desconto do vendedor no mês comissional: receita − custo × piso (+ projeção com o orçamento).' })
+  @ApiQuery({ name: 'total', required: false, description: 'Total líquido do orçamento em edição' })
   @ApiQuery({ name: 'desconto', required: false, description: 'Desconto total do orçamento em edição' })
+  @ApiQuery({ name: 'custo', required: false, description: 'Custo (reposição × qtd) dos itens com custo' })
+  @ApiQuery({ name: 'sem_custo', required: false, description: 'Total dos itens SEM custo no cadastro (entram neutros)' })
+  @ApiQuery({ name: 'm1a', required: false, description: 'Total líquido dos itens MIX 1 faixa A (idem m1b, m1c, m1d) — projeção da comissão' })
+  @ApiQuery({ name: 'm23', required: false, description: 'Total líquido dos itens MIX 2/3 (e sem faixa) — projeção da comissão' })
   bolsa(
     @Param('rep', ParseIntPipe) rep: number,
-    @Query('bruto') bruto?: string,
+    @Query('total') total?: string,
     @Query('desconto') desconto?: string,
+    @Query('custo') custo?: string,
+    @Query('sem_custo') semCusto?: string,
+    @Query('m1a') m1a?: string,
+    @Query('m1b') m1b?: string,
+    @Query('m1c') m1c?: string,
+    @Query('m1d') m1d?: string,
+    @Query('m23') m23?: string,
   ) {
-    const b = toNum(bruto), d = toNum(desconto);
-    return this.service.bolsa(rep, b != null ? { bruto: b, desconto: d ?? 0 } : undefined);
+    const t = toNum(total);
+    return this.service.bolsa(
+      rep,
+      t != null
+        ? {
+            receita: t, desconto: toNum(desconto) ?? 0, custo: toNum(custo) ?? 0, sem_custo: toNum(semCusto) ?? 0,
+            m1a: toNum(m1a), m1b: toNum(m1b), m1c: toNum(m1c), m1d: toNum(m1d), m23: toNum(m23),
+          }
+        : undefined,
+    );
   }
 
   /* -------------------------------------------------- orçamentos do Celta */

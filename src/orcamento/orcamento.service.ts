@@ -2,13 +2,22 @@ import { gerarPdfOrcamento, PdfOrcamento } from './orcamento.pdf';
 import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta } from './orcamento.erp.repository';
+import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta, ordenarBuscaClientes } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional } from './orcamento.bi.repository';
+import { celulasDoOrcamento, comissaoComOrcamento } from './comissao';
 import { OrcamentoPrismaRepository, GiroItem } from './orcamento.prisma.repository';
 import {
   Avaliacao,
+  alcadaDoItem,
   avaliarItem,
   calcularBolsa,
+  BOLSA_PISO_PADRAO,
+  LINHA_4PCT_PADRAO,
+  PISO_ITEM_PADRAO,
+  PREMIO_PADRAO,
+  parseDegrausBolsa,
+  pisoPorDre,
+  pisoPorVolume,
   degrauMix1,
   FAIXAS,
   FaixaVolume,
@@ -31,7 +40,7 @@ import { DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, SalvarOrcament
      classe/faixa/desc. máx/preço mínimo -> régua v3 (Postgres) sobre o custo do ERP
      equivalentes                        -> grupos de similares da análise de estoque
      vendem juntos                       -> pares apurados no BI (cron semanal)
-     bolsa de desconto do vendedor       -> BI, mês comissional (26 a 25)
+     bolsa de desconto do vendedor       -> BI, mês comissional (26 a 25): receita, custo e desconto
    ============================================================================= */
 
 export interface ProdutoOrcamento {
@@ -96,7 +105,13 @@ export interface ClienteOrcamento {
   limite_credito: number;
   crediario_bloqueado: boolean;
   data_ult_compra: string | null;
+  /** Venda líquida dos últimos 12 meses (BI) — só na busca; ausente se o BI não respondeu. */
+  compras_12m?: number;
 }
+
+/** Quantos candidatos a busca de cliente pede ao ERP antes de ordenar por canal/compras e cortar. */
+const BUSCA_CLIENTES_CANDIDATOS = 60;
+const BUSCA_CLIENTES_LIMITE = 20;
 
 const CONCEITO: Record<number, string> = { 1: 'BOM', 2: 'REGULAR', 3: 'RUIM' };
 const STATUS_EDITAVEL = new Set(['RASCUNHO', 'ENVIADO', 'APROVACAO']);
@@ -119,8 +134,19 @@ export class OrcamentoService {
       return Number.isFinite(v) && v > 0 ? v : d;
     };
     return {
-      bonus_pct: num('ORCAMENTO_DESC_BONUS_PCT', 0.03),
-      pena_pct: num('ORCAMENTO_DESC_PENA_PCT', 0.06),
+      // Bolsa. Modo 'dre' (padrão): o piso sai da DRE do canal (janela de meses fechados) — custo,
+      // despesas fixas e variáveis REAIS, meta de 4% — e a linha dos 4% é o próprio piso. Modo
+      // 'degrau': tabela volume→piso pela média dos 3 últimos meses. Modo 'fixo': piso e linha por
+      // env (bolsa "adiantada"). Prêmio = fração do lucro acima da linha; piso absoluto do item.
+      bolsa_modo: (['fixo', 'degrau', 'dre'].find((m) => m === (process.env.ORCAMENTO_BOLSA_MODO ?? 'dre').toLowerCase()) ?? 'dre') as 'fixo' | 'degrau' | 'dre',
+      bolsa_dre_meses: Math.max(1, Math.round(num('ORCAMENTO_BOLSA_DRE_MESES', 12))),
+      meta_resultado: num('ORCAMENTO_META_RESULTADO', 0.04),
+      bolsa_degraus: parseDegrausBolsa(process.env.ORCAMENTO_BOLSA_DEGRAUS),
+      bolsa_piso: num('ORCAMENTO_BOLSA_PISO', BOLSA_PISO_PADRAO),
+      // 0 (padrão) = a linha do prêmio é o próprio piso: prêmio sobre TODO o saldo retido.
+      linha_4pct: num('ORCAMENTO_LINHA_4PCT', 0),
+      premio_pct: num('ORCAMENTO_PREMIO_PCT', PREMIO_PADRAO),
+      piso_item: num('ORCAMENTO_ITEM_PISO', PISO_ITEM_PADRAO),
       validade_dias: num('ORCAMENTO_VALIDADE_DIAS', 7),
     };
   }
@@ -164,9 +190,25 @@ export class OrcamentoService {
     };
   }
 
+  /**
+   * Busca de cliente ordenada: canal (2/5) → compras 12 m → nome. O ERP devolve
+   * até 60 candidatos; só esses vão ao BI (uma consulta), e a lista é cortada em
+   * 20. BI fora do ar não derruba a busca — fica sem o critério de compras.
+   */
   async buscarClientes(q: string, todos = false) {
-    const r = await this.erp.buscarClientes(q, todos);
-    return r.map((c) => this.mapCliente(c));
+    const r = await this.erp.buscarClientes(q, todos, BUSCA_CLIENTES_CANDIDATOS);
+    let compras = new Map<number, number>();
+    try {
+      compras = await this.bi.comprasClientes12m(r.clientes.map((c) => c.CLI_CODIGO));
+    } catch (e) {
+      this.logger.warn(`BI indisponível para as compras 12m da busca de cliente: ${(e as Error).message}`);
+    }
+    const o = ordenarBuscaClientes(r.clientes, compras, BUSCA_CLIENTES_LIMITE, r.truncado);
+    return {
+      clientes: o.clientes.map((c) => ({ ...this.mapCliente(c), compras_12m: compras.get(c.CLI_CODIGO) ?? 0 })),
+      truncado: o.truncado,
+      limite: BUSCA_CLIENTES_LIMITE,
+    };
   }
 
   /** Cabeçalho do cliente: cadastro ao vivo + crédito em aberto e histórico do BI. */
@@ -203,41 +245,108 @@ export class OrcamentoService {
   /* --------------------------------------------------------------- bolsa */
 
   /**
-   * A bolsa de desconto do vendedor: quanto já deu no mês comissional e quanto
-   * ainda cabe para ficar no bônus (≤3%) ou não cair na pena (>6%). Com o
-   * orçamento em edição, projeta o depois.
+   * A bolsa de desconto do vendedor no mês comissional: o que a venda gerou
+   * acima do piso (receita − custo × piso), o que já foi gasto em desconto, o
+   * que ainda cabe — e, com o orçamento em edição, como fica depois. Também o
+   * lucro acima da linha dos 4% (base do prêmio) e o rateio por cliente.
    */
-  async bolsa(rep: number, orc?: { bruto: number; desconto: number }) {
+  async bolsa(
+    rep: number,
+    orc?: { receita: number; desconto: number; custo: number; sem_custo: number; m1a?: number; m1b?: number; m1c?: number; m1d?: number; m23?: number },
+  ) {
     const p = this.parametros();
     const periodo = mesComissional();
-    const v = await this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes);
-    const bruto = v.venda_liquida + v.desconto;
+    const [v, clientes, vol, dre, celulas, cfgComissao] = await Promise.all([
+      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes),
+      this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes).catch((e) => {
+        this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
+        return [];
+      }),
+      p.bolsa_modo === 'degrau' ? this.bi.volumeCanal3m(periodo.ano, periodo.mes) : Promise.resolve(null),
+      p.bolsa_modo === 'dre'
+        ? this.bi.dreCanalMensal(p.bolsa_dre_meses).catch((e) => {
+            this.logger.warn(`DRE do canal indisponível — piso cai para o fixo: ${(e as Error).message}`);
+            return null;
+          })
+        : Promise.resolve(null),
+      this.bi.celulasComissao(rep, periodo.ano, periodo.mes).catch((e) => {
+        this.logger.warn(`Células da comissão indisponíveis (rep ${rep}): ${(e as Error).message}`);
+        return null;
+      }),
+      this.bi.parametrosComissao().catch((e) => {
+        this.logger.warn(`Parâmetros da comissão indisponíveis: ${(e as Error).message}`);
+        return null;
+      }),
+    ]);
+    // Comissão do mês como está e como fica com o orçamento (mesma regra do fechamento;
+    // sem abatimentos manuais e média de férias — é estimativa para decidir na hora).
+    const comissao = celulas && cfgComissao ? comissaoComOrcamento(celulas, celulasDoOrcamento(orc ?? {}), cfgComissao) : null;
+    // Piso: pela DRE (custo + fixas + variáveis reais → 4%), pelo degrau de volume, ou fixo.
+    // Nos modos dre/degrau a linha dos 4% é o próprio piso: saldo retido = lucro a mais.
+    const pisoDre = dre ? pisoPorDre(dre, p.bolsa_dre_meses, p.meta_resultado) : null;
+    const degrau = vol ? pisoPorVolume(p.bolsa_degraus, vol.media_mes) : null;
+    const piso = pisoDre ? pisoDre.piso : degrau ? degrau.piso : p.bolsa_piso;
+    const linha = pisoDre || degrau || !(p.linha_4pct > 0) ? piso : p.linha_4pct;
     const bolsa = calcularBolsa({
-      bruto_mtd: bruto,
+      receita_mtd: v.venda_liquida,
+      custo_mtd: v.custo,
       desconto_mtd: v.desconto,
-      bruto_orc: orc?.bruto ?? 0,
+      receita_orc: orc?.receita ?? 0,
       desconto_orc: orc?.desconto ?? 0,
-      bonus_pct: p.bonus_pct,
-      pena_pct: p.pena_pct,
+      custo_orc: orc?.custo ?? 0,
+      sem_custo_orc: orc?.sem_custo ?? 0,
+      piso,
+      linha,
+      premio_pct: p.premio_pct,
     });
     const part = v.venda_liquida > 0 ? v.mix1_liquido / v.venda_liquida : 0;
     const abertos = await this.db.abertosDoVendedor(rep);
-    const descAbertos = abertos.reduce((s, o) => s + Number(o.desconto_total), 0);
-    const brutoAbertos = abertos.reduce((s, o) => s + Number(o.subtotal), 0);
+    // Se todos os enviados fecharem, é isto que entra na bolsa (item sem custo é neutro).
+    let saldoAbertos = 0;
+    for (const o of abertos) {
+      for (const i of o.itens ?? []) {
+        const total = Number(i.total), custo = i.custo_ref != null ? Number(i.custo_ref) : null;
+        saldoAbertos += custo != null && custo > 0 ? total - custo * Number(i.quantidade) * piso : 0;
+      }
+    }
+    const porCliente = clientes
+      .map((c) => ({
+        cli_codigo: c.cli_codigo,
+        cli_nome: c.cli_nome,
+        venda_liquida: round2(c.venda_liquida),
+        desconto: round2(c.desconto),
+        saldo: round2(c.venda_liquida - c.custo * piso),
+      }))
+      .sort((a, b) => b.saldo - a.saldo);
     return {
       periodo,
       notas: v.notas,
       venda_liquida: round2(v.venda_liquida),
       bolsa,
       mix1: { ...degrauMix1(part), venda_mix1: round2(v.mix1_liquido) },
-      // Orçamentos enviados e ainda sem desfecho: se todos fecharem, é isto que entra.
       em_aberto: {
         quantidade: abertos.length,
         total: round2(abertos.reduce((s, o) => s + Number(o.total), 0)),
-        desconto: round2(descAbertos),
-        pct_se_fechar_tudo:
-          bruto + brutoAbertos > 0 ? Math.round(((v.desconto + descAbertos) / (bruto + brutoAbertos)) * 10000) / 10000 : 0,
+        desconto: round2(abertos.reduce((s, o) => s + Number(o.desconto_total), 0)),
+        saldo_se_fechar_tudo: round2(bolsa.saldo + saldoAbertos),
       },
+      por_cliente: porCliente,
+      comissao,
+      // De onde veio o piso: o degrau do canal (e quanto falta para o próximo) ou o valor fixo.
+      volume: pisoDre
+        ? { modo: 'dre' as const, ...pisoDre }
+        : degrau && vol
+        ? {
+            modo: 'degrau' as const,
+            media_3m: round2(vol.media_mes),
+            meses: vol.meses.map((m) => ({ ...m, receita: round2(m.receita) })),
+            piso: degrau.piso,
+            degrau_min: degrau.degrau_min,
+            proximo_min: degrau.proximo_min,
+            proximo_piso: degrau.proximo_piso,
+            falta: degrau.falta,
+          }
+        : { modo: 'fixo' as const, piso, linha },
     };
   }
 
@@ -295,6 +404,7 @@ export class OrcamentoService {
       excecao,
       regua,
       volume,
+      piso_item: this.parametros().piso_item,
     });
     if (aplica && promo) {
       const fim = promo.data_final.split('-').reverse().join('/');
@@ -573,14 +683,30 @@ export class OrcamentoService {
 
   /* ----------------------------------------------------------- orçamento */
 
-  listar(f: { rep_codigo?: number; cli_codigo?: number; status?: string; page?: number; pageSize?: number }) {
-    return this.db.listar(f);
+  async listar(f: { rep_codigo?: number; cli_codigo?: number; status?: string; page?: number; pageSize?: number }) {
+    const r = await this.db.listar(f);
+    return { ...r, itens: await this.comRepNome(r.itens) };
   }
 
   async obter(id: string) {
     const o = await this.db.obter(id);
     if (!o) throw new NotFoundException('Orçamento não encontrado.');
-    return o;
+    return (await this.comRepNome([o]))[0];
+  }
+
+  /**
+   * Orçamento gravado sem o nome do vendedor (a tela só manda o código) sai com
+   * o nome resolvido no ERP na leitura; o registro não é alterado.
+   */
+  private async comRepNome<T extends { rep_codigo: number | null; rep_nome: string | null }>(rows: T[]): Promise<T[]> {
+    if (!rows.some((o) => !o.rep_nome && o.rep_codigo != null)) return rows;
+    let reps = new Map<number, string>();
+    try {
+      reps = await this.erp.representantes();
+    } catch (e) {
+      this.logger.warn(`nome dos representantes indisponível: ${(e as Error).message}`);
+    }
+    return rows.map((o) => (!o.rep_nome && o.rep_codigo != null ? { ...o, rep_nome: reps.get(o.rep_codigo) ?? null } : o));
   }
 
   /**
@@ -594,7 +720,9 @@ export class OrcamentoService {
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
     const erros: string[] = [];
     const linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[] = [];
-    let subtotal = 0, total = 0, acima = false;
+    // Insumos da alçada de cada linha; a decisão fica para depois de conhecer a bolsa (aplicarAlcada).
+    const alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> = [];
+    let subtotal = 0, total = 0, custoOrc = 0, semCusto = 0;
 
     itens.forEach((i, idx) => {
       const p = porCodigo.get(i.pro_codigo);
@@ -614,13 +742,24 @@ export class OrcamentoService {
         return;
       }
       const descPct = tabela > 0 ? Math.max(0, Math.round((1 - preco / tabela) * 10000) / 10000) : 0;
-      // Desconto máximo e mínimo valem para ESTA quantidade (escala por volume).
-      const degrau = [...p.avaliacao.escala_volume].reverse().find((d) => qtd >= d.qtd_min) ?? p.avaliacao.escala_volume[0];
+      // Dois limites por linha: o desta quantidade (escala por volume) e o máximo
+      // inteiro da faixa. Qual vale depende da bolsa — decidido em aplicarAlcada().
+      const escala = p.avaliacao.escala_volume;
+      const degrau = [...escala].reverse().find((d) => qtd >= d.qtd_min) ?? escala[0];
+      const cheio = escala[escala.length - 1];
       const minimo = degrau?.preco_minimo ?? p.avaliacao.preco_minimo;
       const descMaxQtd = degrau?.desc_max_efetivo_pct ?? p.avaliacao.desc_max_efetivo_pct;
-      const itemAcima = minimo > 0 && preco < minimo - 0.005;
-      acima = acima || itemAcima;
+      alcadas.push({
+        preco,
+        minimo_qtd: minimo,
+        minimo_cheio: cheio?.preco_minimo ?? p.avaliacao.preco_minimo,
+        piso_bolsa: p.avaliacao.preco_piso_bolsa ?? 0,
+        desc_max_qtd: descMaxQtd,
+        desc_max_cheio: cheio?.desc_max_efetivo_pct ?? p.avaliacao.desc_max_efetivo_pct,
+      });
       const linhaTotal = round2(preco * qtd);
+      if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
+      else semCusto += linhaTotal;
       subtotal += round2((tabela > 0 ? tabela : preco) * qtd);
       total += linhaTotal;
       linhas.push({
@@ -643,7 +782,7 @@ export class OrcamentoService {
         markup_regua: p.avaliacao.markup_regua,
         desc_max_pct: descMaxQtd,
         preco_minimo: minimo,
-        acima_alcada: itemAcima,
+        acima_alcada: false, // fechado em aplicarAlcada()
         estoque_disponivel: p.estoque_disponivel,
         substituto_de: i.substituto_de ?? null,
         observacao: i.observacao ?? null,
@@ -660,7 +799,9 @@ export class OrcamentoService {
       total,
       desconto_total: desconto,
       desc_pct: subtotal > 0 ? Math.round((desconto / subtotal) * 10000) / 10000 : 0,
-      acima_alcada: acima,
+      alcadas,
+      custo: round2(custoOrc),
+      sem_custo: round2(semCusto),
       produtos,
     };
   }
@@ -682,28 +823,61 @@ export class OrcamentoService {
     return v;
   }
 
-  private async bolsaSnapshot(rep: number, subtotal: number, desconto: number) {
+  /**
+   * Fotografia da bolsa ao salvar: % de desconto do mês antes/depois (colunas
+   * bolsa_pct_*) e o saldo depois deste orçamento — quem decide a alçada.
+   */
+  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number }) {
     try {
-      const b = await this.bolsa(rep, { bruto: subtotal, desconto });
-      return { antes: b.bolsa.pct_atual, depois: b.bolsa.pct_apos };
+      const b = await this.bolsa(rep, { receita: m.total, desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo });
+      const brutoDepois = b.bolsa.bruto_mtd + m.subtotal;
+      return {
+        antes: b.bolsa.pct_desconto,
+        depois: brutoDepois > 0 ? Math.round(((b.bolsa.desconto_mtd + m.desconto_total) / brutoDepois) * 10000) / 10000 : 0,
+        saldo_apos: b.bolsa.saldo_apos as number | null,
+      };
     } catch (e) {
       this.logger.warn(`Bolsa indisponível ao salvar (rep ${rep}): ${(e as Error).message}`);
-      return { antes: null, depois: null };
+      return { antes: null, depois: null, saldo_apos: null };
     }
+  }
+
+  /**
+   * Fecha a alçada de cada linha depois de conhecer a bolsa: com saldo (já com
+   * este orçamento) ≥ 0 vale o máximo inteiro da faixa; sem saldo vale a escala
+   * por quantidade. Grava na linha o limite que valeu (desc_max_pct / preco_minimo)
+   * e devolve se o orçamento precisa do gestor (alguma linha abaixo do limite em
+   * vigor ou do piso absoluto).
+   */
+  private aplicarAlcada(
+    m: { linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[]; alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> },
+    saldoApos: number | null,
+  ) {
+    let precisa = false;
+    m.linhas.forEach((l, i) => {
+      const e = m.alcadas[i];
+      if (!e) return;
+      const a = alcadaDoItem({ preco: e.preco, minimo_qtd: e.minimo_qtd, minimo_cheio: e.minimo_cheio, piso_bolsa: e.piso_bolsa, saldo_apos: saldoApos });
+      l.acima_alcada = a.precisa_aprovacao;
+      l.preco_minimo = a.minimo_vigente;
+      l.desc_max_pct = a.bolsa_cobre ? e.desc_max_cheio : e.desc_max_qtd;
+      precisa = precisa || a.precisa_aprovacao;
+    });
+    return precisa;
   }
 
   async criar(dto: SalvarOrcamentoDto) {
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
     const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
-    const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m.subtotal, m.desconto_total);
+    const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     return this.db.criar(
       {
         cli_codigo: dto.cli_codigo,
         cli_nome: cliente.CLI_NOME,
         tabela_preco: cliente.TABELA_PRECO,
         rep_codigo: dto.rep_codigo,
-        rep_nome: dto.rep_nome ?? null,
+        rep_nome: dto.rep_nome || (await this.erp.nomeRepresentante(dto.rep_codigo)),
         status: 'RASCUNHO',
         validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
@@ -711,7 +885,7 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: m.acima_alcada,
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         usuario_id: dto.usuario_id ?? null,
@@ -729,7 +903,7 @@ export class OrcamentoService {
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
     const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
-    const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m.subtotal, m.desconto_total);
+    const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     // Editar um orçamento já enviado o devolve ao rascunho: o que o cliente recebeu mudou.
     return this.db.atualizar(
       id,
@@ -738,7 +912,8 @@ export class OrcamentoService {
         cli_nome: cliente.CLI_NOME,
         tabela_preco: cliente.TABELA_PRECO,
         rep_codigo: dto.rep_codigo,
-        rep_nome: dto.rep_nome ?? atual.rep_nome,
+        // Vendedor trocado na edição: o nome gravado antes não serve mais.
+        rep_nome: dto.rep_nome || (atual.rep_codigo === dto.rep_codigo && atual.rep_nome) || (await this.erp.nomeRepresentante(dto.rep_codigo)),
         status: 'RASCUNHO',
         validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
@@ -746,7 +921,7 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: m.acima_alcada,
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         aprovado_por: null,
@@ -757,7 +932,7 @@ export class OrcamentoService {
     );
   }
 
-  /** Enviar = fechar a proposta. Item abaixo do mínimo manda para APROVAÇÃO. */
+  /** Enviar = fechar a proposta. Item abaixo do piso, ou bolsa estourada, manda para APROVAÇÃO. */
   async enviar(id: string, usuario?: { usuario_id?: string; usuario_nome?: string }) {
     const o = await this.obter(id);
     if (!['RASCUNHO', 'APROVACAO'].includes(o.status)) {

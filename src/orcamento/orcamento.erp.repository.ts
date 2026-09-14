@@ -168,6 +168,25 @@ export interface PromocaoItem {
 }
 
 /**
+ * Ordem da busca de cliente: canal (tabela 2/5) primeiro, depois quem mais
+ * comprou nos últimos 12 meses, depois o nome. Corta em `limite` e avisa se
+ * ficou gente de fora (`truncado` também herda o corte do ERP).
+ */
+export function ordenarBuscaClientes<T extends { CLI_CODIGO: number; CLI_NOME: string; TABELA_PRECO: string | null }>(
+  clientes: T[],
+  compras12m: Map<number, number>,
+  limite: number,
+  erpTruncado = false,
+): { clientes: T[]; truncado: boolean } {
+  const atacado = (c: T) => (TABELAS_ATACADO.includes(c.TABELA_PRECO ?? '') ? 1 : 0);
+  const compras = (c: T) => compras12m.get(c.CLI_CODIGO) ?? 0;
+  const ordenados = [...clientes].sort(
+    (a, b) => atacado(b) - atacado(a) || compras(b) - compras(a) || a.CLI_NOME.localeCompare(b.CLI_NOME, 'pt-BR'),
+  );
+  return { clientes: ordenados.slice(0, limite), truncado: erpTruncado || ordenados.length > limite };
+}
+
+/**
  * A erp-firebird-api considera a resposta TRUNCADA quando o número de linhas
  * é IGUAL ao limite pedido — e o ErpApiService transforma isso em erro. Logo,
  * pedir exatamente o que se espera (1 cliente, N produtos por código) falha
@@ -467,8 +486,7 @@ export class OrcamentoErpRepository {
     const hoje = new Date(`${hojeYmd()}T00:00:00`);
 
     const clis = [...new Set(pendentes.map((o) => Number(o.CLI_CODIGO)))];
-    const reps = [...new Set(pendentes.map((o) => Number(o.REP_CODIGO)).filter((r) => Number.isFinite(r) && r > 0))];
-    const [clientes, representantes] = await Promise.all([
+    const [clientes, rep_] = await Promise.all([
       Promise.all(
         Array.from({ length: Math.ceil(clis.length / 500) }, (_, i) => clis.slice(i * 500, i * 500 + 500)).map((lote) =>
           this.erp.consultar<Record<string, any>>('clientes', {
@@ -479,19 +497,9 @@ export class OrcamentoErpRepository {
           }),
         ),
       ).then((r) => r.flat()),
-      reps.length
-        ? this.erp.consultar<Record<string, any>>('representantes', {
-            empresa: EMPRESA,
-            campos: ['REP_CODIGO', 'REP_NOME'],
-            filtros: [{ campo: 'REP_CODIGO', op: 'em', valor: reps }],
-            limite: 2000,
-          })
-        : Promise.resolve([] as Record<string, any>[]),
+      this.representantes(),
     ]);
     const cli = new Map(clientes.map((c) => [Number(c.CLI_CODIGO), c]));
-    // REPRESENTANTES repete o código (uma linha por empresa) — o primeiro nome serve.
-    const rep_ = new Map<number, string>();
-    for (const r of representantes) if (!rep_.has(Number(r.REP_CODIGO))) rep_.set(Number(r.REP_CODIGO), String(r.REP_NOME ?? '').trim());
 
     return pendentes.map((o) => {
       const c = cli.get(Number(o.CLI_CODIGO));
@@ -510,6 +518,43 @@ export class OrcamentoErpRepository {
         dias_desde_emissao: Math.max(0, Math.round((hoje.getTime() - new Date(`${emissao}T00:00:00`).getTime()) / 86_400_000)),
       };
     });
+  }
+
+  /* ------------------------------------------------------- representantes */
+
+  private repCache: { em: number; mapa: Map<number, string> } | null = null;
+
+  /**
+   * Código → nome de TODOS os representantes, em cache por 10 minutos: a tabela
+   * é pequena, muda quase nunca e é consultada a cada orçamento gravado/lido.
+   * REPRESENTANTES repete o código (uma linha por empresa) — o primeiro nome serve.
+   */
+  async representantes(): Promise<Map<number, string>> {
+    if (this.repCache && Date.now() - this.repCache.em < 10 * 60_000) return this.repCache.mapa;
+    const r = await this.erp.consultar<Record<string, any>>('representantes', {
+      empresa: EMPRESA,
+      campos: ['REP_CODIGO', 'REP_NOME'],
+      limite: 2000,
+    });
+    const mapa = new Map<number, string>();
+    for (const x of r) {
+      const cod = Number(x.REP_CODIGO);
+      const nome = String(x.REP_NOME ?? '').trim();
+      if (nome && !mapa.has(cod)) mapa.set(cod, nome);
+    }
+    this.repCache = { em: Date.now(), mapa };
+    return mapa;
+  }
+
+  /** Nome do representante, ou null se o código não existe ou o ERP não respondeu. */
+  async nomeRepresentante(rep: number | null | undefined): Promise<string | null> {
+    if (rep == null) return null;
+    try {
+      return (await this.representantes()).get(Number(rep)) ?? null;
+    } catch (e) {
+      this.logger.warn(`nome do representante ${rep}: ${(e as Error).message}`);
+      return null;
+    }
   }
 
   /** Itens (não cancelados) de um orçamento do Celta, na ordem do orçamento. */
@@ -585,12 +630,15 @@ export class OrcamentoErpRepository {
   /**
    * Busca de cliente: código, CNPJ/CPF (só dígitos) ou nome. Por padrão restrita
    * ao universo do atacado (TABELA_PRECO 2/5) — `todos` abre para a base inteira.
+   *
+   * O ERP corta em ordem alfabética, então com `todos` o atacado é buscado à
+   * parte e entra inteiro (um cliente 2/5 com nome depois do "G" sumiria num
+   * corte alfabético da base toda). `truncado` = algum dos lotes passou do limite.
    */
-  async buscarClientes(termo: string, todos = false, limite = 20): Promise<ClienteErp[]> {
+  async buscarClientes(termo: string, todos = false, limite = 20): Promise<{ clientes: ClienteErp[]; truncado: boolean }> {
     const t = termo.trim();
-    if (!t) return [];
+    if (!t) return { clientes: [], truncado: false };
     const filtros: FiltroErp[] = [];
-    if (!todos) filtros.push({ campo: 'TABELA_PRECO', op: 'em', valor: TABELAS_ATACADO });
     const digitos = t.replace(/\D/g, '');
     if (/^\d+$/.test(t) && t.length <= 8) {
       filtros.push({ campo: 'CLI_CODIGO', op: 'igual', valor: Number(t) });
@@ -601,14 +649,26 @@ export class OrcamentoErpRepository {
         filtros.push({ campo: 'CLI_NOME', op: 'contem', valor: p });
       }
     }
-    const { dados: r } = await this.erp.consultarPagina<Record<string, any>>('clientes', {
-      empresa: EMPRESA,
-      campos: CAMPOS_CLIENTE,
-      filtros,
-      ordenar: [{ campo: 'CLI_NOME', dir: 'asc' }],
-      limite: limite + FOLGA,
-    });
-    return r.slice(0, limite).map((x) => this.normalizarCliente(x));
+    const consultar = async (soAtacado: boolean) =>
+      (await this.erp.consultarPagina<Record<string, any>>('clientes', {
+        empresa: EMPRESA,
+        campos: CAMPOS_CLIENTE,
+        filtros: soAtacado ? [{ campo: 'TABELA_PRECO', op: 'em', valor: TABELAS_ATACADO }, ...filtros] : filtros,
+        ordenar: [{ campo: 'CLI_NOME', dir: 'asc' }],
+        limite: limite + FOLGA,
+      })).dados;
+    const lotes = await Promise.all(todos ? [consultar(true), consultar(false)] : [consultar(true)]);
+    const vistos = new Set<number>();
+    const clientes: ClienteErp[] = [];
+    for (const r of lotes) {
+      for (const x of r.slice(0, limite)) {
+        const cod = Number(x.CLI_CODIGO);
+        if (vistos.has(cod)) continue;
+        vistos.add(cod);
+        clientes.push(this.normalizarCliente(x));
+      }
+    }
+    return { clientes, truncado: lotes.some((r) => r.length > limite) };
   }
 
   /** Cadastro completo para o PDF (endereço, bairro, CEP, IE) — só quando vai imprimir. */
