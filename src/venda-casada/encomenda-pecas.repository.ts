@@ -80,15 +80,17 @@ export class EncomendaPecasRepository {
     return toVendaCasadaComItens(encomenda);
   }
 
-  /** Cria a encomenda e os itens encomendados na mesma transação (create aninhado). */
+  /** Cria a encomenda, os itens encomendados e os cotados na mesma transação (create aninhado). */
   async create(
     data: CreateEncomendaPecasInput,
     itens: CreateItemEncomendadoInput[],
+    itensCotados: CreateVendaCasadaItemInput[] = [],
   ): Promise<VendaCasadaComItens> {
     const encomenda = await this.prisma.ven_encomenda_pecas.create({
       data: {
         ...data,
         ven_encomenda_pecas_itens_encomendados: { create: itens },
+        ven_encomenda_pecas_itens_cotados: { create: itensCotados },
       },
       include: INCLUDE_ITENS,
     });
@@ -120,10 +122,27 @@ export class EncomendaPecasRepository {
     });
   }
 
-  async updateStatus(id: number, status: string): Promise<VendaCasadaComItens> {
+  /** `motivoDenaoCotar` undefined não altera a coluna (o Prisma ignora campos undefined). */
+  async updateStatus(
+    id: number,
+    data: {
+      status: string;
+      motivoCancelamento: string | null;
+      motivoDenaoCotar?: string | null;
+    },
+  ): Promise<VendaCasadaComItens> {
     const encomenda = await this.prisma.ven_encomenda_pecas.update({
       where: { id },
-      data: { status },
+      data,
+      include: INCLUDE_ITENS,
+    });
+    return toVendaCasadaComItens(encomenda);
+  }
+
+  async updateNfe(id: number, nfe: string | null): Promise<VendaCasadaComItens> {
+    const encomenda = await this.prisma.ven_encomenda_pecas.update({
+      where: { id },
+      data: { nfe },
       include: INCLUDE_ITENS,
     });
     return toVendaCasadaComItens(encomenda);

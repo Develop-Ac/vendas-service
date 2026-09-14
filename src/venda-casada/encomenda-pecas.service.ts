@@ -4,6 +4,7 @@ import {
   ANEXO_TIPO_COMPROVANTE,
   AnexoTipo,
   CreateItemEncomendadoInput,
+  CreateVendaCasadaItemInput,
   EncomendaPecasRepository,
   VendaCasadaComItens,
 } from './encomenda-pecas.repository';
@@ -12,9 +13,10 @@ import {
   CreateVendaCasadaDto,
   EncomendaPecaItemDto,
 } from './dto/create-encomenda-pecas.dto';
-import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
+import { AddPecasCotadasDto, VendaCasadaItemDto } from './dto/add-pecas-cotadas.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { UpdateItemCotadoDto } from './dto/update-item-cotado.dto';
+import { UpdateNfeDto } from './dto/update-nfe.dto';
 import { UploadedFileData } from '../common/types/uploaded-file';
 import {
   ven_encomenda_pecas_anexos,
@@ -29,6 +31,9 @@ import {
 /** Sentinela usado quando a peça não tem código de produto no ERP. */
 const PRO_CODIGO_SEM_ERP = 99999;
 
+/** Status que exige `motivo` (gravado em motivoCancelamento). */
+const STATUS_CANCELADO = 'Cancelado';
+
 /** Em multipart os valores chegam como string; nos GETs/POST JSON já vêm tipados. */
 function toNumberOrNull(valor: unknown): number | null {
   if (valor === null || valor === undefined || valor === '') return null;
@@ -39,6 +44,47 @@ function toNumberOrNull(valor: unknown): number | null {
 function toStringOrNull(valor: unknown): string | null {
   if (valor === null || valor === undefined || valor === '') return null;
   return String(valor);
+}
+
+/** Aceita boolean ou "true"/"false" (multipart); qualquer outra coisa vira null. */
+function toBooleanOrNull(valor: unknown): boolean | null {
+  if (typeof valor === 'boolean') return valor;
+  if (valor === 'true') return true;
+  if (valor === 'false') return false;
+  return null;
+}
+
+/**
+ * Achata a lista recebida: aceita array de objetos (JSON) ou string/array de strings
+ * com JSON dentro — que é como o multipart entrega campos repetidos.
+ */
+function achatarListaJson(lista: unknown, campo: string): unknown[] {
+  const bruto: unknown[] = Array.isArray(lista)
+    ? lista
+    : lista === null || lista === undefined || lista === ''
+      ? []
+      : [lista];
+
+  const saida: unknown[] = [];
+  for (const entrada of bruto) {
+    let item: unknown = entrada;
+    if (typeof item === 'string') {
+      try {
+        item = JSON.parse(item);
+      } catch {
+        throw new BadRequestException(`Item inválido em "${campo}": "${entrada}".`);
+      }
+    }
+    if (Array.isArray(item)) {
+      saida.push(...achatarListaJson(item, campo));
+      continue;
+    }
+    if (!item || typeof item !== 'object') {
+      throw new BadRequestException(`Cada item de "${campo}" deve ser um objeto.`);
+    }
+    saida.push(item);
+  }
+  return saida;
 }
 
 export type AnexoEnviado = {
@@ -124,6 +170,7 @@ export class EncomendaPecasService {
     if (itens.length === 0) {
       throw new BadRequestException('Informe ao menos uma peça em "pecas".');
     }
+    const itensCotados = this.normalizarPecasCotadas(dto.pecas_cotadas);
 
     const encomenda = await this.repository.create(
       {
@@ -135,8 +182,12 @@ export class EncomendaPecasService {
         numero: dto.numero ?? null,
         imagem: null,
         status: 'Aguardando cotação',
+        motivoCancelamento: null,
+        motivoDenaoCotar: null,
+        nfe: null,
       },
       itens,
+      itensCotados,
     );
 
     if (files?.length) {
@@ -211,6 +262,48 @@ export class EncomendaPecasService {
     return itens;
   }
 
+  /** Campo numérico opcional do item cotado: vazio vira null; texto não numérico é 400. */
+  private numeroOpcional(valor: unknown, campo: string, indice: number): number | null {
+    const n = toNumberOrNull(valor);
+    if (n === null && valor !== null && valor !== undefined && valor !== '') {
+      throw new BadRequestException(
+        `Peça cotada ${indice + 1}: "${campo}" deve ser um número.`,
+      );
+    }
+    return n;
+  }
+
+  /** `pecas_cotadas` é opcional na criação: ausente ou vazia não cria nada. */
+  private normalizarPecasCotadas(pecasCotadas: unknown): CreateVendaCasadaItemInput[] {
+    return achatarListaJson(pecasCotadas, 'pecas_cotadas').map((entrada, i) => {
+      const item = entrada as Partial<VendaCasadaItemDto>;
+
+      const nome = toStringOrNull(item.nome);
+      if (nome === null) {
+        throw new BadRequestException(`Peça cotada ${i + 1}: o campo "nome" é obrigatório.`);
+      }
+
+      const valor = toNumberOrNull(item.valor);
+      if (valor === null) {
+        throw new BadRequestException(`Peça cotada ${i + 1}: "valor" deve ser um número.`);
+      }
+
+      return {
+        nome,
+        valor,
+        prazo: toStringOrNull(item.prazo),
+        fornecedor: toStringOrNull(item.fornecedor),
+        marca: toStringOrNull(item.marca),
+        transpostadora: toStringOrNull(item.transpostadora),
+        custo: this.numeroOpcional(item.custo, 'custo', i),
+        margem: this.numeroOpcional(item.margem, 'margem', i),
+        frete: this.numeroOpcional(item.frete, 'frete', i),
+        imposto: this.numeroOpcional(item.imposto, 'imposto', i),
+        autorizado: toBooleanOrNull(item.autorizado),
+      };
+    });
+  }
+
   async addPecasCotadas(
     id: number,
     dto: AddPecasCotadasDto,
@@ -225,13 +318,17 @@ export class EncomendaPecasService {
 
     const lista = Array.isArray(dto.itens) ? dto.itens : [dto.itens];
 
-    const itens = lista.map((item) => ({
+    const itens = lista.map((item, i) => ({
       nome: item.nome,
       valor: Number(item.valor),
       prazo: item.prazo ?? null,
       fornecedor: item.fornecedor ?? null,
       marca: item.marca ?? null,
       transpostadora: item.transpostadora ?? null,
+      custo: this.numeroOpcional(item.custo, 'custo', i),
+      margem: this.numeroOpcional(item.margem, 'margem', i),
+      frete: this.numeroOpcional(item.frete, 'frete', i),
+      imposto: this.numeroOpcional(item.imposto, 'imposto', i),
       autorizado: item.autorizado ?? null,
     }));
 
@@ -243,7 +340,48 @@ export class EncomendaPecasService {
     if (!venda) {
       throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
     }
-    return this.repository.updateStatus(id, dto.status);
+
+    const status = toStringOrNull(dto.status?.trim());
+    if (status === null) {
+      throw new BadRequestException('Informe o "status".');
+    }
+
+    // O motivo só faz sentido no cancelamento; em qualquer outro status ele é limpo.
+    const cancelado = status.toLowerCase() === STATUS_CANCELADO.toLowerCase();
+    const motivo = toStringOrNull(dto.motivo?.trim());
+    if (cancelado && motivo === null) {
+      throw new BadRequestException('Informe o "motivo" do cancelamento.');
+    }
+
+    // Opcional: ausente mantém o que já está gravado; string vazia limpa.
+    const motivoDenaoCotar =
+      dto.motivoDenaoCotar === undefined
+        ? undefined
+        : toStringOrNull(String(dto.motivoDenaoCotar ?? '').trim());
+
+    return this.repository.updateStatus(id, {
+      status,
+      motivoCancelamento: cancelado ? motivo : null,
+      motivoDenaoCotar,
+    });
+  }
+
+  /** Grava a NF-e da encomenda; vazio ou null limpa a coluna. */
+  async updateNfe(id: number, dto: UpdateNfeDto): Promise<VendaCasadaComUrls> {
+    if (!dto || dto.nfe === undefined) {
+      throw new BadRequestException('Informe o campo "nfe".');
+    }
+    if (dto.nfe !== null && typeof dto.nfe !== 'string') {
+      throw new BadRequestException('"nfe" deve ser uma string.');
+    }
+
+    const venda = await this.repository.findById(id);
+    if (!venda) {
+      throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
+    }
+
+    await this.repository.updateNfe(id, toStringOrNull(dto.nfe?.trim()));
+    return this.findById(id);
   }
 
   async updateItemCotadoAutorizado(

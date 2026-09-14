@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Put,
   Param,
   Query,
   ParseIntPipe,
@@ -28,6 +29,7 @@ import { CreateVendaCasadaDto } from './dto/create-encomenda-pecas.dto';
 import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { UpdateItemCotadoDto } from './dto/update-item-cotado.dto';
+import { UpdateNfeDto } from './dto/update-nfe.dto';
 
 @ApiTags('Encomenda de Peças')
 @Controller('encomenda-pecas')
@@ -115,7 +117,8 @@ export class EncomendaPecasController {
   @ApiBody({
     description:
       'Dados da encomenda e imagens opcionais. Cada item de `pecas` vira uma linha em ' +
-      'ven_encomenda_pecas_itens_encomendados. Em multipart, envie cada peça como JSON string ' +
+      'ven_encomenda_pecas_itens_encomendados e cada item de `pecas_cotadas` (opcional, pode ser ' +
+      'vazia) vira uma linha em ven_encomenda_pecas_itens_cotados. Em multipart, envie cada item como JSON string ' +
       'e repita o campo `imagens` para mandar várias fotos — cada uma vira uma linha em ' +
       'ven_encomenda_pecas_anexos com `tipo: "carro"`. O campo antigo `imagem` continua aceito.',
     schema: {
@@ -137,6 +140,29 @@ export class EncomendaPecasController {
               },
               referencia: { type: 'string', example: '2204' },
               quantidade: { type: 'integer', example: 12, default: 1 },
+            },
+          },
+        },
+        pecas_cotadas: {
+          type: 'array',
+          description:
+            'Opcional e pode vir vazia. Cada item vira uma linha em ven_encomenda_pecas_itens_cotados. ' +
+            'Em multipart, envie cada item (ou a lista inteira) como JSON string.',
+          items: {
+            type: 'object',
+            required: ['nome', 'valor'],
+            properties: {
+              nome: { type: 'string', example: 'Pastilha de freio' },
+              valor: { type: 'number', example: 199.9 },
+              prazo: { type: 'string', example: '15 dias' },
+              fornecedor: { type: 'string' },
+              marca: { type: 'string' },
+              transpostadora: { type: 'string' },
+              custo: { type: 'number', example: 120.5 },
+              margem: { type: 'number', example: 35 },
+              frete: { type: 'number', example: 25 },
+              imposto: { type: 'number', example: 18 },
+              autorizado: { type: 'boolean' },
             },
           },
         },
@@ -178,17 +204,44 @@ export class EncomendaPecasController {
     return this.service.addPecasCotadas(id, dto);
   }
 
-  @Patch('status/:id')
-  @ApiOperation({ summary: 'Atualiza o status de uma encomenda de peça' })
+  @Put('status/:id')
+  @ApiOperation({
+    summary: 'Atualiza o status de uma encomenda de peça',
+    description:
+      'Recebe `status` e `motivo`. Quando o status é "Cancelado", `motivo` é obrigatório e é ' +
+      'gravado em `motivoCancelamento` (retornado no GET e GET /:id). Em qualquer outro status ' +
+      'o `motivoCancelamento` é limpo. `motivoDenaoCotar` é opcional e grava na coluna de mesmo ' +
+      'nome (se não vier, mantém o valor atual).',
+  })
   @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
   @ApiBody({ type: UpdateStatusDto })
   @ApiResponse({ status: 200, description: 'Status atualizado com sucesso' })
+  @ApiResponse({ status: 400, description: 'Status vazio ou cancelamento sem motivo' })
   @ApiResponse({ status: 404, description: 'Encomenda de peça não encontrada' })
   updateStatus(
     @Param('id', ParseIntPipe) id: number,
     @Body() dto: UpdateStatusDto,
   ) {
     return this.service.updateStatus(id, dto);
+  }
+
+  @Put('nfe/:id')
+  @ApiOperation({
+    summary: 'Salva a NF-e de uma encomenda de peça',
+    description:
+      'Grava `nfe` na coluna de mesmo nome em ven_encomenda_pecas e devolve a encomenda ' +
+      'atualizada. Enviar vazio ou null limpa o valor.',
+  })
+  @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
+  @ApiBody({ type: UpdateNfeDto })
+  @ApiResponse({ status: 200, description: 'NF-e salva com sucesso' })
+  @ApiResponse({ status: 400, description: 'Campo "nfe" ausente ou inválido' })
+  @ApiResponse({ status: 404, description: 'Encomenda de peça não encontrada' })
+  updateNfe(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateNfeDto,
+  ) {
+    return this.service.updateNfe(id, dto);
   }
 
   @Patch('item_cotado/:id')

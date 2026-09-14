@@ -12,6 +12,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { VendaCasadaItemDto } from './add-pecas-cotadas.dto';
 
 export class EncomendaPecaItemDto {
   @ApiProperty({ description: 'Descrição da peça', example: 'LAN T GOL /86 LE FUME' })
@@ -69,6 +70,18 @@ export class CreateVendaCasadaDto {
   @ValidateNested({ each: true })
   @Type(() => EncomendaPecaItemDto)
   pecas!: EncomendaPecaItemDto[];
+
+  @ApiProperty({
+    description:
+      'Lista de peças cotadas (ven_encomenda_pecas_itens_cotados). Opcional e pode vir vazia.',
+    required: false,
+    type: [VendaCasadaItemDto],
+  })
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => VendaCasadaItemDto)
+  pecas_cotadas?: VendaCasadaItemDto[];
 
   @ApiProperty({ description: 'Ano', required: false })
   @IsOptional()
