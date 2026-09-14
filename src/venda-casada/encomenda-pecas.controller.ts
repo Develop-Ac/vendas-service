@@ -115,7 +115,8 @@ export class EncomendaPecasController {
   @ApiBody({
     description:
       'Dados da encomenda e imagens opcionais. Cada item de `pecas` vira uma linha em ' +
-      'ven_encomenda_pecas_itens_encomendados. Em multipart, envie cada peça como JSON string ' +
+      'ven_encomenda_pecas_itens_encomendados e cada item de `pecas_cotadas` (opcional, pode ser ' +
+      'vazia) vira uma linha em ven_encomenda_pecas_itens_cotados. Em multipart, envie cada item como JSON string ' +
       'e repita o campo `imagens` para mandar várias fotos — cada uma vira uma linha em ' +
       'ven_encomenda_pecas_anexos com `tipo: "carro"`. O campo antigo `imagem` continua aceito.',
     schema: {
@@ -137,6 +138,25 @@ export class EncomendaPecasController {
               },
               referencia: { type: 'string', example: '2204' },
               quantidade: { type: 'integer', example: 12, default: 1 },
+            },
+          },
+        },
+        pecas_cotadas: {
+          type: 'array',
+          description:
+            'Opcional e pode vir vazia. Cada item vira uma linha em ven_encomenda_pecas_itens_cotados. ' +
+            'Em multipart, envie cada item (ou a lista inteira) como JSON string.',
+          items: {
+            type: 'object',
+            required: ['nome', 'valor'],
+            properties: {
+              nome: { type: 'string', example: 'Pastilha de freio' },
+              valor: { type: 'number', example: 199.9 },
+              prazo: { type: 'string', example: '15 dias' },
+              fornecedor: { type: 'string' },
+              marca: { type: 'string' },
+              transpostadora: { type: 'string' },
+              autorizado: { type: 'boolean' },
             },
           },
         },

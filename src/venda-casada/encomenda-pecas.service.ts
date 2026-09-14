@@ -4,6 +4,7 @@ import {
   ANEXO_TIPO_COMPROVANTE,
   AnexoTipo,
   CreateItemEncomendadoInput,
+  CreateVendaCasadaItemInput,
   EncomendaPecasRepository,
   VendaCasadaComItens,
 } from './encomenda-pecas.repository';
@@ -12,7 +13,7 @@ import {
   CreateVendaCasadaDto,
   EncomendaPecaItemDto,
 } from './dto/create-encomenda-pecas.dto';
-import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
+import { AddPecasCotadasDto, VendaCasadaItemDto } from './dto/add-pecas-cotadas.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { UpdateItemCotadoDto } from './dto/update-item-cotado.dto';
 import { UploadedFileData } from '../common/types/uploaded-file';
@@ -39,6 +40,47 @@ function toNumberOrNull(valor: unknown): number | null {
 function toStringOrNull(valor: unknown): string | null {
   if (valor === null || valor === undefined || valor === '') return null;
   return String(valor);
+}
+
+/** Aceita boolean ou "true"/"false" (multipart); qualquer outra coisa vira null. */
+function toBooleanOrNull(valor: unknown): boolean | null {
+  if (typeof valor === 'boolean') return valor;
+  if (valor === 'true') return true;
+  if (valor === 'false') return false;
+  return null;
+}
+
+/**
+ * Achata a lista recebida: aceita array de objetos (JSON) ou string/array de strings
+ * com JSON dentro — que é como o multipart entrega campos repetidos.
+ */
+function achatarListaJson(lista: unknown, campo: string): unknown[] {
+  const bruto: unknown[] = Array.isArray(lista)
+    ? lista
+    : lista === null || lista === undefined || lista === ''
+      ? []
+      : [lista];
+
+  const saida: unknown[] = [];
+  for (const entrada of bruto) {
+    let item: unknown = entrada;
+    if (typeof item === 'string') {
+      try {
+        item = JSON.parse(item);
+      } catch {
+        throw new BadRequestException(`Item inválido em "${campo}": "${entrada}".`);
+      }
+    }
+    if (Array.isArray(item)) {
+      saida.push(...achatarListaJson(item, campo));
+      continue;
+    }
+    if (!item || typeof item !== 'object') {
+      throw new BadRequestException(`Cada item de "${campo}" deve ser um objeto.`);
+    }
+    saida.push(item);
+  }
+  return saida;
 }
 
 export type AnexoEnviado = {
@@ -124,6 +166,7 @@ export class EncomendaPecasService {
     if (itens.length === 0) {
       throw new BadRequestException('Informe ao menos uma peça em "pecas".');
     }
+    const itensCotados = this.normalizarPecasCotadas(dto.pecas_cotadas);
 
     const encomenda = await this.repository.create(
       {
@@ -137,6 +180,7 @@ export class EncomendaPecasService {
         status: 'Aguardando cotação',
       },
       itens,
+      itensCotados,
     );
 
     if (files?.length) {
@@ -209,6 +253,33 @@ export class EncomendaPecasService {
     }
 
     return itens;
+  }
+
+  /** `pecas_cotadas` é opcional na criação: ausente ou vazia não cria nada. */
+  private normalizarPecasCotadas(pecasCotadas: unknown): CreateVendaCasadaItemInput[] {
+    return achatarListaJson(pecasCotadas, 'pecas_cotadas').map((entrada, i) => {
+      const item = entrada as Partial<VendaCasadaItemDto>;
+
+      const nome = toStringOrNull(item.nome);
+      if (nome === null) {
+        throw new BadRequestException(`Peça cotada ${i + 1}: o campo "nome" é obrigatório.`);
+      }
+
+      const valor = toNumberOrNull(item.valor);
+      if (valor === null) {
+        throw new BadRequestException(`Peça cotada ${i + 1}: "valor" deve ser um número.`);
+      }
+
+      return {
+        nome,
+        valor,
+        prazo: toStringOrNull(item.prazo),
+        fornecedor: toStringOrNull(item.fornecedor),
+        marca: toStringOrNull(item.marca),
+        transpostadora: toStringOrNull(item.transpostadora),
+        autorizado: toBooleanOrNull(item.autorizado),
+      };
+    });
   }
 
   async addPecasCotadas(
