@@ -41,6 +41,28 @@ function toNumberOrNull(valor: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Converte "YYYY-MM-DD" (ou ISO com hora, usando só a parte da data) em Date à meia-noite UTC,
+ * que é como o Prisma grava uma coluna @db.Date sem deslocar o dia. Vazio/null vira null.
+ */
+function toDateOnlyOrNull(valor: unknown, campo: string): Date | null {
+  if (valor === null || valor === undefined || String(valor).trim() === '') return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(valor).trim());
+  if (match) {
+    const [ano, mes, dia] = match.slice(1).map(Number);
+    const data = new Date(Date.UTC(ano, mes - 1, dia));
+    if (data.getUTCFullYear() === ano && data.getUTCMonth() === mes - 1 && data.getUTCDate() === dia) {
+      return data;
+    }
+  }
+  throw new BadRequestException(`"${campo}" deve ser uma data válida no formato YYYY-MM-DD.`);
+}
+
+/** Date de coluna @db.Date (meia-noite UTC) -> "YYYY-MM-DD". */
+function formatDateOnly(data: Date | null): string | null {
+  return data ? data.toISOString().slice(0, 10) : null;
+}
+
 function toStringOrNull(valor: unknown): string | null {
   if (valor === null || valor === undefined || valor === '') return null;
   return String(valor);
@@ -98,8 +120,10 @@ export type AnexoEnviado = {
 
 export type AnexoComUrl = ven_encomenda_pecas_anexos & { url: string | null };
 
-export type VendaCasadaComUrls = Omit<VendaCasadaComItens, 'anexos'> & {
+/** `prazo` sai como "YYYY-MM-DD" para o front não deslocar o dia pelo fuso. */
+export type VendaCasadaComUrls = Omit<VendaCasadaComItens, 'anexos' | 'prazo'> & {
   anexos: AnexoComUrl[];
+  prazo: string | null;
 };
 
 @Injectable()
@@ -142,7 +166,7 @@ export class EncomendaPecasService {
       venda.imagem ? this.gerarUrlAnexo(venda.imagem, this.BUCKET) : null,
     ]);
 
-    return { ...venda, anexos, imagem };
+    return { ...venda, anexos, imagem, prazo: formatDateOnly(venda.prazo) };
   }
 
   /** Se o objeto não existir mais no bucket, devolve null em vez de quebrar o GET. */
@@ -184,6 +208,7 @@ export class EncomendaPecasService {
         status: 'Aguardando cotação',
         motivoCancelamento: null,
         motivoDenaoCotar: null,
+        prazo: null,
         nfe: null,
       },
       itens,
@@ -359,10 +384,14 @@ export class EncomendaPecasService {
         ? undefined
         : toStringOrNull(String(dto.motivoDenaoCotar ?? '').trim());
 
+    // Mesma regra: ausente mantém; vazio/null limpa.
+    const prazo = dto.prazo === undefined ? undefined : toDateOnlyOrNull(dto.prazo, 'prazo');
+
     return this.repository.updateStatus(id, {
       status,
       motivoCancelamento: cancelado ? motivo : null,
       motivoDenaoCotar,
+      prazo,
     });
   }
 

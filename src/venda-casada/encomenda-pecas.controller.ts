@@ -44,7 +44,8 @@ export class EncomendaPecasController {
     description:
       'Cada encomenda vem com `pecas` (ven_encomenda_pecas_itens_encomendados), ' +
       '`pecas_cotadas` (ven_encomenda_pecas_itens_cotados) e `anexos` (ven_encomenda_pecas_anexos), ' +
-      'cada anexo com `tipo`: "carro" (imagens da criação) ou "comprovante" (enviados depois).',
+      'cada anexo com `tipo`: "carro" (imagens da criação) ou "comprovante" (enviados depois). ' +
+      '`prazo` vem como "YYYY-MM-DD" (ou null).',
   })
   @ApiResponse({ status: 200, description: 'Lista retornada com sucesso' })
   findAll() {
@@ -101,7 +102,8 @@ export class EncomendaPecasController {
     description:
       'Retorna a encomenda com `pecas` (ven_encomenda_pecas_itens_encomendados), ' +
       '`pecas_cotadas` (ven_encomenda_pecas_itens_cotados) e `anexos` (ven_encomenda_pecas_anexos), ' +
-      'cada anexo com `tipo`: "carro" (imagens da criação) ou "comprovante" (enviados depois).',
+      'cada anexo com `tipo`: "carro" (imagens da criação) ou "comprovante" (enviados depois). ' +
+      '`prazo` vem como "YYYY-MM-DD" (ou null).',
   })
   @ApiParam({ name: 'id', type: Number, description: 'ID da venda casada' })
   @ApiResponse({ status: 200, description: 'Registro encontrado' })
@@ -211,12 +213,13 @@ export class EncomendaPecasController {
       'Recebe `status` e `motivo`. Quando o status é "Cancelado", `motivo` é obrigatório e é ' +
       'gravado em `motivoCancelamento` (retornado no GET e GET /:id). Em qualquer outro status ' +
       'o `motivoCancelamento` é limpo. `motivoDenaoCotar` é opcional e grava na coluna de mesmo ' +
-      'nome (se não vier, mantém o valor atual).',
+      'nome (se não vier, mantém o valor atual). `prazo` (YYYY-MM-DD) também é opcional e grava ' +
+      'na coluna `prazo` com a mesma regra; vazio ou null limpa.',
   })
   @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
   @ApiBody({ type: UpdateStatusDto })
   @ApiResponse({ status: 200, description: 'Status atualizado com sucesso' })
-  @ApiResponse({ status: 400, description: 'Status vazio ou cancelamento sem motivo' })
+  @ApiResponse({ status: 400, description: 'Status vazio, cancelamento sem motivo ou prazo inválido' })
   @ApiResponse({ status: 404, description: 'Encomenda de peça não encontrada' })
   updateStatus(
     @Param('id', ParseIntPipe) id: number,
