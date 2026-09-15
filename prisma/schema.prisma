@@ -2012,6 +2012,7 @@ model ven_encomenda_pecas {
   motivoDenaoCotar                       String?
   nfe                                    String?
   prazo                                  DateTime?                                @db.Date
+  oficina                                Boolean?
   ven_encomenda_pecas_anexos             ven_encomenda_pecas_anexos[]
   ven_encomenda_pecas_itens_cotados      ven_encomenda_pecas_itens_cotados[]
   ven_encomenda_pecas_itens_encomendados ven_encomenda_pecas_itens_encomendados[]

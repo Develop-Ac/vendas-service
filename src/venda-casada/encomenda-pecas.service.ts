@@ -195,6 +195,7 @@ export class EncomendaPecasService {
       throw new BadRequestException('Informe ao menos uma peça em "pecas".');
     }
     const itensCotados = this.normalizarPecasCotadas(dto.pecas_cotadas);
+    const oficina = await this.oficinaPelaOs(dto.os);
 
     const encomenda = await this.repository.create(
       {
@@ -204,6 +205,7 @@ export class EncomendaPecasService {
         observacao: dto.observacao ?? null,
         cliente: dto.cliente ?? null,
         numero: dto.numero ?? null,
+        oficina,
         imagem: null,
         status: 'Aguardando cotação',
         motivoCancelamento: null,
@@ -220,6 +222,22 @@ export class EncomendaPecasService {
     }
 
     return this.findById(encomenda.id);
+  }
+
+  /** Encomenda é de oficina quando a OS informada está com STATUS 1 no ERP; sem OS, false. */
+  private async oficinaPelaOs(os: unknown): Promise<boolean> {
+    if (os === null || os === undefined || os === '') return false;
+
+    const numero = toNumberOrNull(os);
+    if (numero === null || !Number.isInteger(numero) || numero <= 0) {
+      throw new BadRequestException('"os" deve ser um número inteiro positivo.');
+    }
+
+    const ordem = await this.erpRepository.ordemServicoPorNumero(numero);
+    if (!ordem) {
+      throw new BadRequestException(`OS ${numero} não encontrada no ERP.`);
+    }
+    return ordem.STATUS === 1;
   }
 
   /**

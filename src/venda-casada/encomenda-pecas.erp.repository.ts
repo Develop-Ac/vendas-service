@@ -21,6 +21,12 @@ export interface ClienteEncomenda {
   CELULAR: string | null;
 }
 
+/** Recorte da ordem de serviço — só o que decide se a encomenda é de oficina. */
+export interface OrdemServicoEncomenda {
+  ORDEM_SERVICO: number;
+  STATUS: number | null;
+}
+
 /**
  * Leitura por chave no ERP via erp-firebird-api. As rotas de lá devolvem a
  * linha inteira do ERP; o recorte para os campos da tela é feito aqui para a
@@ -64,6 +70,22 @@ export class EncomendaPecasErpRepository {
       CLI_NOME: linha.CLI_NOME ?? null,
       FONE: linha.FONE ?? null,
       CELULAR: linha.CELULAR ?? null,
+    };
+  }
+
+  async ordemServicoPorNumero(
+    os: number,
+    empresa = EMPRESA_PADRAO,
+  ): Promise<OrdemServicoEncomenda | null> {
+    const r = await this.erp.buscar<Record<string, any>>(
+      `/erp/encomenda-pecas/os/${os}?empresa=${empresa}`,
+    );
+    const linha = r.dados?.[0];
+    if (!linha) return null;
+
+    return {
+      ORDEM_SERVICO: Number(linha.ORDEM_SERVICO),
+      STATUS: linha.STATUS === null || linha.STATUS === undefined ? null : Number(linha.STATUS),
     };
   }
 }

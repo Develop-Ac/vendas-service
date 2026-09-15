@@ -111,4 +111,17 @@ export class CreateVendaCasadaDto {
   @IsString()
   @MaxLength(50)
   numero?: string;
+
+  @ApiProperty({
+    description:
+      'Número da ordem de serviço no ERP. Define `oficina`: true quando o STATUS da OS é 1, ' +
+      'false em qualquer outro status ou quando não vier.',
+    required: false,
+    example: 10231,
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  os?: number;
 }

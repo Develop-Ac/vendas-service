@@ -173,6 +173,13 @@ export class EncomendaPecasController {
         cli_codigo: { type: 'integer' },
         cliente: { type: 'string' },
         numero: { type: 'string' },
+        os: {
+          type: 'integer',
+          example: 10231,
+          description:
+            'Ordem de serviço no ERP. `oficina` é gravado como true se o STATUS da OS for 1; ' +
+            'false em qualquer outro status ou sem OS. OS inexistente retorna 400.',
+        },
         imagens: {
           type: 'array',
           items: { type: 'string', format: 'binary' },
@@ -181,6 +188,7 @@ export class EncomendaPecasController {
     },
   })
   @ApiResponse({ status: 201, description: 'Encomenda de peça criada com sucesso' })
+  @ApiResponse({ status: 400, description: 'Sem peças, OS inválida ou OS não encontrada no ERP' })
   create(
     @Body() dto: CreateVendaCasadaDto,
     @UploadedFiles() files?: UploadedFileData[],
