@@ -78,6 +78,21 @@ export function mesComissional(hoje = new Date()): { ano: number; mes: number; i
   return { ano, mes, inicio: ymd(ini), fim: ymd(fim) };
 }
 
+/**
+ * Os `n` meses comissionais FECHADOS antes de (ano, mes), do mais recente para o
+ * mais antigo — janeiro recua para dezembro do ano anterior.
+ */
+export function mesesAnteriores(ano: number, mes: number, n: number): { ano: number; mes: number }[] {
+  const out: { ano: number; mes: number }[] = [];
+  let a = ano, m = mes;
+  for (let i = 0; i < n; i++) {
+    m -= 1;
+    if (m === 0) { m = 12; a -= 1; }
+    out.push({ ano: a, mes: m });
+  }
+  return out;
+}
+
 @Injectable()
 export class OrcamentoBiRepository {
   constructor(private readonly mssql: MssqlService) {}
@@ -221,13 +236,7 @@ export class OrcamentoBiRepository {
    * `liquido_produto`, como a bolsa.
    */
   async volumeCanal3m(ano: number, mes: number): Promise<{ media_mes: number; meses: { ano: number; mes: number; receita: number }[] }> {
-    const chaves: { ano: number; mes: number }[] = [];
-    let a = ano, m = mes;
-    for (let i = 0; i < 3; i++) {
-      m -= 1;
-      if (m === 0) { m = 12; a -= 1; }
-      chaves.push({ ano: a, mes: m });
-    }
+    const chaves = mesesAnteriores(ano, mes, 3);
     const rows = await this.mssql.query<{ ano: number; mes: number; receita: number }>(
       `
       SELECT v.ano_comissional AS ano, v.mes_comissional AS mes, COALESCE(SUM(v.liquido_produto), 0) AS receita
@@ -275,6 +284,43 @@ export class OrcamentoBiRepository {
     return rows.map((r) => ({
       cli_codigo: Number(r.cli_codigo),
       cli_nome: String(r.cli_nome ?? ''),
+      venda_liquida: Number(r.venda_liquida ?? 0),
+      desconto: Number(r.desconto ?? 0),
+      custo: Number(r.custo ?? 0),
+    }));
+  }
+
+  /**
+   * Venda, desconto e custo de UM cliente com o vendedor, mês comissional a mês
+   * comissional, entre `de` e `ate` (inclusive) — o histórico da bolsa que o
+   * cliente gerou. Mesmo recorte da bolsa (ATACADO, sem canceladas).
+   */
+  async bolsaClienteMensal(
+    rep: number,
+    cli: number,
+    de: { ano: number; mes: number },
+    ate: { ano: number; mes: number },
+  ): Promise<{ ano: number; mes: number; venda_liquida: number; desconto: number; custo: number }[]> {
+    const rows = await this.mssql.query<{ ano: number; mes: number; venda_liquida: number; desconto: number; custo: number }>(
+      `
+      SELECT v.ano_comissional                    AS ano,
+             v.mes_comissional                    AS mes,
+             COALESCE(SUM(v.liquido_produto), 0)  AS venda_liquida,
+             COALESCE(-SUM(v.total_desconto), 0)  AS desconto,
+             COALESCE(SUM(v.custo_produto), 0)    AS custo
+      FROM dbo.vw_analise_vendas v
+      WHERE v.vendedor_venda = @rep
+        AND v.CLI_CODIGO = @cli
+        AND v.ano_comissional * 100 + v.mes_comissional BETWEEN @de AND @ate
+        AND v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+      GROUP BY v.ano_comissional, v.mes_comissional
+      `,
+      { rep, cli, de: de.ano * 100 + de.mes, ate: ate.ano * 100 + ate.mes },
+    );
+    return rows.map((r) => ({
+      ano: Number(r.ano),
+      mes: Number(r.mes),
       venda_liquida: Number(r.venda_liquida ?? 0),
       desconto: Number(r.desconto ?? 0),
       custo: Number(r.custo ?? 0),
