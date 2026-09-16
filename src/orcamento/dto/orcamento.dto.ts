@@ -44,6 +44,17 @@ export class ItemOrcamentoDto {
   @IsString()
   @MaxLength(500)
   observacao?: string;
+
+  @ApiProperty({ description: 'Parte da quantidade SEM saldo que o cliente aceitou receber depois (encomenda).', required: false })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  qtd_encomenda?: number;
+
+  @ApiProperty({ description: 'Vender pela tabela normal do cliente mesmo com promoção/liquidação vigente: a campanha não vale na linha e entram a régua e a bolsa padrão.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  fora_promocao?: boolean;
 }
 
 export class SalvarOrcamentoDto {
@@ -70,6 +81,17 @@ export class SalvarOrcamentoDto {
   @IsOptional()
   @IsString()
   validade?: string;
+
+  @ApiProperty({ description: 'Condição de pagamento (CONDICOES_PAGTO.CP_CODIGO). Opcional no rascunho, obrigatória para enviar.', required: false })
+  @IsOptional()
+  @IsInt()
+  cp_codigo?: number;
+
+  @ApiProperty({ description: 'Forma de pagamento (FORMAS_PAGTO.FP_CODIGO, até 3 caracteres) — vale para a entrada e as demais parcelas. Opcional no rascunho, obrigatória para enviar.', required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(3)
+  fp_codigo?: string;
 
   @ApiProperty({ type: [ItemOrcamentoDto] })
   @IsArray()
@@ -137,6 +159,31 @@ export class DesfechoOrcamentoDto extends AcaoOrcamentoDto {
   @IsString()
   @MaxLength(500)
   observacao?: string;
+}
+
+export const ACOES_SALDO = ['VENDA_PERDIDA', 'ENCOMENDA', 'RETIRAR'] as const;
+
+export class DecisaoSaldoItemDto {
+  @ApiProperty({ example: 49464 })
+  @IsInt()
+  pro_codigo: number;
+
+  @ApiProperty({ enum: ACOES_SALDO, description: 'O que fazer com a parte SEM saldo do item.' })
+  @IsIn(ACOES_SALDO as unknown as string[])
+  acao: 'VENDA_PERDIDA' | 'ENCOMENDA' | 'RETIRAR';
+
+  @ApiProperty({ required: false, description: 'Manter no orçamento a quantidade que existe hoje (padrão sim); a decisão vale só para a diferença.' })
+  @IsOptional()
+  @IsBoolean()
+  manter_disponivel?: boolean;
+}
+
+export class DecisaoSaldoDto extends AcaoOrcamentoDto {
+  @ApiProperty({ type: [DecisaoSaldoItemDto] })
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DecisaoSaldoItemDto)
+  decisoes: DecisaoSaldoItemDto[];
 }
 
 export class ExcecaoReguaDto {

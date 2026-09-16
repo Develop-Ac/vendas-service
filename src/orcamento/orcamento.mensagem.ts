@@ -19,12 +19,14 @@ export function mensagemWhatsapp(o: PdfOrcamento): string {
     const qtd = Number.isInteger(it.quantidade) ? String(it.quantidade) : it.quantidade.toLocaleString('pt-BR');
     const marca = it.marca ? ` (${it.marca})` : '';
     const promo = it.promocao_fim ? ' — promoção' : '';
-    linhas.push(`${qtd} × ${it.descricao}${marca}${promo} — ${brl(it.total)}`);
+    const enc = it.qtd_encomenda > 0 ? ` (${it.qtd_encomenda} sob encomenda)` : '';
+    linhas.push(`${qtd} × ${it.descricao}${marca}${promo}${enc} — ${brl(it.total)}`);
   }
   linhas.push('');
   linhas.push(`Subtotal: ${brl(o.subtotal)}`);
   if (o.desconto > 0) linhas.push(`Desconto: − ${brl(o.desconto)}`);
   linhas.push(`*Total: ${brl(o.total)}*`);
+  if (o.pagamento) linhas.push(`Pagamento: ${o.pagamento}`);
   linhas.push('');
   linhas.push(`Válido até ${o.validade ?? '—'} · detalhes no PDF`);
   return linhas.join('\n');

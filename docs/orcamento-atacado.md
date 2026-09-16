@@ -172,6 +172,31 @@ como hoje e registra o número em "Fechado".
 | GET/PUT/DELETE | `/:id` | obtém / regrava / cancela |
 | POST | `/:id/enviar` · `/:id/aprovar` · `/:id/desfecho` | ciclo |
 
+## Itens sem saldo ao concluir
+
+Ao enviar (`POST /:id/enviar`) o saldo é relido do ERP. Item cujo saldo não cobre a parte
+**a entregar agora** (quantidade − `qtd_encomenda`) trava a conclusão: o serviço recusa com a
+lista e a tela abre a decisão item a item (`GET /:id/saldo` → pendências; `POST /:id/saldo/decidir`):
+
+| Decisão | O que acontece com a parte sem saldo |
+|---|---|
+| `VENDA_PERDIDA` | sai do orçamento e vira registro em `ven_venda_perdida` (uma linha por orçamento+item; reabrir e decidir de novo atualiza a quantidade). A análise de estoque soma essa tabela à `VENDA_PERDIDA` do ERP |
+| `ENCOMENDA` | fica no orçamento marcada em `ven_orcamento_item.qtd_encomenda`; PDF e mensagem mostram "sob encomenda" |
+| `RETIRAR` | só sai |
+
+`manter_disponivel` (padrão sim) mantém no orçamento a quantidade que existe hoje; a decisão vale
+para a diferença. Depois da decisão o orçamento é regravado pelo caminho normal (preços, alçada e
+bolsa recalculados). Se não sobrar item, nada é regravado e a tela registra o desfecho PERDIDO
+(motivo SEM_ESTOQUE). Regra pura em `saldo.ts` (testes em `saldo.spec.ts`).
+
+## Vender fora da promoção ou liquidação
+
+Item com promoção vigente na tabela do cliente entra com o preço promocional fechado. O vendedor
+pode marcar a linha como **fora da promoção** (`ItemOrcamentoDto.fora_promocao`): o preço volta à
+tabela normal do cliente e a linha segue a régua, a alçada e a bolsa padrão, sem `promocao_codigo`.
+O serviço devolve em `ProdutoOrcamento.sem_promocao` a tabela normal e a avaliação da régua sobre
+ela, que é o que a tela usa ao alternar. A coluna `fora_promocao` fica gravada no item.
+
 ## Instalação
 
 1. Aplicar `sql/orcamento_atacado_postgres.sql` no Postgres da intranet (manual, idempotente).

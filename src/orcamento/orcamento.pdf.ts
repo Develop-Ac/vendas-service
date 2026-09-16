@@ -51,6 +51,8 @@ export interface PdfItem {
   promocao_fim: string | null; // dd/mm/aaaa
   /** preço "de" quando o item está em promoção (preço original da tabela). */
   preco_original: number | null;
+  /** parte da quantidade sem saldo hoje, combinada para entrega posterior */
+  qtd_encomenda: number;
 }
 
 export interface PdfOrcamento {
@@ -65,6 +67,8 @@ export interface PdfOrcamento {
   desc_pct: number;
   total: number;
   observacao: string | null;
+  /** "Condição · forma" copiadas do Celta; nulo = a combinar. */
+  pagamento: string | null;
 }
 
 const A4 = { w: 595.28, h: 841.89 };
@@ -219,6 +223,14 @@ function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem): number {
     doc.fillColor(TEXTO);
     y += 10;
   }
+  if (it.qtd_encomenda > 0) {
+    doc.fillColor(SUAVE).fontSize(7.5).text(
+      `${qtd(it.qtd_encomenda)} ${it.unidade ?? 'UN'} sob encomenda — entrega combinada com o vendedor`,
+      COLS[0][1] + 44, y, { lineBreak: false },
+    );
+    doc.fillColor(TEXTO);
+    y += 10;
+  }
   return y + 2;
 }
 
@@ -242,7 +254,7 @@ function totais(doc: PDFKit.PDFDocument, y: number, o: PdfOrcamento): number {
   doc.moveTo(M - 4, y).lineTo(M + LARG + 4, y).lineWidth(0.8).strokeColor('#999999').stroke();
   y += 6;
   doc.font('Helvetica').fontSize(9.5).fillColor(TEXTO);
-  doc.text('Condição de Pagto.: A COMBINAR', M, y, { lineBreak: false });
+  doc.text(`Condição de Pagto.: ${o.pagamento ?? 'A COMBINAR'}`, M, y, { width: LARG - 210, lineBreak: false });
   doc.text(`Validade da proposta: ${o.validade ?? '—'}`, M + LARG - 200, y, { width: 200, align: 'right', lineBreak: false });
   y += 14;
   if (o.observacao) {

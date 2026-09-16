@@ -100,6 +100,9 @@ export interface ClienteErp {
   REP_CODIGO: number | null;
   TABELA_PRECO: string | null;
   INATIVO: string | null;
+  CP_CODIGO: number | null;
+  FP_ENTRADA: string | null;
+  FP_DEMAIS_PARCELAS: string | null;
   LIMITE_CREDITO: number | null;
   BLOQUEAR_VENDA_CREDIARIO: string | null;
   CON_CODIGO: number | null;
@@ -109,8 +112,23 @@ export interface ClienteErp {
 const CAMPOS_CLIENTE = [
   'CLI_CODIGO', 'CLI_NOME', 'CPF_CNPJ', 'UF', 'CIDADE', 'FONE', 'CELULAR', 'CONTATO',
   'REP_CODIGO', 'TABELA_PRECO', 'INATIVO', 'LIMITE_CREDITO', 'BLOQUEAR_VENDA_CREDIARIO',
-  'CON_CODIGO', 'DATA_ULT_COMPRA',
+  'CON_CODIGO', 'DATA_ULT_COMPRA', 'CP_CODIGO', 'FP_ENTRADA', 'FP_DEMAIS_PARCELAS',
 ];
+
+/** Condição de pagamento de VENDA do Celta (CONDICOES_PAGTO), já sem inativas e sem as do contas a pagar. */
+export interface CondicaoPagto {
+  cp_codigo: number;
+  descricao: string;
+  parcelas: number | null;
+  /** Forma sugerida pelo cadastro da condição (entrada) — pré-preenche o seletor. */
+  fp_entrada: string | null;
+}
+
+/** Forma de pagamento do Celta (FORMAS_PAGTO), já sem inativas e sem as que bloqueiam venda. */
+export interface FormaPagto {
+  fp_codigo: string;
+  descricao: string;
+}
 
 const num = (v: unknown) => (v == null || v === '' ? 0 : Number(v));
 
@@ -624,6 +642,9 @@ export class OrcamentoErpRepository {
       BLOQUEAR_VENDA_CREDIARIO: (r.BLOQUEAR_VENDA_CREDIARIO ?? '').toString().trim() || null,
       CON_CODIGO: r.CON_CODIGO == null ? null : Number(r.CON_CODIGO),
       DATA_ULT_COMPRA: r.DATA_ULT_COMPRA ?? null,
+      CP_CODIGO: r.CP_CODIGO == null ? null : Number(r.CP_CODIGO),
+      FP_ENTRADA: (r.FP_ENTRADA ?? '').toString().trim() || null,
+      FP_DEMAIS_PARCELAS: (r.FP_DEMAIS_PARCELAS ?? '').toString().trim() || null,
     };
   }
 
@@ -672,6 +693,39 @@ export class OrcamentoErpRepository {
   }
 
   /** Cadastro completo para o PDF (endereço, bairro, CEP, IE) — só quando vai imprimir. */
+  /* ------------------------------------------------- pagamento (Celta) */
+
+  /** Condições de pagamento aceitas na venda — a mesma regra da API de orçamentos do Celta (INATIVO ≠ 'S', LOCAL_USO ≠ 'P'). */
+  async condicoesPagto(): Promise<CondicaoPagto[]> {
+    const r = await this.erp.consultar<Record<string, any>>('condicoes-pagto', {
+      empresa: EMPRESA,
+      campos: ['CP_CODIGO', 'CP_DESCRICAO', 'NRO_PARCELAS', 'VEN_FP_ENTRADA', 'LOCAL_USO', 'INATIVO'],
+      limite: 500,
+    });
+    return r
+      .filter((c) => c.INATIVO !== 'S' && c.LOCAL_USO !== 'P')
+      .map((c) => ({
+        cp_codigo: Number(c.CP_CODIGO),
+        descricao: String(c.CP_DESCRICAO ?? '').trim() || `Condição ${c.CP_CODIGO}`,
+        parcelas: c.NRO_PARCELAS == null ? null : Number(c.NRO_PARCELAS),
+        fp_entrada: c.VEN_FP_ENTRADA ? String(c.VEN_FP_ENTRADA).trim() || null : null,
+      }))
+      .sort((a, b) => a.descricao.localeCompare(b.descricao, 'pt-BR'));
+  }
+
+  /** Formas de pagamento aceitas na venda (INATIVO ≠ 'S', BLOQUEIA_VENDA ≠ 'S'), na ordem do Celta. */
+  async formasPagto(): Promise<FormaPagto[]> {
+    const r = await this.erp.consultar<Record<string, any>>('formas-pagto', {
+      empresa: EMPRESA,
+      campos: ['FP_CODIGO', 'FP_DESCRICAO', 'ORDEM', 'BLOQUEIA_VENDA', 'INATIVO'],
+      limite: 500,
+    });
+    return r
+      .filter((f) => f.INATIVO !== 'S' && f.BLOQUEIA_VENDA !== 'S')
+      .sort((a, b) => (Number(a.ORDEM ?? 0) - Number(b.ORDEM ?? 0)) || String(a.FP_DESCRICAO ?? '').localeCompare(String(b.FP_DESCRICAO ?? ''), 'pt-BR'))
+      .map((f) => ({ fp_codigo: String(f.FP_CODIGO).trim(), descricao: String(f.FP_DESCRICAO ?? '').trim() || String(f.FP_CODIGO).trim() }));
+  }
+
   async clienteParaPdf(cli: number): Promise<Record<string, any> | null> {
     const r = await this.erp.consultar<Record<string, any>>('clientes', {
       empresa: EMPRESA,

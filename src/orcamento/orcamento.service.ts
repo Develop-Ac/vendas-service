@@ -25,7 +25,8 @@ import {
   RegraFaixa,
   round2,
 } from './regua';
-import { DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, SalvarOrcamentoDto } from './dto/orcamento.dto';
+import { DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, SalvarOrcamentoDto } from './dto/orcamento.dto';
+import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 
 /* =============================================================================
    ORÇAMENTO DO ATACADO — regras.
@@ -84,6 +85,12 @@ export interface ProdutoOrcamento {
   promocao: { codigo: number; descricao: string; data_final: string; somente_avista: boolean } | null;
   /** Promoção do balcão (tabela 1) vigente, SEM preço na tabela do cliente — só informação. */
   promocao_balcao: { codigo: number; descricao: string; data_final: string; de: number; por: number } | null;
+  /**
+   * Como o item fica se o vendedor escolher vender FORA da promoção/liquidação:
+   * tabela normal do cliente e avaliação da régua sobre ela (desconto e alçada
+   * padrão, bolsa padrão). Nulo quando não há promoção vigente na tabela.
+   */
+  sem_promocao: { preco_tabela: number; tabela_coluna: string; preco_fallback: boolean; avaliacao: Avaliacao } | null;
 }
 
 export interface ClienteOrcamento {
@@ -105,6 +112,9 @@ export interface ClienteOrcamento {
   limite_credito: number;
   crediario_bloqueado: boolean;
   data_ult_compra: string | null;
+  /** Defaults de pagamento do cadastro do cliente — o orçamento parte deles. */
+  cp_codigo: number | null;
+  fp_entrada: string | null;
   /** Venda líquida dos últimos 12 meses (BI) — só na busca; ausente se o BI não respondeu. */
   compras_12m?: number;
 }
@@ -187,6 +197,8 @@ export class OrcamentoService {
       limite_credito: Number(c.LIMITE_CREDITO ?? 0),
       crediario_bloqueado: c.BLOQUEAR_VENDA_CREDIARIO === 'S',
       data_ult_compra: c.DATA_ULT_COMPRA,
+      cp_codigo: c.CP_CODIGO == null ? null : Number(c.CP_CODIGO),
+      fp_entrada: c.FP_ENTRADA ? String(c.FP_ENTRADA).trim() || null : null,
     };
   }
 
@@ -212,6 +224,33 @@ export class OrcamentoService {
   }
 
   /** Cabeçalho do cliente: cadastro ao vivo + crédito em aberto e histórico do BI. */
+  /* ----------------------------------------------------------- pagamento */
+
+  /** Listas do Celta para os seletores do orçamento (condições de venda e formas ativas). */
+  async pagamento() {
+    const [condicoes, formas] = await Promise.all([this.erp.condicoesPagto(), this.erp.formasPagto()]);
+    return { condicoes, formas };
+  }
+
+  /** Condição e forma do DTO conferidas no Celta, com a descrição copiada para o PDF e a mensagem. */
+  private async pagamentoDe(dto: SalvarOrcamentoDto) {
+    const cp = dto.cp_codigo ?? null;
+    const fp = dto.fp_codigo?.trim() || null;
+    let cp_descricao: string | null = null;
+    let fp_descricao: string | null = null;
+    if (cp != null) {
+      const c = (await this.erp.condicoesPagto()).find((x) => x.cp_codigo === cp);
+      if (!c) throw new BadRequestException(`Condição de pagamento ${cp} não existe, está inativa ou não é de venda.`);
+      cp_descricao = c.descricao;
+    }
+    if (fp) {
+      const f = (await this.erp.formasPagto()).find((x) => x.fp_codigo === fp);
+      if (!f) throw new BadRequestException(`Forma de pagamento ${fp} não existe ou está inativa.`);
+      fp_descricao = f.descricao;
+    }
+    return { cp_codigo: cp, cp_descricao, fp_codigo: fp, fp_descricao };
+  }
+
   async cliente(cli: number) {
     const c = await this.erp.clientePorCodigo(cli);
     if (!c) throw new NotFoundException(`Cliente ${cli} não encontrado no ERP.`);
@@ -443,9 +482,11 @@ export class OrcamentoService {
     const aplica = promo != null && promo.valor != null;
     const preco = aplica ? { coluna: 'PROMOCAO', preco: promo!.valor as number, fallback: false } : tabela;
     const custo = p.PRECO_CUSTO > 0 ? p.PRECO_CUSTO : null;
-    let avaliacao = avaliarItem({
+    // Avaliação da régua sobre a tabela NORMAL do cliente: é a que vale sem
+    // promoção e a que volta quando o vendedor escolhe vender fora dela.
+    const avaliacaoNormal = avaliarItem({
       custo,
-      preco_tabela: preco.preco,
+      preco_tabela: tabela.preco,
       subgrp_codigo: p.SUBGRP_CODIGO,
       descricao: p.PRO_DESCRICAO,
       excecao,
@@ -453,10 +494,11 @@ export class OrcamentoService {
       volume,
       piso_item: this.parametros().piso_item,
     });
+    let avaliacao = avaliacaoNormal;
     if (aplica && promo) {
       const fim = promo.data_final.split('-').reverse().join('/');
       avaliacao = {
-        ...avaliacao,
+        ...avaliacaoNormal,
         desc_max_pct: 0,
         desc_max_efetivo_pct: 0,
         preco_minimo: promo.valor as number,
@@ -505,6 +547,7 @@ export class OrcamentoService {
         !aplica && promo && promo.valor_balcao != null
           ? { codigo: promo.prom_codigo, descricao: promo.descricao, data_final: promo.data_final, de: p.PRECO_VENDA, por: promo.valor_balcao }
           : null,
+      sem_promocao: aplica ? { preco_tabela: tabela.preco, tabela_coluna: tabela.coluna, preco_fallback: tabela.fallback, avaliacao: avaliacaoNormal } : null,
     };
   }
 
@@ -775,7 +818,11 @@ export class OrcamentoService {
       const p = porCodigo.get(i.pro_codigo);
       if (!p) { erros.push(`Item ${idx + 1}: produto ${i.pro_codigo} não existe na empresa 3.`); return; }
       const qtd = Number(i.quantidade);
-      const tabela = p.preco_tabela;
+      // Vender FORA da promoção/liquidação: tabela normal do cliente e régua
+      // padrão na linha (desconto, alçada e bolsa como em qualquer item).
+      const fora = !!i.fora_promocao && !!p.promocao && !!p.sem_promocao;
+      const tabela = fora ? p.sem_promocao!.preco_tabela : p.preco_tabela;
+      const av = fora ? p.sem_promocao!.avaliacao : p.avaliacao;
       // O vendedor NUNCA digita preço: só desconto. O preço nasce da tabela do
       // cliente menos o desconto; `preco_unit` só vale para item SEM tabela.
       const descPedido = Math.min(1, Math.max(0, Number(i.desc_pct ?? 0)));
@@ -791,18 +838,18 @@ export class OrcamentoService {
       const descPct = tabela > 0 ? Math.max(0, Math.round((1 - preco / tabela) * 10000) / 10000) : 0;
       // Dois limites por linha: o desta quantidade (escala por volume) e o máximo
       // inteiro da faixa. Qual vale depende da bolsa — decidido em aplicarAlcada().
-      const escala = p.avaliacao.escala_volume;
+      const escala = av.escala_volume;
       const degrau = [...escala].reverse().find((d) => qtd >= d.qtd_min) ?? escala[0];
       const cheio = escala[escala.length - 1];
-      const minimo = degrau?.preco_minimo ?? p.avaliacao.preco_minimo;
-      const descMaxQtd = degrau?.desc_max_efetivo_pct ?? p.avaliacao.desc_max_efetivo_pct;
+      const minimo = degrau?.preco_minimo ?? av.preco_minimo;
+      const descMaxQtd = degrau?.desc_max_efetivo_pct ?? av.desc_max_efetivo_pct;
       alcadas.push({
         preco,
         minimo_qtd: minimo,
-        minimo_cheio: cheio?.preco_minimo ?? p.avaliacao.preco_minimo,
-        piso_bolsa: p.avaliacao.preco_piso_bolsa ?? 0,
+        minimo_cheio: cheio?.preco_minimo ?? av.preco_minimo,
+        piso_bolsa: av.preco_piso_bolsa ?? 0,
         desc_max_qtd: descMaxQtd,
-        desc_max_cheio: cheio?.desc_max_efetivo_pct ?? p.avaliacao.desc_max_efetivo_pct,
+        desc_max_cheio: cheio?.desc_max_efetivo_pct ?? av.desc_max_efetivo_pct,
       });
       const linhaTotal = round2(preco * qtd);
       if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
@@ -818,23 +865,26 @@ export class OrcamentoService {
         unidade: p.unidade,
         quantidade: qtd,
         preco_tabela: tabela > 0 ? tabela : preco,
-        tabela_coluna: p.tabela_coluna,
+        tabela_coluna: fora ? p.sem_promocao!.tabela_coluna : p.tabela_coluna,
         preco_unit: preco,
         desc_pct: descPct,
         total: linhaTotal,
         custo_ref: p.custo,
-        classe: p.avaliacao.classe,
-        mix: p.avaliacao.mix,
-        faixa: p.avaliacao.faixa,
-        markup_regua: p.avaliacao.markup_regua,
+        classe: av.classe,
+        mix: av.mix,
+        faixa: av.faixa,
+        markup_regua: av.markup_regua,
         desc_max_pct: descMaxQtd,
         preco_minimo: minimo,
         acima_alcada: false, // fechado em aplicarAlcada()
         estoque_disponivel: p.estoque_disponivel,
         substituto_de: i.substituto_de ?? null,
         observacao: i.observacao ?? null,
-        promocao_codigo: p.promocao?.codigo ?? null,
-        promocao_fim: p.promocao ? new Date(`${p.promocao.data_final}T00:00:00`) : null,
+        promocao_codigo: fora ? null : (p.promocao?.codigo ?? null),
+        promocao_fim: !fora && p.promocao ? new Date(`${p.promocao.data_final}T00:00:00`) : null,
+        // parte sem saldo que o cliente aceitou receber depois (decidida ao concluir)
+        qtd_encomenda: Math.min(qtd, Math.max(0, Number(i.qtd_encomenda ?? 0))),
+        fora_promocao: fora,
       });
     });
     if (erros.length) throw new BadRequestException(erros);
@@ -918,6 +968,7 @@ export class OrcamentoService {
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
     const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
+    const pag = await this.pagamentoDe(dto);
     return this.db.criar(
       {
         cli_codigo: dto.cli_codigo,
@@ -928,6 +979,7 @@ export class OrcamentoService {
         status: 'RASCUNHO',
         validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
+        ...pag,
         subtotal: m.subtotal,
         desconto_total: m.desconto_total,
         total: m.total,
@@ -951,6 +1003,7 @@ export class OrcamentoService {
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
     const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
+    const pag = await this.pagamentoDe(dto);
     // Editar um orçamento já enviado o devolve ao rascunho: o que o cliente recebeu mudou.
     return this.db.atualizar(
       id,
@@ -964,6 +1017,7 @@ export class OrcamentoService {
         status: 'RASCUNHO',
         validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
+        ...pag,
         subtotal: m.subtotal,
         desconto_total: m.desconto_total,
         total: m.total,
@@ -986,6 +1040,15 @@ export class OrcamentoService {
       throw new BadRequestException(`Orçamento ${o.status} não pode ser enviado.`);
     }
     if (!o.itens?.length) throw new BadRequestException('Orçamento sem itens.');
+    // O Celta pede condição e forma; o cadastro do cliente quase nunca tem padrão (5 de 1.191 com condição, 0 com forma).
+    if (o.cp_codigo == null) throw new BadRequestException('Informe a condição de pagamento antes de enviar.');
+    if (!o.fp_codigo) throw new BadRequestException('Informe a forma de pagamento antes de enviar.');
+    // Saldo relido do ERP: item sem saldo para a parte a entregar agora não
+    // conclui sem decisão do vendedor (venda perdida / encomenda / retirar).
+    const pend = await this.pendenciasDe(o);
+    if (pend.length) {
+      throw new BadRequestException(`Sem saldo para: ${pend.map((p) => `${p.pro_codigo} (pedido ${p.a_entregar}, disponível ${p.disponivel})`).join('; ')}. Decida o que fazer com esses itens antes de concluir.`);
+    }
     const precisaAprovar = o.acima_alcada && !o.aprovado_em;
     return this.db.atualizar(id, {
       status: precisaAprovar ? 'APROVACAO' : 'ENVIADO',
@@ -1055,6 +1118,7 @@ export class OrcamentoService {
         total: n(i.total),
         promocao_fim: promoFim,
         preco_original: promoFim && p && p.preco_original > n(i.preco_tabela) ? p.preco_original : null,
+        qtd_encomenda: n(i.qtd_encomenda),
       };
     });
     const numero = String(o.numero).padStart(6, '0');
@@ -1083,6 +1147,7 @@ export class OrcamentoService {
       desc_pct: n(o.desc_pct),
       total: n(o.total),
       observacao: o.observacao ?? null,
+      pagamento: [o.cp_descricao, o.fp_descricao].filter(Boolean).join(' · ') || null,
     };
   }
 
@@ -1136,6 +1201,61 @@ export class OrcamentoService {
       return a;
     });
     return { orcamento: o, produtos, avisos };
+  }
+
+  private async pendenciasDe(o: { itens?: any[]; tabela_preco: string | null; cli_codigo: number }) {
+    const itens = (o.itens ?? []) as Array<{ pro_codigo: number; descricao: string | null; quantidade: number; qtd_encomenda?: number | null }>;
+    if (!itens.length) return [];
+    const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo);
+    const saldoPor = new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, p.estoque_disponivel]));
+    return pendenciasSaldo(itens, saldoPor);
+  }
+
+  /** Itens sem saldo para a parte a entregar agora (saldo relido do ERP). O que trava o concluir. */
+  async saldo(id: string) {
+    const o = await this.obter(id);
+    return { orcamento_id: id, pendencias: await this.pendenciasDe(o) };
+  }
+
+  /**
+   * Decisão do vendedor sobre cada item sem saldo: venda perdida (registra e
+   * tira a diferença), encomenda (fica no orçamento marcada) ou retirar. Depois
+   * regrava o orçamento pelo caminho normal (preços, alçada e bolsa recalculados).
+   * Se não sobrar item, não regrava: a tela registra o orçamento como perdido.
+   */
+  async decidirSaldo(id: string, dto: DecisaoSaldoDto) {
+    const o = await this.obter(id);
+    if (!STATUS_EDITAVEL.has(o.status)) throw new BadRequestException(`Orçamento ${o.status} não pode ser alterado.`);
+    if (o.rep_codigo == null) throw new BadRequestException('Orçamento sem vendedor.');
+    const itens = (o.itens ?? []) as Array<{
+      pro_codigo: number; descricao: string | null; quantidade: number; qtd_encomenda?: number | null;
+      desc_pct: number; preco_tabela: number; preco_unit: number; substituto_de: number | null; observacao: string | null; fora_promocao?: boolean;
+    }>;
+    const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo);
+    const saldoPor = new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, p.estoque_disponivel]));
+    const r = aplicarDecisoes(itens, saldoPor, dto.decisoes);
+    if (r.sem_decisao.length) throw new BadRequestException(`Falta decidir o que fazer com: ${r.sem_decisao.join(', ')}.`);
+    if (r.venda_perdida.length) await this.db.registrarVendaPerdida(o, r.venda_perdida, dto);
+    if (!r.itens.length) return { orcamento: o, sem_itens: true, venda_perdida: r.venda_perdida.length };
+    const salvo = await this.atualizar(id, {
+      cli_codigo: o.cli_codigo,
+      rep_codigo: o.rep_codigo,
+      rep_nome: o.rep_nome ?? undefined,
+      observacao: o.observacao ?? undefined,
+      usuario_id: dto.usuario_id ?? o.usuario_id ?? undefined,
+      usuario_nome: dto.usuario_nome ?? o.usuario_nome ?? undefined,
+      itens: r.itens.map((i) => ({
+        pro_codigo: i.pro_codigo,
+        quantidade: i.quantidade,
+        desc_pct: i.desc_pct,
+        preco_unit: i.preco_tabela > 0 ? undefined : i.preco_unit,
+        substituto_de: i.substituto_de ?? undefined,
+        observacao: i.observacao ?? undefined,
+        qtd_encomenda: i.qtd_encomenda ?? 0,
+        fora_promocao: !!i.fora_promocao,
+      })),
+    });
+    return { orcamento: salvo, sem_itens: false, venda_perdida: r.venda_perdida.length };
   }
 }
 

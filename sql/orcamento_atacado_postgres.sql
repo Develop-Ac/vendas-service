@@ -171,3 +171,41 @@ CREATE TABLE IF NOT EXISTS ven_subgrupo_relacionado (
 --    `enviado_em` continua sendo o momento em que o vendedor fechou a proposta.
 ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS entregue_canal TEXT;
 ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS entregue_em    TIMESTAMPTZ;
+
+-- 8) Pagamento (16/09/2026): o Celta exige condição (CONDICOES_PAGTO.CP_CODIGO) e
+--    forma (FORMAS_PAGTO.FP_CODIGO) no orçamento. A forma escolhida vale para a
+--    entrada e para as demais parcelas. As descrições são cópia do ERP na hora
+--    de salvar, para o PDF e a mensagem não dependerem de nova consulta.
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS cp_codigo    INTEGER;
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS cp_descricao TEXT;
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS fp_codigo    TEXT;
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS fp_descricao TEXT;
+
+-- 8) Itens sem saldo ao concluir (16/09/2026). Ao enviar, o saldo é relido do
+--    ERP; item com saldo menor que o pedido exige decisão do vendedor:
+--    venda perdida (registro abaixo), encomenda (parte fica no orçamento marcada
+--    como `qtd_encomenda`, entrega depois) ou só retirar. A análise de estoque
+--    lê `ven_venda_perdida` junto da VENDA_PERDIDA do ERP.
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS qtd_encomenda NUMERIC(15,3) NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS ven_venda_perdida (
+  id                TEXT PRIMARY KEY,
+  orcamento_id      TEXT NOT NULL REFERENCES ven_orcamento(id) ON DELETE CASCADE,
+  orcamento_numero  INTEGER,
+  pro_codigo        INTEGER NOT NULL,
+  descricao         TEXT,
+  quantidade        NUMERIC(15,3) NOT NULL,
+  cli_codigo        INTEGER,
+  rep_codigo        INTEGER,
+  motivo            TEXT NOT NULL DEFAULT 'SEM_SALDO',
+  usuario_id        TEXT,
+  usuario_nome      TEXT,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uq_ven_venda_perdida_orc_pro UNIQUE (orcamento_id, pro_codigo)  -- uma vez por item e orçamento
+);
+CREATE INDEX IF NOT EXISTS idx_ven_venda_perdida_pro ON ven_venda_perdida (pro_codigo);
+
+-- 9) Vender fora da promoção/liquidação (16/09/2026): o vendedor escolhe vender
+--    o item pela tabela normal do cliente; a campanha deixa de valer na linha e
+--    entram a régua e a bolsa padrão.
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS fora_promocao BOOLEAN NOT NULL DEFAULT FALSE;

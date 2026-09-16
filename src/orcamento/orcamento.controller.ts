@@ -18,6 +18,7 @@ import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { OrcamentoService } from './orcamento.service';
 import {
   AcaoOrcamentoDto,
+  DecisaoSaldoDto,
   EntregueOrcamentoDto,
   DesfechoOrcamentoDto,
   ExcecaoReguaDto,
@@ -57,6 +58,12 @@ export class OrcamentoController {
   @ApiOperation({ summary: 'Cria/atualiza/remove a exceção de um item.' })
   salvarExcecao(@Param('pro_codigo', ParseIntPipe) pro: number, @Body() dto: ExcecaoReguaDto) {
     return this.service.salvarExcecao(pro, dto);
+  }
+
+  @Get('pagamento')
+  @ApiOperation({ summary: 'Condições (de venda, ativas) e formas de pagamento (ativas) do Celta para os seletores do orçamento.' })
+  pagamento() {
+    return this.service.pagamento();
   }
 
   /* ----------------------------------------------------------- clientes */
@@ -295,6 +302,18 @@ export class OrcamentoController {
   @ApiOperation({ summary: 'Re-avalia o orçamento contra o ERP de agora (saldo, tabela) sem gravar.' })
   conferir(@Param('id') id: string) {
     return this.service.conferir(id);
+  }
+
+  @Get(':id/saldo')
+  @ApiOperation({ summary: 'Itens sem saldo para a parte a entregar agora (saldo relido do ERP) — o que trava o concluir.' })
+  saldo(@Param('id') id: string) {
+    return this.service.saldo(id);
+  }
+
+  @Post(':id/saldo/decidir')
+  @ApiOperation({ summary: 'Decisão por item sem saldo: VENDA_PERDIDA (registra), ENCOMENDA (fica marcada) ou RETIRAR. Regrava o orçamento.' })
+  decidirSaldo(@Param('id') id: string, @Body() dto: DecisaoSaldoDto) {
+    return this.service.decidirSaldo(id, dto);
   }
 
   @Put(':id')

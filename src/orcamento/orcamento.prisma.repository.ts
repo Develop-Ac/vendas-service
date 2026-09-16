@@ -299,6 +299,8 @@ export class OrcamentoPrismaRepository {
       observacao: i.observacao,
       promocao_codigo: i.promocao_codigo ?? null,
       promocao_fim: i.promocao_fim ? new Date(i.promocao_fim).toISOString().slice(0, 10) : null,
+      qtd_encomenda: n(i.qtd_encomenda),
+      fora_promocao: !!i.fora_promocao,
     };
   }
 
@@ -315,6 +317,10 @@ export class OrcamentoPrismaRepository {
       status: o.status,
       validade: o.validade ? new Date(o.validade).toISOString().slice(0, 10) : null,
       observacao: o.observacao,
+      cp_codigo: o.cp_codigo ?? null,
+      cp_descricao: o.cp_descricao ?? null,
+      fp_codigo: o.fp_codigo ?? null,
+      fp_descricao: o.fp_descricao ?? null,
       subtotal: n(o.subtotal),
       desconto_total: n(o.desconto_total),
       total: n(o.total),
@@ -389,6 +395,34 @@ export class OrcamentoPrismaRepository {
       });
     });
     return this.mapOrcamento(o);
+  }
+
+  /**
+   * Venda perdida por falta de saldo ao concluir o orçamento: uma linha por item
+   * e orçamento (reabrir e decidir de novo atualiza a quantidade, não duplica).
+   */
+  async registrarVendaPerdida(
+    o: { id: string; numero: number; cli_codigo: number; rep_codigo: number | null },
+    linhas: Array<{ pro_codigo: number; descricao: string | null; quantidade: number }>,
+    usuario?: { usuario_id?: string; usuario_nome?: string },
+  ) {
+    for (const l of linhas) {
+      await this.prisma.ven_venda_perdida.upsert({
+        where: { orcamento_id_pro_codigo: { orcamento_id: o.id, pro_codigo: l.pro_codigo } },
+        create: {
+          orcamento_id: o.id,
+          orcamento_numero: o.numero,
+          pro_codigo: l.pro_codigo,
+          descricao: l.descricao,
+          quantidade: l.quantidade,
+          cli_codigo: o.cli_codigo,
+          rep_codigo: o.rep_codigo,
+          usuario_id: usuario?.usuario_id ?? null,
+          usuario_nome: usuario?.usuario_nome ?? null,
+        },
+        update: { quantidade: l.quantidade, usuario_id: usuario?.usuario_id ?? null, usuario_nome: usuario?.usuario_nome ?? null, created_at: new Date() },
+      });
+    }
   }
 
   /** Orçamentos abertos deste vendedor (ENVIADO/APROVACAO) — para a bolsa projetada. */
