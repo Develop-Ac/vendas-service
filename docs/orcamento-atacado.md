@@ -215,6 +215,9 @@ importado no Celta" (cabeçalho do editor e lista) abre a mesma pergunta depois.
   `desfecho_ref` (se vazio). Já importado → devolve o nº guardado sem chamar a API.
 - Só FECHADO importa; sem vendedor ou sem itens = 400; API fora = 503; recusa do
   Celta = 502 com a mensagem da API.
+- **Reabrir**: `POST /orcamento/:id/reabrir` volta um FECHADO ainda sem nº no Celta para
+  ENVIADO (ou RASCUNHO se nunca foi enviado) e limpa o desfecho; já importado não reabre.
+  Botões "Reabrir" e "Importar no Celta" ficam no cabeçalho (página e Estação).
 - Env: `API_VENDAS_URL`, `API_VENDAS_KEY` (credencial de **retaguarda**, com
   `representantes: "*"`, senão a API responde 403 para vendedores fora da chave),
   `API_VENDAS_TIMEOUT_MS`. Colunas: `"orcamentoCelta"` (já existia no banco; o Prisma mapeia como `celta_orcamento`) e `celta_importado_em` — seção 10 do `sql/orcamento_atacado_postgres.sql` só confere.

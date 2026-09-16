@@ -368,6 +368,12 @@ export class OrcamentoController {
     return this.service.importarCelta(id);
   }
 
+  @Post(':id/reabrir')
+  @ApiOperation({ summary: 'Reabre para edição um FECHADO ainda não importado no Celta.' })
+  reabrir(@Param('id') id: string) {
+    return this.service.reabrir(id);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Cancela o orçamento (não apaga).' })
   cancelar(@Param('id') id: string) {

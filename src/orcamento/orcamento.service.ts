@@ -1206,6 +1206,19 @@ export class OrcamentoService {
     return { orcamento: salvo, celta_orcamento: r.orcamento, repetido: r.repetido };
   }
 
+  /** Reabre um FECHADO que ainda não foi ao Celta: volta a ENVIADO (ou RASCUNHO se nunca foi enviado) e limpa o desfecho. */
+  async reabrir(id: string) {
+    const o = await this.obter(id);
+    if (o.status !== 'FECHADO') throw new BadRequestException(`Orçamento ${o.status} não pode ser reaberto.`);
+    if (o.celta_orcamento) throw new BadRequestException(`Orçamento já importado no Celta (nº ${o.celta_orcamento}) não pode ser reaberto.`);
+    return this.db.atualizar(id, {
+      status: o.enviado_em ? 'ENVIADO' : 'RASCUNHO',
+      desfecho_em: null,
+      desfecho_motivo: null,
+      desfecho_ref: null,
+    });
+  }
+
   async cancelar(id: string) {
     const o = await this.obter(id);
     if (['FECHADO', 'PERDIDO'].includes(o.status)) throw new BadRequestException(`Orçamento ${o.status} não pode ser cancelado.`);
