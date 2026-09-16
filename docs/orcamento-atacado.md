@@ -197,6 +197,28 @@ tabela normal do cliente e a linha segue a régua, a alçada e a bolsa padrão, 
 O serviço devolve em `ProdutoOrcamento.sem_promocao` a tabela normal e a avaliação da régua sobre
 ela, que é o que a tela usa ao alternar. A coluna `fora_promocao` fica gravada no item.
 
+## Importação no Celta (16/09/2026)
+
+Ao clicar em **Fechou** o editor salva (condição de pagamento + itens sem saldo) e
+pergunta **"Importar no Celta?"**. *Sim* → `POST /orcamento/:id/desfecho` (FECHADO) e
+`POST /orcamento/:id/celta`; a tela mostra o nº do orçamento gerado. *Não* → só o
+fechamento; o orçamento fica FECHADO **sem** `celta_orcamento` e a etiqueta "não
+importado no Celta" (cabeçalho do editor e lista) abre a mesma pergunta depois.
+
+- `importarCelta(id)` monta o corpo com `corpoParaCelta()` (`celta.ts`, puro, +spec):
+  `unitario` = preço de tabela bruto, `perc_descto` = `desc_pct` × 100, uma forma de
+  pagamento para entrada e demais parcelas, observação prefixada com "Intranet ORC-n";
+  quantidade inteira (encomenda incluída).
+- Chama a **api-vendas-service** (`OrcamentoCeltaRepository`): `POST /orcamentos/:empresa`
+  com `x-api-key` e `Idempotency-Key = intranet-orc-<id>` — repetir não duplica no ERP
+  (a API devolve o mesmo nº com 200). Grava `celta_orcamento`, `celta_importado_em` e
+  `desfecho_ref` (se vazio). Já importado → devolve o nº guardado sem chamar a API.
+- Só FECHADO importa; sem vendedor ou sem itens = 400; API fora = 503; recusa do
+  Celta = 502 com a mensagem da API.
+- Env: `API_VENDAS_URL`, `API_VENDAS_KEY` (credencial de **retaguarda**, com
+  `representantes: "*"`, senão a API responde 403 para vendedores fora da chave),
+  `API_VENDAS_TIMEOUT_MS`. Colunas: `"orcamentoCelta"` (já existia no banco; o Prisma mapeia como `celta_orcamento`) e `celta_importado_em` — seção 10 do `sql/orcamento_atacado_postgres.sql` só confere.
+
 ## Instalação
 
 1. Aplicar `sql/orcamento_atacado_postgres.sql` no Postgres da intranet (manual, idempotente).

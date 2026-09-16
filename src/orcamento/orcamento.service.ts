@@ -27,6 +27,8 @@ import {
 } from './regua';
 import { DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, SalvarOrcamentoDto } from './dto/orcamento.dto';
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
+import { OrcamentoCeltaRepository } from './orcamento.celta.repository';
+import { chaveIdempotencia, corpoParaCelta } from './celta';
 
 /* =============================================================================
    ORÇAMENTO DO ATACADO — regras.
@@ -134,6 +136,7 @@ export class OrcamentoService {
     private readonly erp: OrcamentoErpRepository,
     private readonly bi: OrcamentoBiRepository,
     private readonly db: OrcamentoPrismaRepository,
+    private readonly celta: OrcamentoCeltaRepository,
   ) {}
 
   /* ---------------------------------------------------------- parâmetros */
@@ -1175,6 +1178,32 @@ export class OrcamentoService {
       desfecho_ref: dto.referencia ?? null,
       observacao: dto.observacao ? `${o.observacao ? o.observacao + '\n' : ''}${dto.observacao}` : o.observacao,
     });
+  }
+
+  /**
+   * Manda o orçamento FECHADO ao Celta pela api-vendas-service e guarda o nº gerado.
+   * Já importado → devolve o nº guardado sem chamar a API. A chave de idempotência
+   * é por orçamento: uma falha de rede depois da gravação não duplica no ERP.
+   */
+  async importarCelta(id: string) {
+    const o = await this.obter(id);
+    if (o.celta_orcamento) return { orcamento: o, celta_orcamento: o.celta_orcamento, repetido: true };
+    if (o.status !== 'FECHADO') throw new BadRequestException('Só orçamento fechado vai ao Celta.');
+    if (!o.rep_codigo) throw new BadRequestException('Orçamento sem vendedor não pode ir ao Celta.');
+    let corpo;
+    try {
+      corpo = corpoParaCelta(o);
+    } catch (e) {
+      throw new BadRequestException((e as Error).message);
+    }
+    const r = await this.celta.criar(o.empresa, corpo, chaveIdempotencia(o));
+    const salvo = await this.db.atualizar(id, {
+      celta_orcamento: r.orcamento,
+      celta_importado_em: new Date(),
+      desfecho_ref: o.desfecho_ref || String(r.orcamento),
+    });
+    this.logger.log(`Orçamento ${o.numero} importado no Celta como ${r.orcamento}${r.repetido ? ' (repetido)' : ''}.`);
+    return { orcamento: salvo, celta_orcamento: r.orcamento, repetido: r.repetido };
   }
 
   async cancelar(id: string) {

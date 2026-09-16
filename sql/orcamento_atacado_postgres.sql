@@ -215,3 +215,10 @@ CREATE INDEX IF NOT EXISTS idx_ven_venda_perdida_pro ON ven_venda_perdida (pro_c
 --    o item pela tabela normal do cliente; a campanha deixa de valer na linha e
 --    entram a régua e a bolsa padrão.
 ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS fora_promocao BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- 10) Importação no Celta (16/09/2026): ao fechar, o vendedor pode mandar o orçamento
+--     ao ERP pela api-vendas-service. O nº gerado vai na coluna "orcamentoCelta"
+--     (já existia no banco, nome com maiúscula — o Prisma mapeia como celta_orcamento);
+--     FECHADO sem nº = "não importado" (a tela oferece importar depois).
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS "orcamentoCelta"    INTEGER;
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS celta_importado_em TIMESTAMPTZ;

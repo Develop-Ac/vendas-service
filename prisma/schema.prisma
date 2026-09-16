@@ -2135,6 +2135,8 @@ model ven_orcamento {
   cp_descricao     String?
   fp_codigo        String?
   fp_descricao     String?
+  celta_orcamento  Int?                 @map("orcamentoCelta")
+  celta_importado_em DateTime?          @db.Timestamptz(6)
   itens            ven_orcamento_item[]
 
   @@index([cli_codigo], map: "idx_ven_orcamento_cli")

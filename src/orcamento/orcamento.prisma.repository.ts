@@ -334,6 +334,8 @@ export class OrcamentoPrismaRepository {
       desfecho_em: o.desfecho_em,
       desfecho_motivo: o.desfecho_motivo,
       desfecho_ref: o.desfecho_ref,
+      celta_orcamento: o.celta_orcamento ?? null,
+      celta_importado_em: o.celta_importado_em ?? null,
       usuario_id: o.usuario_id,
       usuario_nome: o.usuario_nome,
       created_at: o.created_at,

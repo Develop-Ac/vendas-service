@@ -362,6 +362,12 @@ export class OrcamentoController {
     return this.service.desfecho(id, dto);
   }
 
+  @Post(':id/celta')
+  @ApiOperation({ summary: 'Importa o orçamento FECHADO no Celta (api-vendas-service) e guarda o nº gerado.' })
+  importarCelta(@Param('id') id: string) {
+    return this.service.importarCelta(id);
+  }
+
   @Delete(':id')
   @ApiOperation({ summary: 'Cancela o orçamento (não apaga).' })
   cancelar(@Param('id') id: string) {

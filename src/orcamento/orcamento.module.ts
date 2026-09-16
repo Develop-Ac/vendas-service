@@ -6,6 +6,7 @@ import { OrcamentoService } from './orcamento.service';
 import { OrcamentoErpRepository } from './orcamento.erp.repository';
 import { OrcamentoBiRepository } from './orcamento.bi.repository';
 import { OrcamentoPrismaRepository } from './orcamento.prisma.repository';
+import { OrcamentoCeltaRepository } from './orcamento.celta.repository';
 import { RelacionadosScheduler } from './relacionados.scheduler';
 import { OrcamentoVencendoScheduler } from './vencendo.scheduler';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
@@ -25,6 +26,7 @@ import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
     OrcamentoErpRepository,
     OrcamentoBiRepository,
     OrcamentoPrismaRepository,
+    OrcamentoCeltaRepository,
     RelacionadosScheduler,
     MssqlService,
   ],
