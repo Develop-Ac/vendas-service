@@ -1040,9 +1040,8 @@ export class OrcamentoService {
       throw new BadRequestException(`Orçamento ${o.status} não pode ser enviado.`);
     }
     if (!o.itens?.length) throw new BadRequestException('Orçamento sem itens.');
-    // O Celta pede condição e forma; o cadastro do cliente quase nunca tem padrão (5 de 1.191 com condição, 0 com forma).
+    // O Celta pede a condição; a forma é opcional (vai a sugerida pela condição ou o padrão do cliente).
     if (o.cp_codigo == null) throw new BadRequestException('Informe a condição de pagamento antes de enviar.');
-    if (!o.fp_codigo) throw new BadRequestException('Informe a forma de pagamento antes de enviar.');
     // Saldo relido do ERP: item sem saldo para a parte a entregar agora não
     // conclui sem decisão do vendedor (venda perdida / encomenda / retirar).
     const pend = await this.pendenciasDe(o);
