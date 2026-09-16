@@ -403,10 +403,11 @@ export class OrcamentoPrismaRepository {
    */
   async registrarVendaPerdida(
     o: { id: string; numero: number; cli_codigo: number; rep_codigo: number | null },
-    linhas: Array<{ pro_codigo: number; descricao: string | null; quantidade: number }>,
+    linhas: Array<{ pro_codigo: number; descricao: string | null; quantidade: number; similar_disponivel?: string | null; justificativa?: string | null }>,
     usuario?: { usuario_id?: string; usuario_nome?: string },
   ) {
     for (const l of linhas) {
+      const extras = { similar_disponivel: l.similar_disponivel ?? null, justificativa: l.justificativa ?? null };
       await this.prisma.ven_venda_perdida.upsert({
         where: { orcamento_id_pro_codigo: { orcamento_id: o.id, pro_codigo: l.pro_codigo } },
         create: {
@@ -419,8 +420,9 @@ export class OrcamentoPrismaRepository {
           rep_codigo: o.rep_codigo,
           usuario_id: usuario?.usuario_id ?? null,
           usuario_nome: usuario?.usuario_nome ?? null,
+          ...extras,
         },
-        update: { quantidade: l.quantidade, usuario_id: usuario?.usuario_id ?? null, usuario_nome: usuario?.usuario_nome ?? null, created_at: new Date() },
+        update: { quantidade: l.quantidade, usuario_id: usuario?.usuario_id ?? null, usuario_nome: usuario?.usuario_nome ?? null, created_at: new Date(), ...extras },
       });
     }
   }

@@ -176,6 +176,18 @@ export class DecisaoSaldoItemDto {
   @IsOptional()
   @IsBoolean()
   manter_disponivel?: boolean;
+
+  @ApiProperty({ required: false, description: 'Equivalente COM saldo que a tela encontrou (código · descrição · saldo). Com ele, VENDA_PERDIDA exige justificativa.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  similar_disponivel?: string;
+
+  @ApiProperty({ required: false, description: 'Por que registrar venda perdida mesmo havendo similar com saldo.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  justificativa?: string;
 }
 
 export class DecisaoSaldoDto extends AcaoOrcamentoDto {

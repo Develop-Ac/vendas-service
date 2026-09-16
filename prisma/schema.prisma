@@ -2214,6 +2214,8 @@ model ven_venda_perdida {
   usuario_id       String?
   usuario_nome     String?
   created_at       DateTime @default(now()) @db.Timestamptz(6)
+  similar_disponivel String?
+  justificativa    String?
 
   @@unique([orcamento_id, pro_codigo], map: "uq_ven_venda_perdida_orc_pro")
   @@index([pro_codigo], map: "idx_ven_venda_perdida_pro")

@@ -1235,7 +1235,19 @@ export class OrcamentoService {
     const saldoPor = new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, p.estoque_disponivel]));
     const r = aplicarDecisoes(itens, saldoPor, dto.decisoes);
     if (r.sem_decisao.length) throw new BadRequestException(`Falta decidir o que fazer com: ${r.sem_decisao.join(', ')}.`);
-    if (r.venda_perdida.length) await this.db.registrarVendaPerdida(o, r.venda_perdida, dto);
+    // Similar com saldo: a tela informa qual era; venda perdida só com justificativa escrita.
+    const porCodigo = new Map(dto.decisoes.map((d) => [d.pro_codigo, d]));
+    const semJustificativa = r.venda_perdida.filter((v) => porCodigo.get(v.pro_codigo)?.similar_disponivel && !porCodigo.get(v.pro_codigo)?.justificativa?.trim());
+    if (semJustificativa.length) {
+      throw new BadRequestException(`Há similar com saldo para ${semJustificativa.map((v) => v.pro_codigo).join(', ')}: justifique a venda perdida.`);
+    }
+    if (r.venda_perdida.length) {
+      await this.db.registrarVendaPerdida(
+        o,
+        r.venda_perdida.map((v) => ({ ...v, similar_disponivel: porCodigo.get(v.pro_codigo)?.similar_disponivel ?? null, justificativa: porCodigo.get(v.pro_codigo)?.justificativa?.trim() || null })),
+        dto,
+      );
+    }
     if (!r.itens.length) return { orcamento: o, sem_itens: true, venda_perdida: r.venda_perdida.length };
     const salvo = await this.atualizar(id, {
       cli_codigo: o.cli_codigo,

@@ -181,6 +181,12 @@ ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS cp_descricao TEXT;
 ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS fp_codigo    TEXT;
 ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS fp_descricao TEXT;
 
+-- 9) Venda perdida com similar em estoque (16/09/2026): quando o item sem saldo
+--    tinha um equivalente com saldo, o vendedor precisa justificar por escrito
+--    para registrar a venda perdida. `similar_disponivel` guarda qual era.
+ALTER TABLE ven_venda_perdida ADD COLUMN IF NOT EXISTS similar_disponivel TEXT;
+ALTER TABLE ven_venda_perdida ADD COLUMN IF NOT EXISTS justificativa      TEXT;
+
 -- 8) Itens sem saldo ao concluir (16/09/2026). Ao enviar, o saldo é relido do
 --    ERP; item com saldo menor que o pedido exige decisão do vendedor:
 --    venda perdida (registro abaixo), encomenda (parte fica no orçamento marcada
