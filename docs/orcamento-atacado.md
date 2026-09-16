@@ -215,6 +215,11 @@ importado no Celta" (cabeçalho do editor e lista) abre a mesma pergunta depois.
   `desfecho_ref` (se vazio). Já importado → devolve o nº guardado sem chamar a API.
 - Só FECHADO importa; sem vendedor ou sem itens = 400; API fora = 503; recusa do
   Celta = 502 com a mensagem da API.
+- **Observação no Celta = justificativa da alçada** (`justificativaAlcada()` em `celta.ts`), para o
+  gerente liberar sem abrir a intranet: vendedor, se está dentro do limite ou abaixo do mínimo
+  (com quem aprovou e quando), desconto total, desconto do mês antes/depois e, item a item,
+  desconto dado × máximo da faixa (ok / usa a bolsa / abaixo do mínimo). Sem custo nem R$,
+  porque a observação do ERP pode sair impressa. A observação do vendedor vem depois.
 - **Reabrir**: `POST /orcamento/:id/reabrir` volta um FECHADO ainda sem nº no Celta para
   ENVIADO (ou RASCUNHO se nunca foi enviado) e limpa o desfecho; já importado não reabre.
   Botões "Reabrir" e "Importar no Celta" ficam no cabeçalho (página e Estação).

@@ -12,6 +12,10 @@ export interface ItemParaCelta {
   quantidade: number;
   preco_tabela: number;
   desc_pct: number;
+  desc_max_pct?: number | null;
+  acima_alcada?: boolean;
+  faixa?: string | null;
+  classe?: string | null;
 }
 
 export interface OrcamentoParaCelta {
@@ -19,10 +23,53 @@ export interface OrcamentoParaCelta {
   numero: number;
   cli_codigo: number;
   rep_codigo: number | null;
+  rep_nome?: string | null;
   cp_codigo: number | null;
   fp_codigo: string | null;
   observacao: string | null;
+  desc_pct?: number;
+  acima_alcada?: boolean;
+  bolsa_pct_antes?: number | null;
+  bolsa_pct_depois?: number | null;
+  aprovado_por?: string | null;
+  aprovado_em?: Date | string | null;
   itens?: ItemParaCelta[];
+}
+
+const pct = (v: number | null | undefined) => (v == null ? '—' : `${(v * 100).toFixed(1).replace('.', ',')}%`);
+const dataBr = (d: Date | string | null | undefined) => {
+  if (!d) return '';
+  const x = typeof d === 'string' ? new Date(d) : d;
+  return Number.isNaN(x.getTime()) ? '' : x.toLocaleDateString('pt-BR', { timeZone: 'America/Cuiaba' });
+};
+
+/**
+ * Texto que vai na observação do Celta para o gerente liberar o orçamento sem
+ * consultar a intranet: se está dentro da alçada do vendedor, quem aprovou quando
+ * não estava, o desconto do mês antes/depois e, item a item, desconto dado × máximo
+ * da faixa. Sem custo nem valores em R$: a observação do ERP pode sair impressa.
+ */
+export function justificativaAlcada(o: OrcamentoParaCelta): string {
+  const linhas: string[] = [];
+  const vend = [o.rep_codigo, o.rep_nome].filter(Boolean).join(' ');
+  linhas.push(`Intranet ORC-${String(o.numero).padStart(6, '0')}${vend ? ` · vendedor ${vend}` : ''}`);
+  const aprov = o.aprovado_por ? `aprovado por ${o.aprovado_por}${dataBr(o.aprovado_em) ? ` em ${dataBr(o.aprovado_em)}` : ''}` : '';
+  const alcada = o.acima_alcada
+    ? `Alçada: abaixo do mínimo da régua${aprov ? `, ${aprov}` : ' — SEM aprovação registrada'}.`
+    : `Alçada: dentro do limite do vendedor${aprov ? ` (${aprov})` : ''}.`;
+  const mes = o.bolsa_pct_antes != null && o.bolsa_pct_depois != null ? ` Desconto do mês: ${pct(o.bolsa_pct_antes)} -> ${pct(o.bolsa_pct_depois)}.` : '';
+  linhas.push(`${alcada} Desconto total ${pct(o.desc_pct ?? 0)}.${mes}`);
+  const comDesc = (o.itens ?? []).filter((i) => Number(i.desc_pct) > 0);
+  if (comDesc.length) {
+    const partes = comDesc.map((i) => {
+      const max = i.desc_max_pct;
+      const faixa = [i.faixa, i.classe].filter(Boolean).join(' ');
+      const situacao = i.acima_alcada ? 'abaixo do mínimo' : max != null && Number(i.desc_pct) > Number(max) + 1e-9 ? 'usa a bolsa' : 'ok';
+      return `${i.pro_codigo} ${pct(Number(i.desc_pct))} (máx ${pct(max)}${faixa ? `, ${faixa}` : ''}, ${situacao})`;
+    });
+    linhas.push(`Itens com desconto: ${partes.join('; ')}`);
+  }
+  return linhas.join('\n');
 }
 
 export interface CorpoCelta {
@@ -45,7 +92,10 @@ export function corpoParaCelta(o: OrcamentoParaCelta): CorpoCelta {
     perc_descto: Math.min(99.99, Math.max(0, Math.round(Number(i.desc_pct) * 10000) / 100)),
   }));
   if (!itens.length) throw new Error('Orçamento sem itens não vai ao Celta.');
-  const obs = `Intranet ORC-${String(o.numero).padStart(6, '0')}${o.observacao ? '\n' + o.observacao : ''}`;
+  // Justificativa da alçada primeiro (cabe sempre); a observação do vendedor vem depois
+  // e é o que se corta quando o total passa do limite do ERP.
+  const just = justificativaAlcada(o);
+  const obs = o.observacao ? `${just}\n${o.observacao}` : just;
   const fp = o.fp_codigo?.trim() || undefined;
   return {
     cli_codigo: o.cli_codigo,
