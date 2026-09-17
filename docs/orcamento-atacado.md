@@ -197,6 +197,20 @@ tabela normal do cliente e a linha segue a régua, a alçada e a bolsa padrão, 
 O serviço devolve em `ProdutoOrcamento.sem_promocao` a tabela normal e a avaliação da régua sobre
 ela, que é o que a tela usa ao alternar. A coluna `fora_promocao` fica gravada no item.
 
+## PDF no modelo do ERP (17/09/2026)
+
+`GET /orcamento/:id/pdf?desconto=item|geral` (`orcamento.pdf.ts`). Anatomia igual ao orçamento
+impresso pelo Celta: cabeçalho da empresa + nº/emissão/validade, faixa do vendedor, cliente em
+três linhas (Cliente/Fone · Endereço/Bairro/CEP · Cidade/CPF-CNPJ/RG-IE), tabela cinza,
+"Qtde. Total" + Subtotal/Desconto/Acréscimo, linha da condição de pagamento com o Total
+Líquido em caixa, Observações. Dois modos, escolhidos no modal "Imprimir orçamento" do editor:
+- **item** (padrão, e o que vai no WhatsApp): colunas Tabela · Desc.% · Unitário líquido em cada
+  linha; Subtotal já líquido, sem repetir o desconto.
+- **geral**: linha só com unitário e total de tabela; o desconto aparece uma vez, abaixo do
+  Subtotal, ao lado do Acréscimo (sempre 0,00 — a intranet não tem acréscimo).
+O botão Imprimir do modo página passou a abrir o mesmo PDF (a página HTML `(print)/orcamento`
+ficou sem uso).
+
 ## Importação no Celta (16/09/2026)
 
 Ao clicar em **Fechou** o editor salva (condição de pagamento + itens sem saldo) e

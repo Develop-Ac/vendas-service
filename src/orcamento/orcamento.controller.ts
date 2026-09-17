@@ -336,8 +336,9 @@ export class OrcamentoController {
 
   @Get(':id/pdf')
   @ApiOperation({ summary: 'PDF do orçamento no leiaute que o cliente conhece (logo da AC).' })
-  async pdf(@Param('id') id: string, @Res() res: FastifyReply) {
-    const { nome, dados } = await this.service.pdf(id);
+  @ApiQuery({ name: 'desconto', required: false, enum: ['item', 'geral'], description: 'item (padrão): desconto na linha do produto; geral: uma vez, abaixo do subtotal.' })
+  async pdf(@Param('id') id: string, @Res() res: FastifyReply, @Query('desconto') desconto?: string) {
+    const { nome, dados } = await this.service.pdf(id, desconto);
     res.header('Content-Type', 'application/pdf');
     res.header('Content-Disposition', `inline; filename="${nome}"`);
     res.header('Cross-Origin-Resource-Policy', 'cross-origin');

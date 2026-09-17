@@ -1,4 +1,4 @@
-import { gerarPdfOrcamento, PdfOrcamento } from './orcamento.pdf';
+import { gerarPdfOrcamento, ModoDesconto, PdfOrcamento } from './orcamento.pdf';
 import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -1079,9 +1079,11 @@ export class OrcamentoService {
     };
   }
 
-  async pdf(id: string): Promise<{ nome: string; dados: Buffer }> {
+  /** `modo` = como o desconto aparece no papel: por item (padrão) ou uma vez, no total. */
+  async pdf(id: string, modo?: string): Promise<{ nome: string; dados: Buffer }> {
     const dados = await this.dadosImpressao(id);
-    return { nome: `orcamento-${dados.numero}.pdf`, dados: await gerarPdfOrcamento(dados) };
+    const m: ModoDesconto = modo === 'geral' ? 'geral' : 'item';
+    return { nome: `orcamento-${dados.numero}.pdf`, dados: await gerarPdfOrcamento({ ...dados, modo: m }) };
   }
 
   /**

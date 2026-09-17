@@ -4,17 +4,24 @@ import { LOGO_AC } from './orcamento.logo';
 /**
  * PDF DO ORÇAMENTO — o leiaute que o cliente já conhece.
  *
- * Reproduz a anatomia do orçamento impresso pelo ERP (empresa e telefones à
- * esquerda, número/emissão/validade à direita, faixa do vendedor, bloco do
- * cliente, tabela cinza, totais, condição de pagamento), com a marca da AC no
- * cabeçalho e SEM menção ao sistema de origem. Diferenças de conteúdo em
- * relação ao ERP: a tabela mostra o preço de tabela, o desconto % e o unitário
- * líquido de cada item (o que a mensagem do WhatsApp não mostra), e o bloco de
- * totais traz DESCONTO no lugar de "Acréscimo".
+ * Reproduz a anatomia do orçamento impresso pelo ERP: empresa e telefones à
+ * esquerda, número em caixa cinza com emissão e validade à direita, faixa do
+ * vendedor, bloco do cliente em três linhas (Cliente/Fone · Endereço/Bairro/CEP ·
+ * Cidade/CPF-CNPJ/RG-IE), tabela cinza, "Qtde. Total" com Subtotal/Desconto/
+ * Acréscimo à direita, linha da condição de pagamento com o Total Líquido em
+ * caixa, Observações. Marca da AC no cabeçalho e SEM menção ao sistema de origem.
+ *
+ * Dois modos de apresentar o desconto (`modo`):
+ * - `item`  — colunas Tabela · Desc.% · Unitário líquido em cada linha; o
+ *             Subtotal já é líquido e o bloco de totais não repete o desconto.
+ * - `geral` — a linha mostra só o unitário de tabela e o total de tabela; o
+ *             desconto aparece uma vez, abaixo do Subtotal, ao lado do Acréscimo.
  *
  * A4 retrato, fontes internas do pdfkit (Helvetica) — sem dependência de
  * fonte instalada no container.
  */
+
+export type ModoDesconto = 'item' | 'geral';
 
 /** Dados da empresa impressos no cabeçalho (empresa 3, atacado). */
 export const EMPRESA_PDF = {
@@ -69,6 +76,8 @@ export interface PdfOrcamento {
   observacao: string | null;
   /** "Condição · forma" copiadas do Celta; nulo = a combinar. */
   pagamento: string | null;
+  /** Como o desconto aparece; padrão `item`. */
+  modo?: ModoDesconto;
 }
 
 const A4 = { w: 595.28, h: 841.89 };
@@ -96,22 +105,38 @@ function celula(doc: PDFKit.PDFDocument, txt: string, x: number, w: number, al: 
 }
 
 const brl = (v: number) => (v ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const pct = (v: number) => (v * 100).toFixed(2).replace('.', ',');
 const qtd = (v: number) => (Number.isInteger(v) ? String(v) : v.toLocaleString('pt-BR', { maximumFractionDigits: 3 }));
 
-/** Colunas da tabela: [rótulo, x, largura, alinhamento]. */
-const COLS: Array<[string, number, number, 'left' | 'right']> = [
-  ['P r o d u t o', M, 225, 'left'],
-  ['Marca', M + 225, 57, 'left'],
-  ['Un.', M + 282, 25, 'left'],
-  ['Qtde.', M + 307, 32, 'right'],
-  ['Tabela', M + 339, 50, 'right'],
-  ['Desc.%', M + 389, 40, 'right'],
-  ['Unitário', M + 429, 50, 'right'],
-  ['T O T A L', M + 479, LARG - 479, 'right'],
-];
+type Col = [string, number, number, 'left' | 'right'];
 
+/** Colunas da tabela por modo: [rótulo, x, largura, alinhamento]. */
+function colunas(modo: ModoDesconto): Col[] {
+  if (modo === 'geral') {
+    return [
+      ['P r o d u t o', M, 285, 'left'],
+      ['Marca', M + 285, 80, 'left'],
+      ['Unid.', M + 365, 32, 'left'],
+      ['Qtde.', M + 397, 38, 'right'],
+      ['Unitário', M + 435, 50, 'right'],
+      ['T O T A L', M + 485, LARG - 485, 'right'],
+    ];
+  }
+  return [
+    ['P r o d u t o', M, 205, 'left'],
+    ['Marca', M + 205, 75, 'left'],
+    ['Unid.', M + 280, 28, 'left'],
+    ['Qtde.', M + 308, 32, 'right'],
+    ['Tabela', M + 340, 50, 'right'],
+    ['Desc.%', M + 390, 40, 'right'],
+    ['Unitário', M + 430, 50, 'right'],
+    ['T O T A L', M + 480, LARG - 480, 'right'],
+  ];
+}
 
 export function gerarPdfOrcamento(o: PdfOrcamento): Promise<Buffer> {
+  const modo: ModoDesconto = o.modo === 'geral' ? 'geral' : 'item';
+  const cols = colunas(modo);
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: M, info: { Title: `Orçamento ${o.numero}`, Author: 'AC Acessórios' } });
     const partes: Buffer[] = [];
@@ -120,18 +145,18 @@ export function gerarPdfOrcamento(o: PdfOrcamento): Promise<Buffer> {
     doc.on('error', reject);
 
     let y = cabecalho(doc, o);
-    y = tabelaCabecalho(doc, y);
+    y = tabelaCabecalho(doc, y, cols);
     for (const it of o.itens) {
       const altura = it.promocao_fim ? 36 : 26;
-      if (y + altura > A4.h - 120) {
+      if (y + altura > A4.h - 150) {
         rodape(doc, o);
         doc.addPage();
         y = cabecalho(doc, o);
-        y = tabelaCabecalho(doc, y);
+        y = tabelaCabecalho(doc, y, cols);
       }
-      y = linhaItem(doc, y, it);
+      y = linhaItem(doc, y, it, cols, modo);
     }
-    y = totais(doc, y + 6, o);
+    y = totais(doc, y + 6, o, modo);
     rodape(doc, o);
     doc.end();
   });
@@ -165,60 +190,64 @@ function cabecalho(doc: PDFKit.PDFDocument, o: PdfOrcamento): number {
   doc.font('Helvetica').fontSize(9.5).text(`Vendedor: ${o.vendedor}`, M, y + 3);
   y += 19;
 
-  // bloco do cliente (3 linhas × 3 colunas)
+  // bloco do cliente (3 linhas), na mesma ordem do orçamento do ERP
   const c = o.cliente;
-  const col = [M, M + LARG * 0.5, M + LARG * 0.78];
+  const col = [M, M + LARG * 0.55, M + LARG * 0.8];
   const par = (rot: string, val: string | null, x: number, yy: number, w?: number) => {
     doc.fillColor(SUAVE).font('Helvetica').fontSize(8.5).text(`${rot}`, x, yy, { lineBreak: false });
     const xv = x + doc.widthOfString(`${rot}`) + 4;
     doc.fillColor(TEXTO).fontSize(8.5).text(w ? caber(doc, val ?? '', w - (xv - x)) : val ?? '', xv, yy, { lineBreak: false });
   };
-  par('Cliente:', `${c.nome} (${c.codigo})`, col[0], y, LARG * 0.48);
+  par('Cliente:', `${c.nome} (${c.codigo})`, col[0], y, LARG * 0.53);
   par('Fone:', c.fone, col[1], y);
-  par('CPF/CNPJ:', c.cpf_cnpj, col[2], y);
   y += 12;
-  par('Endereço:', c.endereco, col[0], y, LARG * 0.48);
-  par('Bairro:', c.bairro, col[1], y);
+  par('Endereço:', c.endereco, col[0], y, LARG * 0.53);
+  par('Bairro:', c.bairro, col[1], y, LARG * 0.24);
   par('CEP:', c.cep, col[2], y);
   y += 12;
-  par('Cidade/UF:', [c.cidade, c.uf].filter(Boolean).join(' - '), col[0], y);
-  par('Tabela:', c.tabela_nome, col[1], y);
+  par('Cidade/UF:', [c.cidade, c.uf].filter(Boolean).join(' - '), col[0], y, LARG * 0.53);
+  par('CPF/CNPJ:', c.cpf_cnpj, col[1], y);
   par('RG/IE:', c.rg_ie, col[2], y);
   y += 14;
-  doc.moveTo(M - 4, y).lineTo(M + LARG + 4, y).lineWidth(1.2).strokeColor('#999999').stroke();
-  return y + 4;
+  return y;
 }
 
-function tabelaCabecalho(doc: PDFKit.PDFDocument, y: number): number {
+function tabelaCabecalho(doc: PDFKit.PDFDocument, y: number, cols: Col[]): number {
   doc.rect(M - 4, y, LARG + 8, 14).fill(CINZA).fillColor(TEXTO);
   doc.font('Helvetica').fontSize(9);
-  for (const [rot, x, w, al] of COLS) celula(doc, caber(doc, rot, w - 4), x, w, al, y + 3);
+  for (const [rot, x, w, al] of cols) celula(doc, caber(doc, rot, w - 4), x, w, al, y + 3);
   return y + 17;
 }
 
-function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem): number {
+function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem, cols: Col[], modo: ModoDesconto): number {
   doc.fillColor(TEXTO).font('Helvetica').fontSize(9);
   const cel = (i: number, txt: string) => {
-    const [, x, w, al] = COLS[i];
+    const [, x, w, al] = cols[i];
     celula(doc, caber(doc, txt, w - 4), x, w, al, y);
   };
   // A descrição não é cortada: quebra em até duas linhas (a linha cresce junto).
   const descr = `${it.pro_codigo}   ${it.descricao}`;
-  const wDescr = COLS[0][2] - 4;
+  const wDescr = cols[0][2] - 4;
   const hDescr = Math.min(doc.heightOfString(descr, { width: wDescr }), 24);
-  doc.text(descr, COLS[0][1] + 2, y, { width: wDescr, height: 24, ellipsis: true });
+  doc.text(descr, cols[0][1] + 2, y, { width: wDescr, height: 24, ellipsis: true });
   cel(1, it.marca ?? '');
   cel(2, it.unidade ?? 'UN');
   cel(3, qtd(it.quantidade));
-  cel(4, brl(it.preco_original ?? it.preco_tabela));
-  cel(5, it.promocao_fim ? '—' : it.desc_pct > 0 ? (it.desc_pct * 100).toFixed(2).replace('.', ',') : '');
-  cel(6, brl(it.preco_unit));
-  cel(7, brl(it.total));
+  if (modo === 'geral') {
+    // preço de tabela na linha; o desconto vai uma vez só, no bloco de totais
+    cel(4, brl(it.preco_tabela));
+    cel(5, brl(it.preco_tabela * it.quantidade));
+  } else {
+    cel(4, brl(it.preco_original ?? it.preco_tabela));
+    cel(5, it.promocao_fim ? '—' : it.desc_pct > 0 ? pct(it.desc_pct) : '');
+    cel(6, brl(it.preco_unit));
+    cel(7, brl(it.total));
+  }
   y += Math.max(12, hDescr + 1);
   if (it.promocao_fim) {
     doc.fillColor(SUAVE).fontSize(7.5).text(
       `promoção válida até ${it.promocao_fim}${it.preco_original ? ` · de R$ ${brl(it.preco_original)} por R$ ${brl(it.preco_unit)}` : ''}`,
-      COLS[0][1] + 44, y, { lineBreak: false },
+      cols[0][1] + 44, y, { lineBreak: false },
     );
     doc.fillColor(TEXTO);
     y += 10;
@@ -226,7 +255,7 @@ function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem): number {
   if (it.qtd_encomenda > 0) {
     doc.fillColor(SUAVE).fontSize(7.5).text(
       `${qtd(it.qtd_encomenda)} ${it.unidade ?? 'UN'} sob encomenda — entrega combinada com o vendedor`,
-      COLS[0][1] + 44, y, { lineBreak: false },
+      cols[0][1] + 44, y, { lineBreak: false },
     );
     doc.fillColor(TEXTO);
     y += 10;
@@ -234,7 +263,7 @@ function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem): number {
   return y + 2;
 }
 
-function totais(doc: PDFKit.PDFDocument, y: number, o: PdfOrcamento): number {
+function totais(doc: PDFKit.PDFDocument, y: number, o: PdfOrcamento, modo: ModoDesconto): number {
   const qtdTotal = o.itens.reduce((s, i) => s + i.quantidade, 0);
   doc.fillColor(TEXTO).font('Helvetica').fontSize(9.5);
   doc.text(`Qtde. Total:   ${qtd(qtdTotal)}`, M + 260, y + 2, { lineBreak: false });
@@ -245,21 +274,34 @@ function totais(doc: PDFKit.PDFDocument, y: number, o: PdfOrcamento): number {
     doc.text(rot, xRot, yy, { width: 105, align: 'right', lineBreak: false });
     doc.text(val, xVal, yy, { width: 100, align: 'right', lineBreak: false });
   };
-  linha('Subtotal:', brl(o.subtotal), y);
-  linha(`Desconto (${(o.desc_pct * 100).toFixed(2).replace('.', ',')}%):`, brl(o.desconto), y + 12);
-  y += 30;
-  doc.rect(xVal - 6, y - 3, 106, 17).fill(CINZA).fillColor(TEXTO);
-  linha('Total Líquido:', brl(o.total), y, true);
-  y += 26;
+  // Modo item: o subtotal já é líquido (a linha mostrou o desconto).
+  // Modo geral: subtotal de tabela, desconto uma vez, acréscimo (sempre zero na intranet).
+  if (modo === 'geral') {
+    linha('Subtotal:', brl(o.subtotal), y);
+    linha(`Desconto (${pct(o.desc_pct)}%):`, brl(o.desconto), y + 12);
+    linha('Acréscimo:', brl(0), y + 24);
+    y += 40;
+  } else {
+    linha('Subtotal:', brl(o.total), y);
+    linha('Acréscimo:', brl(0), y + 12);
+    y += 28;
+  }
   doc.moveTo(M - 4, y).lineTo(M + LARG + 4, y).lineWidth(0.8).strokeColor('#999999').stroke();
   y += 6;
+  // condição de pagamento à esquerda, Total Líquido em caixa à direita (como no ERP)
   doc.font('Helvetica').fontSize(9.5).fillColor(TEXTO);
-  doc.text(`Condição de Pagto.: ${o.pagamento ?? 'A COMBINAR'}`, M, y, { width: LARG - 210, lineBreak: false });
-  doc.text(`Validade da proposta: ${o.validade ?? '—'}`, M + LARG - 200, y, { width: 200, align: 'right', lineBreak: false });
-  y += 14;
+  doc.text(`Condição de Pagto.: ${o.pagamento ?? 'A COMBINAR'}`, M, y + 2, { width: LARG - 220, lineBreak: false });
+  doc.rect(xVal - 6, y - 3, 106, 17).fill(CINZA).fillColor(TEXTO);
+  linha('Total Líquido:', brl(o.total), y, true);
+  y += 22;
+  doc.moveTo(M - 4, y).lineTo(M + LARG + 4, y).lineWidth(0.8).strokeColor('#999999').stroke();
+  y += 8;
+  doc.font('Helvetica').fontSize(9.5).fillColor(TEXTO).text('Observações:', M, y, { lineBreak: false });
   if (o.observacao) {
-    doc.fillColor(SUAVE).fontSize(8.5).text(`Obs.: ${o.observacao}`, M, y, { width: LARG });
+    doc.fillColor(TEXTO).fontSize(8.5).text(o.observacao, M + 70, y + 1, { width: LARG - 70 });
     y = doc.y + 4;
+  } else {
+    y += 14;
   }
   return y;
 }
