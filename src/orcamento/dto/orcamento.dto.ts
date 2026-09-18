@@ -24,7 +24,7 @@ export class ItemOrcamentoDto {
   @Min(0.001)
   quantidade: number;
 
-  @ApiProperty({ description: 'Só para item SEM preço na tabela do cliente. Com tabela, o preço é sempre tabela × (1 − desc_pct).', required: false })
+  @ApiProperty({ description: 'Unitário fechado pelo vendedor (veio do total da linha digitado) — vale quando 0 < preco_unit ≤ tabela; senão o preço é tabela × (1 − desc_pct). Obrigatório para item SEM preço na tabela.', required: false })
   @IsOptional()
   @IsNumber()
   preco_unit?: number;

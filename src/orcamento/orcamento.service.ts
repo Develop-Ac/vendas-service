@@ -828,10 +828,17 @@ export class OrcamentoService {
       const fora = !!i.fora_promocao && !!p.promocao && !!p.sem_promocao;
       const tabela = fora ? p.sem_promocao!.preco_tabela : p.preco_tabela;
       const av = fora ? p.sem_promocao!.avaliacao : p.avaliacao;
-      // O vendedor NUNCA digita preço: só desconto. O preço nasce da tabela do
-      // cliente menos o desconto; `preco_unit` só vale para item SEM tabela.
+      // O preço nasce da tabela do cliente menos o desconto. `preco_unit` vale por
+      // cima quando o vendedor fechou o TOTAL da linha (arredondamento): um unitário
+      // exato em centavos, nunca acima da tabela — a régua e a bolsa avaliam esse preço.
       const descPedido = Math.min(1, Math.max(0, Number(i.desc_pct ?? 0)));
-      let preco = tabela > 0 ? round2(tabela * (1 - descPedido)) : round2(Number(i.preco_unit ?? 0));
+      const unitFechado = Number(i.preco_unit ?? 0);
+      let preco =
+        tabela > 0
+          ? unitFechado > 0 && unitFechado <= tabela
+            ? round2(unitFechado)
+            : round2(tabela * (1 - descPedido))
+          : round2(unitFechado);
       if (!(preco > 0)) {
         erros.push(`Item ${idx + 1} (${p.descricao}): sem preço de tabela — informe o preço.`);
         return;
