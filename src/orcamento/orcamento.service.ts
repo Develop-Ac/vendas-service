@@ -231,6 +231,11 @@ export class OrcamentoService {
   /** Cabeçalho do cliente: cadastro ao vivo + crédito em aberto e histórico do BI. */
   /* ----------------------------------------------------------- pagamento */
 
+  /** Vendedores do filtro da lista e do seletor do editor: ativos do atacado na comissão. */
+  vendedores() {
+    return this.bi.vendedoresAtacado();
+  }
+
   /** Listas do Celta para os seletores do orçamento (condições de venda e formas ativas). */
   async pagamento() {
     const [condicoes, formas] = await Promise.all([this.erp.condicoesPagto(), this.erp.formasPagto()]);
@@ -1016,7 +1021,14 @@ export class OrcamentoService {
     const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const pag = await this.pagamentoDe(dto);
-    // Editar um orçamento já enviado o devolve ao rascunho: o que o cliente recebeu mudou.
+    // Editar os ITENS de um orçamento já enviado o devolve ao rascunho e derruba a aprovação:
+    // o que o cliente recebeu (e o que o gerente liberou) mudou. Salvar sem mexer em produto,
+    // quantidade e preço — só pagamento ou observação, como no "Fechou" — mantém os dois.
+    const chave = (l: { pro_codigo?: unknown; quantidade?: unknown; preco_unit?: unknown }) =>
+      `${Number(l.pro_codigo)}|${Number(l.quantidade)}|${Number(l.preco_unit).toFixed(2)}`;
+    const antes = (atual.itens ?? []).map(chave).sort().join(';');
+    const depois = m.linhas.map(chave).sort().join(';');
+    const mesmosItens = atual.cli_codigo === dto.cli_codigo && antes === depois;
     return this.db.atualizar(
       id,
       {
@@ -1026,7 +1038,7 @@ export class OrcamentoService {
         rep_codigo: dto.rep_codigo,
         // Vendedor trocado na edição: o nome gravado antes não serve mais.
         rep_nome: dto.rep_nome || (atual.rep_codigo === dto.rep_codigo && atual.rep_nome) || (await this.erp.nomeRepresentante(dto.rep_codigo)),
-        status: 'RASCUNHO',
+        status: mesmosItens ? atual.status : 'RASCUNHO',
         validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
         ...pag,
@@ -1037,9 +1049,9 @@ export class OrcamentoService {
         acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
-        aprovado_por: null,
-        aprovado_em: null,
-        enviado_em: null,
+        aprovado_por: mesmosItens ? atual.aprovado_por : null,
+        aprovado_em: mesmosItens ? atual.aprovado_em : null,
+        enviado_em: mesmosItens ? atual.enviado_em : null,
       },
       m.linhas.map((l) => ({ ...l, orcamento_id: id })),
     );

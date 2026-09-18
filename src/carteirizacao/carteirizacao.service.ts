@@ -1578,7 +1578,29 @@ export class CarteirizacaoService {
       observacao: dto.observacao ?? null,
       atualizado_por: dto.usuario_id ?? null,
     });
-    return { ...salvo, valor_meta: Number(salvo.valor_meta) };
+
+    // Os cards do Metabase leem a meta do BI; sem replicar, o painel do vendedor
+    // continua na meta da planilha. Falha aqui não desfaz o que já foi salvo.
+    let bi_sincronizado = true;
+    try {
+      const vendedor =
+        (await this.sql.nomeRepresentanteComissao(rep_codigo)) ??
+        (dto.rep_nome ?? '').trim().toUpperCase();
+      if (!vendedor) throw new Error('representante sem nome no módulo de comissões');
+      await this.sql.gravarMetaManual({
+        cod_vendedor: rep_codigo,
+        vendedor: vendedor.slice(0, 50),
+        ano: dto.ano,
+        mes: dto.mes,
+        valor_total: Number(salvo.valor_meta),
+      });
+    } catch (err) {
+      bi_sincronizado = false;
+      this.logger.warn(
+        `Meta manual do rep ${rep_codigo} (${dto.mes}/${dto.ano}) não replicada no BI: ${(err as Error).message}`,
+      );
+    }
+    return { ...salvo, valor_meta: Number(salvo.valor_meta), bi_sincronizado };
   }
 
   // ------------------------------------------------------------------ export

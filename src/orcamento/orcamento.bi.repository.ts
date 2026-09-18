@@ -156,6 +156,20 @@ export class OrcamentoBiRepository {
 
   private cfgComissao: { em: number; cfg: ConfigComissao } | null = null;
 
+  /**
+   * Vendedores do atacado = cadastro de representantes da comissão (o mesmo do
+   * pessoal-service): ativos e com o local de venda ATACADO. Inclui a supervisão do canal.
+   */
+  async vendedoresAtacado(): Promise<Array<{ rep_codigo: number; rep_nome: string; papel: string | null }>> {
+    const rows = await this.mssql.query<{ rep_codigo: number; nome: string; papel: string | null }>(
+      `SELECT rep_codigo, nome, papel
+         FROM dbo.ComissaoRepresentante
+        WHERE inativo = 0 AND local_venda = 'ATACADO'
+        ORDER BY nome`,
+    );
+    return rows.map((r) => ({ rep_codigo: Number(r.rep_codigo), rep_nome: String(r.nome ?? '').trim() || `Rep ${r.rep_codigo}`, papel: r.papel ?? null }));
+  }
+
   /** Tabelas da comissão do atacado (as mesmas do fechamento), com cache de 10 minutos. */
   async parametrosComissao(): Promise<ConfigComissao> {
     if (this.cfgComissao && Date.now() - this.cfgComissao.em < 10 * 60 * 1000) return this.cfgComissao.cfg;
