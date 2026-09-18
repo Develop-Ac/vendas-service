@@ -284,6 +284,25 @@ export class CarteirizacaoSqlServerRepository {
   }
 
   /**
+   * Replica a meta manual em f_metas_vendedores, que é de onde os cards do Metabase
+   * leem. Única escrita deste serviço no BI, restrita à procedure (que também
+   * preserva a meta manual quando a planilha de metas é reimportada).
+   */
+  async gravarMetaManual(p: {
+    cod_vendedor: number;
+    vendedor: string;
+    ano: number;
+    mes: number;
+    valor_total: number;
+  }): Promise<void> {
+    await this.mssql.query(
+      `EXEC dbo.sp_GravarMetaManual @cod_vendedor = @cod_vendedor, @vendedor = @vendedor,
+         @ano = @ano, @mes = @mes, @valor_total = @valor_total`,
+      p,
+    );
+  }
+
+  /**
    * Datas e dias úteis do período comissional (26 -> 25) a partir de d_calendario.
    * `mes` segue a convenção de fechamento: mês em que cai o dia 25 (= mes_comissional).
    * Dias decorridos contam até hoje (0 se o período é futuro; total se já encerrado).
