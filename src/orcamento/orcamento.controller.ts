@@ -60,6 +60,12 @@ export class OrcamentoController {
     return this.service.salvarExcecao(pro, dto);
   }
 
+  @Get('vendedores')
+  @ApiOperation({ summary: 'Vendedores do atacado: representantes ativos da comissão com local de venda ATACADO.' })
+  vendedores() {
+    return this.service.vendedores();
+  }
+
   @Get('pagamento')
   @ApiOperation({ summary: 'Condições (de venda, ativas) e formas de pagamento (ativas) do Celta para os seletores do orçamento.' })
   pagamento() {
