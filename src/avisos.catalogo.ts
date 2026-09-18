@@ -39,6 +39,18 @@ export const CATALOGO_VENDAS: Catalogo = {
     prioridade: 'alta',
     alvo: { tipo: 'usuario' },
   },
+  'orcamento.bloqueado': {
+    descricao: 'Comparativo do Celta divergiu: o vendedor ficou com orcamentoBloqueado.',
+    titulo: 'Orçamento {numero} divergente — {vendedor} bloqueado',
+    corpo: 'Celta {celta} · {cliente} · confira o que não bateu e libere o vendedor',
+    canais: ['modal'],
+    prioridade: 'alta',
+    alvo: { tipo: 'setor', valor: 'Gerência' },
+    acao_url_template: 'http://sistema-service.acacessorios.local/orcamentoBloqueado/{rep}',
+    acao_rotulo: 'Liberar vendedor',
+    // Não existe "não liberar": ou libera agora, ou fecha o diálogo e o aviso fica pendente.
+    acao_permite_nao: false,
+  },
   'orcamento.vencendo': {
     descricao: 'Orçamento enviado vence amanhã sem venda nem desfecho.',
     titulo: 'Orçamento {numero} vence amanhã sem resposta',

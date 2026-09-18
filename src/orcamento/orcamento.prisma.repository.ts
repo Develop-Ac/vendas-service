@@ -340,6 +340,7 @@ export class OrcamentoPrismaRepository {
       usuario_nome: o.usuario_nome,
       created_at: o.created_at,
       updated_at: o.updated_at,
+      comparado: o.comparado ?? null,
       itens: Array.isArray(o.itens) ? o.itens.map((i: any) => this.mapItem(i)) : undefined,
     };
   }
@@ -369,6 +370,16 @@ export class OrcamentoPrismaRepository {
       include: { itens: { orderBy: { item: 'asc' } } },
     });
     return o ? this.mapOrcamento(o) : null;
+  }
+
+  /** Grava o resultado do comparativo; divergência bloqueia o vendedor (sis_usuarios.vendas_rep_codigo = rep_codigo). */
+  async gravarComparacao(id: string, comparado: boolean, rep_codigo: number | null) {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.ven_orcamento.update({ where: { id }, data: { comparado } });
+      if (!comparado && rep_codigo != null) {
+        await tx.sis_usuarios.updateMany({ where: { vendas_rep_codigo: rep_codigo }, data: { orcamentoBloqueado: true } });
+      }
+    });
   }
 
   async criar(cab: Prisma.ven_orcamentoUncheckedCreateInput, itens: Prisma.ven_orcamento_itemUncheckedCreateInput[]) {

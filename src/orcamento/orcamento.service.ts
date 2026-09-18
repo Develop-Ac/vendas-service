@@ -29,6 +29,7 @@ import { DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDt
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository } from './orcamento.celta.repository';
 import { chaveIdempotencia, corpoParaCelta } from './celta';
+import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 
 /* =============================================================================
    ORÇAMENTO DO ATACADO — regras.
@@ -137,6 +138,7 @@ export class OrcamentoService {
     private readonly bi: OrcamentoBiRepository,
     private readonly db: OrcamentoPrismaRepository,
     private readonly celta: OrcamentoCeltaRepository,
+    private readonly avisos: AvisosVendasService,
   ) {}
 
   /* ---------------------------------------------------------- parâmetros */
@@ -1225,6 +1227,27 @@ export class OrcamentoService {
     });
     this.logger.log(`Orçamento ${o.numero} importado no Celta como ${r.orcamento}${r.repetido ? ' (repetido)' : ''}.`);
     return { orcamento: salvo, celta_orcamento: r.orcamento, repetido: r.repetido };
+  }
+
+  /**
+   * Compara o orçamento importado (nº do Celta) com o condicional e a intranet.
+   * Tudo batendo (quantidade_sku, quantidade_unitaria, valor e ok) → comparado = true;
+   * senão comparado = false e o vendedor fica com orcamentoBloqueado = true.
+   * Devolve o comparativo como veio da api-vendas-service.
+   */
+  async comparar(id: string) {
+    const o = await this.obter(id);
+    if (!o.celta_orcamento) throw new BadRequestException('Orçamento ainda não foi importado no Celta.');
+    const lista = await this.celta.comparativo(o.celta_orcamento);
+    const daEmpresa = lista.filter((c) => c.empresa === o.empresa);
+    const alvo = daEmpresa.length ? daEmpresa : lista;
+    const bateu = alvo.length > 0 && alvo.every((c) => c.quantidade_sku === true && c.quantidade_unitaria === true && c.valor === true && c.ok === true);
+    await this.db.gravarComparacao(id, bateu, o.rep_codigo);
+    if (!bateu) {
+      this.logger.warn(`Orçamento ${o.numero} (Celta ${o.celta_orcamento}) divergiu no comparativo; vendedor ${o.rep_codigo ?? '-'} bloqueado.`);
+      this.avisos.orcamentoBloqueado(o);
+    }
+    return lista;
   }
 
   /** Reabre um FECHADO que ainda não foi ao Celta: volta a ENVIADO (ou RASCUNHO se nunca foi enviado) e limpa o desfecho. */

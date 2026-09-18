@@ -38,10 +38,13 @@ model avi_avisos {
   trash                Int                    @default(0) @db.SmallInt
   created_at           DateTime               @default(now()) @db.Timestamp(6)
   updated_at           DateTime               @default(now()) @db.Timestamp(6)
+  acao_url             String?
+  acao_rotulo          String?                @db.VarChar(40)
   avi_aviso_alvo       avi_aviso_alvo[]
   avi_regra            avi_regra?             @relation(fields: [regra_id], references: [id], onUpdate: NoAction)
   avi_entrega_whatsapp avi_entrega_whatsapp[]
   avi_leitura          avi_leitura[]
+  avi_resposta         avi_resposta[]
 
   @@index([trash, prioridade, publicado_em(sort: Desc)], map: "ix_avi_avisos_ativos")
 }
@@ -72,24 +75,26 @@ model avi_leitura {
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model avi_regra {
-  id              String       @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
-  chave           String       @unique @db.VarChar(120)
-  descricao       String?
-  origem          String       @default("sistema") @db.VarChar(10)
-  ativo           Boolean      @default(false)
-  auto_descoberta Boolean      @default(false)
-  titulo_template String
-  corpo_template  String?
-  link_template   String?
-  prioridade      String       @default("normal") @db.VarChar(10)
-  canais          String[]     @default(["badge", "mural"])
-  alvo_tipo       String?      @db.VarChar(10)
-  alvo_valor      String?
-  agrupar         Boolean      @default(true)
-  cooldown_min    Int          @default(0)
-  created_at      DateTime     @default(now()) @db.Timestamp(6)
-  updated_at      DateTime     @default(now()) @db.Timestamp(6)
-  avi_avisos      avi_avisos[]
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  chave             String       @unique @db.VarChar(120)
+  descricao         String?
+  origem            String       @default("sistema") @db.VarChar(10)
+  ativo             Boolean      @default(false)
+  auto_descoberta   Boolean      @default(false)
+  titulo_template   String
+  corpo_template    String?
+  link_template     String?
+  prioridade        String       @default("normal") @db.VarChar(10)
+  canais            String[]     @default(["badge", "mural"])
+  alvo_tipo         String?      @db.VarChar(10)
+  alvo_valor        String?
+  agrupar           Boolean      @default(true)
+  cooldown_min      Int          @default(0)
+  created_at        DateTime     @default(now()) @db.Timestamp(6)
+  updated_at        DateTime     @default(now()) @db.Timestamp(6)
+  acao_url_template String?
+  acao_rotulo       String?      @db.VarChar(40)
+  avi_avisos        avi_avisos[]
 }
 
 model com_cotacao {
@@ -1933,6 +1938,7 @@ model sis_usuarios {
   setor              String?            @db.VarChar(255)
   vendas_rep_codigo  Int?
   vendas_hub_inicial String?            @db.VarChar(30)
+  orcamentoBloqueado Boolean?
   est_auditoria      est_auditoria[]
   est_contagem       est_contagem[]
   est_contagem_log   est_contagem_log[]
@@ -2013,6 +2019,7 @@ model ven_encomenda_pecas {
   nfe                                    String?
   prazo                                  DateTime?                                @db.Date
   oficina                                Boolean?
+  os                                     String?
   ven_encomenda_pecas_anexos             ven_encomenda_pecas_anexos[]
   ven_encomenda_pecas_itens_cotados      ven_encomenda_pecas_itens_cotados[]
   ven_encomenda_pecas_itens_encomendados ven_encomenda_pecas_itens_encomendados[]
@@ -2101,43 +2108,45 @@ model ven_meta_vendedor {
 }
 
 model ven_orcamento {
-  id               String               @id @default(cuid())
-  numero           Int                  @unique @default(autoincrement())
-  empresa          Int                  @default(3)
-  cli_codigo       Int
-  cli_nome         String?
-  tabela_preco     String?
-  rep_codigo       Int?
-  rep_nome         String?
-  status           String               @default("RASCUNHO")
-  validade         DateTime?            @db.Date
-  observacao       String?
-  subtotal         Decimal              @default(0) @db.Decimal(15, 2)
-  desconto_total   Decimal              @default(0) @db.Decimal(15, 2)
-  total            Decimal              @default(0) @db.Decimal(15, 2)
-  desc_pct         Decimal              @default(0) @db.Decimal(6, 4)
-  acima_alcada     Boolean              @default(false)
-  bolsa_pct_antes  Decimal?             @db.Decimal(6, 4)
-  bolsa_pct_depois Decimal?             @db.Decimal(6, 4)
-  aprovado_por     String?
-  aprovado_em      DateTime?            @db.Timestamptz(6)
-  enviado_em       DateTime?            @db.Timestamptz(6)
-  desfecho_em      DateTime?            @db.Timestamptz(6)
-  desfecho_motivo  String?
-  desfecho_ref     String?
-  usuario_id       String?
-  usuario_nome     String?
-  created_at       DateTime             @default(now()) @db.Timestamptz(6)
-  updated_at       DateTime             @default(now()) @db.Timestamptz(6)
-  entregue_canal   String?
-  entregue_em      DateTime?            @db.Timestamptz(6)
-  cp_codigo        Int?
-  cp_descricao     String?
-  fp_codigo        String?
-  fp_descricao     String?
-  celta_orcamento  Int?                 @map("orcamentoCelta")
-  celta_importado_em DateTime?          @db.Timestamptz(6)
-  itens            ven_orcamento_item[]
+  id                 String               @id @default(cuid())
+  numero             Int                  @unique @default(autoincrement())
+  empresa            Int                  @default(3)
+  cli_codigo         Int
+  cli_nome           String?
+  tabela_preco       String?
+  rep_codigo         Int?
+  rep_nome           String?
+  status             String               @default("RASCUNHO")
+  validade           DateTime?            @db.Date
+  observacao         String?
+  subtotal           Decimal              @default(0) @db.Decimal(15, 2)
+  desconto_total     Decimal              @default(0) @db.Decimal(15, 2)
+  total              Decimal              @default(0) @db.Decimal(15, 2)
+  desc_pct           Decimal              @default(0) @db.Decimal(6, 4)
+  acima_alcada       Boolean              @default(false)
+  bolsa_pct_antes    Decimal?             @db.Decimal(6, 4)
+  bolsa_pct_depois   Decimal?             @db.Decimal(6, 4)
+  aprovado_por       String?
+  aprovado_em        DateTime?            @db.Timestamptz(6)
+  enviado_em         DateTime?            @db.Timestamptz(6)
+  desfecho_em        DateTime?            @db.Timestamptz(6)
+  desfecho_motivo    String?
+  desfecho_ref       String?
+  usuario_id         String?
+  usuario_nome       String?
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime             @default(now()) @db.Timestamptz(6)
+  entregue_canal     String?
+  entregue_em        DateTime?            @db.Timestamptz(6)
+  celta_orcamento    Int?                 @map("orcamentoCelta")
+  cp_codigo          Int?
+  cp_descricao       String?
+  fp_codigo          String?
+  fp_descricao       String?
+  celta_importado_em DateTime?            @db.Timestamptz(6)
+  comparado          Boolean              @default(false)
+  itens              ven_orcamento_item[]
+  ven_venda_perdida  ven_venda_perdida[]
 
   @@index([cli_codigo], map: "idx_ven_orcamento_cli")
   @@index([created_at], map: "idx_ven_orcamento_created")
@@ -2204,20 +2213,21 @@ model ven_orcamento_item {
 }
 
 model ven_venda_perdida {
-  id               String   @id @default(cuid())
-  orcamento_id     String
-  orcamento_numero Int?
-  pro_codigo       Int
-  descricao        String?
-  quantidade       Decimal  @db.Decimal(15, 3)
-  cli_codigo       Int?
-  rep_codigo       Int?
-  motivo           String   @default("SEM_SALDO")
-  usuario_id       String?
-  usuario_nome     String?
-  created_at       DateTime @default(now()) @db.Timestamptz(6)
+  id                 String        @id @default(cuid())
+  orcamento_id       String
+  orcamento_numero   Int?
+  pro_codigo         Int
+  descricao          String?
+  quantidade         Decimal       @db.Decimal(15, 3)
+  cli_codigo         Int?
+  rep_codigo         Int?
+  motivo             String        @default("SEM_SALDO")
+  usuario_id         String?
+  usuario_nome       String?
+  created_at         DateTime      @default(now()) @db.Timestamptz(6)
   similar_disponivel String?
-  justificativa    String?
+  justificativa      String?
+  ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([orcamento_id, pro_codigo], map: "uq_ven_venda_perdida_orc_pro")
   @@index([pro_codigo], map: "idx_ven_venda_perdida_pro")
@@ -2413,6 +2423,50 @@ model com_teams_credencial {
   refresh_token String
   delta_link    String?
   updated_at    DateTime @default(now()) @db.Timestamptz(6)
+}
+
+/// This model or at least one of its fields has comments in the database, and requires an additional setup for migrations: Read more: https://pris.ly/d/database-comments
+model com_gnre_guia {
+  id               BigInt    @id @default(autoincrement())
+  criado_em        DateTime  @default(now()) @db.Timestamptz(6)
+  atualizado_em    DateTime  @default(now()) @db.Timestamptz(6)
+  numero_nf        String    @db.VarChar(20)
+  serie            String?   @db.VarChar(5)
+  empresa          Int?
+  chave_nfe        String?   @db.VarChar(44)
+  tipo             String?   @db.VarChar(20)
+  receita          String?   @db.VarChar(6)
+  uf               String?   @db.VarChar(2)
+  valor_total      Decimal?  @db.Decimal(14, 2)
+  vencimento       DateTime? @db.Date
+  recibo           String?   @db.VarChar(20)
+  situacao_guia    String?   @db.VarChar(2)
+  situacao_desc    String?
+  linha_digitavel  String?   @db.VarChar(60)
+  codigo_barras    String?   @db.VarChar(60)
+  motivos          Json      @default("[]")
+  resultado_xml    String?
+  minio_bucket     String?   @db.VarChar(120)
+  minio_key        String?
+  esc_documento_id BigInt?
+  usuario          String?   @db.VarChar(120)
+
+  @@index([numero_nf], map: "ix_gnre_guia_nf")
+  @@index([recibo], map: "ix_gnre_guia_recibo")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model avi_resposta {
+  aviso_id      String     @db.VarChar(36)
+  usuario_id    String     @db.VarChar(36)
+  resposta      String     @db.VarChar(10)
+  acao_status   String?    @db.VarChar(12)
+  acao_detalhe  String?
+  respondido_em DateTime   @default(now()) @db.Timestamp(6)
+  avi_avisos    avi_avisos @relation(fields: [aviso_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([aviso_id, usuario_id])
+  @@index([usuario_id], map: "ix_avi_resposta_usuario")
 }
 
 enum rec_estado_resolucao {

@@ -2,7 +2,7 @@ import { DynamicModule, Global, Inject, Injectable, Logger, Module, OnModuleInit
 import { AvisosClient, Catalogo, EmitirOpcoes, configDoAmbiente } from './avisos-client';
 
 /**
- * avisos-client v1.0.0 — módulo Nest.
+ * avisos-client v1.2.0 — módulo Nest.
  *
  *   // app.module.ts
  *   AvisosModule.forRoot({ servico: 'vendas', catalogo: CATALOGO })
