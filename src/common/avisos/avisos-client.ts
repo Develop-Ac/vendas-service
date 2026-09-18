@@ -1,5 +1,12 @@
 /**
- * avisos-client v1.0.0 — cliente de EMISSÃO para o avisos-service da intranet.
+ * avisos-client v1.2.0 — cliente de EMISSÃO para o avisos-service da intranet.
+ *
+ * 1.2.0: `acao_permite_nao` (catálogo e `emitir()`): false = diálogo do canal `modal` sem
+ * botão "Não" — a pessoa confirma ou só fecha (o aviso continua pendente). Padrão true.
+ * 1.1.0: canal `modal` (diálogo OK/Não na intranet). `emitir()` aceita `acao_url` e
+ * `acao_rotulo`; o catálogo aceita `acao_url_template` e `acao_rotulo`. O OK faz o
+ * avisos-service dar um POST na rota (JSON com aviso_id, regra_chave, evento_chave,
+ * usuario{id,codigo,nome,setor}, resposta, respondido_em; header x-app-token).
  *
  * Sem dependências (fetch nativo do Node 20). Serve dentro do Nest (ver
  * avisos.module.ts) e fora dele (worker, script): `criarCliente({...}).emitir(...)`.
@@ -24,7 +31,7 @@
  */
 
 export type Prioridade = 'normal' | 'alta' | 'urgente';
-export type Canal = 'badge' | 'mural' | 'whatsapp' | 'banner' | 'desktop';
+export type Canal = 'badge' | 'mural' | 'whatsapp' | 'banner' | 'desktop' | 'modal';
 export type TipoAlvo = 'setor' | 'usuario' | 'todos' | 'tela';
 
 export interface RegraCatalogo {
@@ -38,8 +45,19 @@ export interface RegraCatalogo {
   canais?: Canal[];
   /** alvo padrão quando a emissão não informa setor/tela/usuarios */
   alvo?: { tipo: TipoAlvo; valor?: string };
+  /** regra com canal `modal` nunca agrupa (o serviço força false) */
   agrupar?: boolean;
   cooldown_min?: number;
+  /**
+   * canal `modal`: rota absoluta (http/https) que recebe o POST quando o usuário
+   * clica OK; aceita {ref} e as variáveis do evento. Ex.:
+   * 'http://vendas-service.acacessorios.local/orcamentos/{ref}/confirmar'
+   */
+  acao_url_template?: string;
+  /** canal `modal`: texto do botão de confirmação (padrão "OK", máx. 40) */
+  acao_rotulo?: string;
+  /** canal `modal`: false = sem botão "Não" (confirma ou só fecha o diálogo). Padrão true. */
+  acao_permite_nao?: boolean;
 }
 
 export type Catalogo = Record<string, RegraCatalogo>;
@@ -59,6 +77,12 @@ export interface EmitirOpcoes {
   link?: string;
   prioridade?: Prioridade;
   canais?: Canal[];
+  /** canal `modal`: rota do POST do OK já resolvida (sobrescreve o template da regra) */
+  acao_url?: string;
+  /** canal `modal`: texto do botão (sobrescreve o da regra) */
+  acao_rotulo?: string;
+  /** canal `modal`: com/sem botão "Não" (sobrescreve o da regra) */
+  acao_permite_nao?: boolean;
 }
 
 export interface AvisosConfig {
@@ -117,6 +141,9 @@ export class AvisosClient {
       link: o.link,
       prioridade: o.prioridade,
       canais: o.canais,
+      acao_url: o.acao_url,
+      acao_rotulo: o.acao_rotulo,
+      acao_permite_nao: o.acao_permite_nao,
     };
     if (this.cfg.dryRun) {
       this.log('log', `DRY-RUN ${chave} ${JSON.stringify(payload)}`);
@@ -143,6 +170,9 @@ export class AvisosClient {
       alvo_valor: r.alvo?.valor,
       agrupar: r.agrupar,
       cooldown_min: r.cooldown_min,
+      acao_url_template: r.acao_url_template,
+      acao_rotulo: r.acao_rotulo,
+      acao_permite_nao: r.acao_permite_nao,
     }));
     if (this.cfg.dryRun) {
       this.log('log', `DRY-RUN sincronizar ${regras.length} regra(s) de ${this.cfg.servico}`);

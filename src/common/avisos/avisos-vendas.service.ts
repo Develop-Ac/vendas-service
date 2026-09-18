@@ -14,6 +14,12 @@ import { AvisosService } from './avisos.module';
 const brl = (v: unknown) => `R$ ${Number(v ?? 0).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const ymdHoje = () => new Date(Date.now() - 4 * 3_600_000).toISOString().slice(0, 10); // Cuiabá UTC-4
 
+/**
+ * Quem recebe o modal de orçamento bloqueado. O alvo casa `sis_usuarios.setor`
+ * exatamente como está gravado — daí "Admin" e "admin" aparecerem os dois.
+ */
+const SETORES_GESTAO = ['Gerência', 'Admin', 'admin', 'Controladoria', 'Desenvolvimento'];
+
 @Injectable()
 export class AvisosVendasService {
   private readonly logger = new Logger(AvisosVendasService.name);
@@ -78,5 +84,24 @@ export class AvisosVendasService {
       vars: { numero: String(o.numero).padStart(6, '0'), cliente: o.cli_nome ?? `Cliente ${o.cli_codigo}`, total: brl(o.total), cli: o.cli_codigo, id: o.id },
       usuarios,
     });
+  }
+
+  /**
+   * Comparativo do Celta divergiu e o vendedor ficou bloqueado: modal para a
+   * gestão. Um alvo por emissão, então vai uma por setor (modal nunca agrupa).
+   * O OK do modal dá POST em .../orcamentoBloqueado/{rep}, que libera o vendedor.
+   */
+  orcamentoBloqueado(o: { id: string; numero: number; cli_codigo: number; cli_nome: string | null; rep_codigo: number | null; rep_nome: string | null; celta_orcamento: number | null }) {
+    if (o.rep_codigo == null) return;
+    const vars = {
+      numero: o.numero,
+      celta: o.celta_orcamento ?? '-',
+      cliente: o.cli_nome ?? `Cliente ${o.cli_codigo}`,
+      vendedor: o.rep_nome ?? `Rep ${o.rep_codigo}`,
+      rep: o.rep_codigo,
+    };
+    for (const setor of SETORES_GESTAO) {
+      this.avisos.emitir('orcamento.bloqueado', { ref: o.id, vars, setor });
+    }
   }
 }

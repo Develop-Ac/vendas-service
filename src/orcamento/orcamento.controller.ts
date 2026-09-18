@@ -293,6 +293,15 @@ export class OrcamentoController {
     return this.service.criar(dto);
   }
 
+  @Post('comparar/:id')
+  @ApiOperation({
+    summary: 'Compara orçamento × condicional × intranet no Celta (api-vendas-service) e devolve o comparativo.',
+    description: 'Tudo batendo → comparado = true. Divergência → comparado = false e o vendedor (sis_usuarios.vendas_rep_codigo = rep_codigo) fica com orcamentoBloqueado = true.',
+  })
+  comparar(@Param('id') id: string) {
+    return this.service.comparar(id);
+  }
+
   @Get(':id')
   obter(@Param('id') id: string) {
     return this.service.obter(id);
