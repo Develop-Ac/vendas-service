@@ -372,6 +372,37 @@ export class OrcamentoPrismaRepository {
     return o ? this.mapOrcamento(o) : null;
   }
 
+  /**
+   * Fila do cron do comparativo: orçamentos já importados no Celta (têm nº) que
+   * ainda não bateram. Quem bate vira comparado = true e sai daqui sozinho.
+   */
+  pendentesComparacao() {
+    return this.prisma.ven_orcamento.findMany({
+      where: { celta_orcamento: { not: null }, comparado: false },
+      select: { id: true, numero: true, empresa: true, cli_codigo: true, cli_nome: true, rep_codigo: true, rep_nome: true, celta_orcamento: true },
+      orderBy: { celta_importado_em: 'asc' },
+    });
+  }
+
+  /** Comparativo bateu em tudo: comparado = true. */
+  async marcarComparado(id: string) {
+    await this.prisma.ven_orcamento.update({ where: { id }, data: { comparado: true } });
+  }
+
+  /**
+   * Divergência: orcamentoBloqueado = true para quem tem o vendas_rep_codigo.
+   * Devolve quantos MUDARAM de estado (já bloqueado não conta) — é o que decide
+   * se vale emitir aviso, para o cron não avisar de novo a cada 30 s.
+   */
+  async bloquearRep(rep_codigo: number): Promise<number> {
+    const { count } = await this.prisma.sis_usuarios.updateMany({
+      // A coluna é nula para quem nunca foi bloqueado: `NOT (x = true)` no SQL pularia os nulos.
+      where: { vendas_rep_codigo: rep_codigo, OR: [{ orcamentoBloqueado: false }, { orcamentoBloqueado: null }] },
+      data: { orcamentoBloqueado: true },
+    });
+    return count;
+  }
+
   /** Grava o resultado do comparativo; divergência bloqueia o vendedor (sis_usuarios.vendas_rep_codigo = rep_codigo). */
   async gravarComparacao(id: string, comparado: boolean, rep_codigo: number | null) {
     await this.prisma.$transaction(async (tx) => {

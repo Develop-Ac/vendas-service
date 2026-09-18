@@ -1227,15 +1227,75 @@ export class OrcamentoService {
     const o = await this.obter(id);
     if (!o.celta_orcamento) throw new BadRequestException('Orçamento ainda não foi importado no Celta.');
     const lista = await this.celta.comparativo(o.celta_orcamento);
-    const daEmpresa = lista.filter((c) => c.empresa === o.empresa);
-    const alvo = daEmpresa.length ? daEmpresa : lista;
-    const bateu = alvo.length > 0 && alvo.every((c) => c.quantidade_sku === true && c.quantidade_unitaria === true && c.valor === true && c.ok === true);
+    const veredito = this.vereditoComparativo(lista, o.empresa);
+    // Sem condicional vinculado não há o que comparar: não marca nem bloqueia ninguém.
+    if (veredito === 'SEM_CONDICIONAL') return lista;
+    const bateu = veredito === 'OK';
     await this.db.gravarComparacao(id, bateu, o.rep_codigo);
     if (!bateu) {
       this.logger.warn(`Orçamento ${o.numero} (Celta ${o.celta_orcamento}) divergiu no comparativo; vendedor ${o.rep_codigo ?? '-'} bloqueado.`);
       this.avisos.orcamentoBloqueado(o);
     }
     return lista;
+  }
+ 
+  /**
+   * Lê o comparativo do Celta (uma linha por empresa; vale a da empresa do orçamento).
+   *  - nenhuma linha com `condicional` → SEM_CONDICIONAL (não fazer NADA);
+   *  - quantidade_sku, quantidade_unitaria, valor e ok todos true → OK;
+   *  - qualquer um false → DIVERGENTE.
+   */
+  private vereditoComparativo(lista: Array<{ empresa: number; condicional?: number | null; quantidade_sku: boolean; quantidade_unitaria: boolean; valor: boolean; ok: boolean }>, empresa: number): 'SEM_CONDICIONAL' | 'OK' | 'DIVERGENTE' {
+    const daEmpresa = lista.filter((c) => c.empresa === empresa);
+    const alvo = (daEmpresa.length ? daEmpresa : lista).filter((c) => c.condicional != null);
+    if (!alvo.length) return 'SEM_CONDICIONAL';
+    const bateu = alvo.every((c) => c.quantidade_sku === true && c.quantidade_unitaria === true && c.valor === true && c.ok === true);
+    return bateu ? 'OK' : 'DIVERGENTE';
+  }
+
+  /**
+   * Cron do comparativo (30 em 30 s): para cada orçamento com nº do Celta e
+   * comparado = false, consulta API_VENDAS_URL/comparativo/:orcamentoCelta.
+   *  - condicional null → nada (tenta de novo no próximo ciclo);
+   *  - tudo true → comparado = true (sai da fila);
+   *  - algum false → orcamentoBloqueado = true no usuário do vendas_rep_codigo.
+   * O aviso modal para a gestão só sai quando o bloqueio MUDA de estado: divergência
+   * que continua não gera aviso a cada ciclo; se a gestão liberar sem corrigir no
+   * Celta, o próximo ciclo bloqueia de novo e avisa uma vez.
+   * Falha num orçamento (Celta fora, 404) não derruba os demais.
+   */
+  async compararPendentes() {
+    const r = { avaliados: 0, sem_condicional: 0, comparados: 0, divergentes: 0, bloqueios: 0, falhas: 0 };
+    if (!this.celta.configurado()) return r;
+    const pendentes = await this.db.pendentesComparacao();
+    for (const o of pendentes) {
+      if (o.celta_orcamento == null) continue;
+      r.avaliados++;
+      try {
+        const lista = await this.celta.comparativo(o.celta_orcamento);
+        const veredito = this.vereditoComparativo(lista, o.empresa);
+        if (veredito === 'SEM_CONDICIONAL') {
+          r.sem_condicional++;
+        } else if (veredito === 'OK') {
+          await this.db.marcarComparado(o.id);
+          r.comparados++;
+          this.logger.log(`Comparativo: orçamento ${o.numero} (Celta ${o.celta_orcamento}) bateu — comparado = true.`);
+        } else {
+          r.divergentes++;
+          if (o.rep_codigo == null) continue;
+          const mudou = await this.db.bloquearRep(o.rep_codigo);
+          if (mudou > 0) {
+            r.bloqueios++;
+            this.logger.warn(`Comparativo: orçamento ${o.numero} (Celta ${o.celta_orcamento}) divergiu; vendedor ${o.rep_codigo} bloqueado.`);
+            this.avisos.orcamentoBloqueado(o);
+          }
+        }
+      } catch (e) {
+        r.falhas++;
+        this.logger.warn(`Comparativo do orçamento ${o.numero} (Celta ${o.celta_orcamento}) não pôde ser avaliado: ${(e as Error).message}`);
+      }
+    }
+    return r;
   }
 
   /** Reabre um FECHADO que ainda não foi ao Celta: volta a ENVIADO (ou RASCUNHO se nunca foi enviado) e limpa o desfecho. */

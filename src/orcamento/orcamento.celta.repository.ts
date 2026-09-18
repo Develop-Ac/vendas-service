@@ -11,6 +11,8 @@ import { CorpoCelta } from './celta';
 export interface ComparativoCelta {
   empresa: number;
   orcamento: number;
+  /** Nº do condicional vinculado; null = ainda não existe condicional (nada a comparar). */
+  condicional?: number | null;
   quantidade_sku: boolean;
   quantidade_unitaria: boolean;
   valor: boolean;
