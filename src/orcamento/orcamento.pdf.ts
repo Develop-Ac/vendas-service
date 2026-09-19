@@ -166,12 +166,13 @@ function cabecalho(doc: PDFKit.PDFDocument, o: PdfOrcamento): number {
   let y = M;
   let xTexto = M;
   try {
-    doc.image(LOGO_AC(), M, y - 2, { width: 64 });
-    xTexto = M + 76;
+    // logo empilhada (símbolo + "ATACADO"): 78 pt de largura dão ~44 pt de altura, a altura do bloco de texto
+    doc.image(LOGO_AC(), M, y - 1, { width: 78 });
+    xTexto = M + 88;
   } catch {
     /* logo ilegível: segue sem ela */
   }
-  doc.fillColor(TEXTO).font('Helvetica-Bold').fontSize(12).text(EMPRESA_PDF.razao, xTexto, y, { width: 330, lineBreak: false });
+  doc.fillColor(TEXTO).font('Helvetica-Bold').fontSize(11).text(EMPRESA_PDF.razao, xTexto, y + 1, { width: 330, lineBreak: false });
   doc.font('Helvetica').fontSize(8.5).text(EMPRESA_PDF.endereco, xTexto, y + 15).text(EMPRESA_PDF.cidade, xTexto, y + 26);
   doc.font('Helvetica-Bold').fontSize(10).text(`Fone: ${EMPRESA_PDF.fones}`, xTexto, y + 39);
 
