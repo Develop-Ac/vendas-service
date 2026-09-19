@@ -834,13 +834,14 @@ export class OrcamentoService {
       const tabela = fora ? p.sem_promocao!.preco_tabela : p.preco_tabela;
       const av = fora ? p.sem_promocao!.avaliacao : p.avaliacao;
       // O preço nasce da tabela do cliente menos o desconto. `preco_unit` vale por
-      // cima quando o vendedor fechou o TOTAL da linha (arredondamento): um unitário
-      // exato em centavos, nunca acima da tabela — a régua e a bolsa avaliam esse preço.
+      // cima quando o vendedor fechou o unitário ou o TOTAL da linha: um unitário exato
+      // em centavos. Abaixo da tabela é desconto (a régua e a bolsa avaliam esse preço);
+      // acima é acréscimo — desconto zero e a diferença gravada em `acrescimo`.
       const descPedido = Math.min(1, Math.max(0, Number(i.desc_pct ?? 0)));
       const unitFechado = Number(i.preco_unit ?? 0);
       let preco =
         tabela > 0
-          ? unitFechado > 0 && unitFechado <= tabela
+          ? unitFechado > 0
             ? round2(unitFechado)
             : round2(tabela * (1 - descPedido))
           : round2(unitFechado);
@@ -871,7 +872,8 @@ export class OrcamentoService {
       const linhaTotal = round2(preco * qtd);
       if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
       else semCusto += linhaTotal;
-      subtotal += round2((tabela > 0 ? tabela : preco) * qtd);
+      // linha com acréscimo entra no subtotal pelo próprio preço: o acréscimo não abate o desconto das outras
+      subtotal += round2(Math.max(tabela, preco) * qtd);
       total += linhaTotal;
       linhas.push({
         orcamento_id: '',
@@ -886,6 +888,8 @@ export class OrcamentoService {
         preco_unit: preco,
         desc_pct: descPct,
         total: linhaTotal,
+        // R$ cobrados acima da tabela na linha inteira; só no banco (relatório), nenhuma tela mostra
+        acrescimo: tabela > 0 && preco > tabela ? round2((preco - tabela) * qtd) : 0,
         custo_ref: p.custo,
         classe: av.classe,
         mix: av.mix,
@@ -1405,7 +1409,8 @@ export class OrcamentoService {
         pro_codigo: i.pro_codigo,
         quantidade: i.quantidade,
         desc_pct: i.desc_pct,
-        preco_unit: i.preco_tabela > 0 ? undefined : i.preco_unit,
+        // com tabela o preço renasce do desconto; o acréscimo (unitário acima da tabela) é mantido
+        preco_unit: i.preco_tabela > 0 && i.preco_unit <= i.preco_tabela ? undefined : i.preco_unit,
         substituto_de: i.substituto_de ?? undefined,
         observacao: i.observacao ?? undefined,
         qtd_encomenda: i.qtd_encomenda ?? 0,

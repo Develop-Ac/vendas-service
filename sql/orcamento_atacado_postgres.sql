@@ -222,3 +222,8 @@ ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS fora_promocao BOOLEAN NO
 --     FECHADO sem nº = "não importado" (a tela oferece importar depois).
 ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS "orcamentoCelta"    INTEGER;
 ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS celta_importado_em TIMESTAMPTZ;
+
+-- 11) Acréscimo (19/09/2026): o vendedor pode cobrar o item acima da tabela. O desconto
+--     da linha fica zero e a diferença (preço cobrado − tabela) × quantidade, em R$, é
+--     gravada aqui. Campo só de banco/relatório: nenhuma tela, PDF ou o Celta o exibe.
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS acrescimo NUMERIC(15,2) NOT NULL DEFAULT 0;

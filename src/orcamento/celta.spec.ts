@@ -41,6 +41,12 @@ describe('corpoParaCelta', () => {
     expect(c.itens[0].perc_descto).toBe(99.99);
   });
 
+  it('item com acréscimo vai pelo unitário cobrado, com desconto zero', () => {
+    const tabela = base.itens[0].preco_tabela;
+    const c = corpoParaCelta({ ...base, itens: [{ ...base.itens[0], preco_unit: tabela + 10, desc_pct: 0 }] });
+    expect(c.itens[0]).toMatchObject({ unitario: tabela + 10, perc_descto: 0 });
+  });
+
   it('recusa orçamento sem itens e gera chave estável', () => {
     expect(() => corpoParaCelta({ ...base, itens: [] })).toThrow();
     expect(chaveIdempotencia(base)).toBe('intranet-orc-ckx1');

@@ -234,12 +234,14 @@ function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem, cols: Col[],
   cel(1, it.marca ?? '');
   cel(2, it.unidade ?? 'UN');
   cel(3, qtd(it.quantidade));
+  // item com acréscimo aparece pelo preço cobrado, como se fosse o de tabela
+  const cheio = Math.max(it.preco_tabela, it.preco_unit);
   if (modo === 'geral') {
     // preço de tabela na linha; o desconto vai uma vez só, no bloco de totais
-    cel(4, brl(it.preco_tabela));
-    cel(5, brl(it.preco_tabela * it.quantidade));
+    cel(4, brl(cheio));
+    cel(5, brl(cheio * it.quantidade));
   } else {
-    cel(4, brl(it.preco_original ?? it.preco_tabela));
+    cel(4, brl(it.preco_original ?? cheio));
     cel(5, it.promocao_fim ? '—' : it.desc_pct > 0 ? pct(it.desc_pct) : '');
     cel(6, brl(it.preco_unit));
     cel(7, brl(it.total));
