@@ -515,10 +515,10 @@ export class CarteirizacaoSqlServerRepository {
    * do painel da Gerência — cobre também inativos e técnicos, que têm realizado
    * mas ficam de fora de `vendedoresAtivosComissao`.
    */
-  async papeisPorRep(): Promise<{ rep_codigo: number; papel: string | null }[]> {
-    return this.mssql.query<{ rep_codigo: number; papel: string | null }>(`
-      SELECT rep_codigo, papel FROM (
-        SELECT rep_codigo, papel,
+  async papeisPorRep(): Promise<{ rep_codigo: number; papel: string | null; inativo: boolean }[]> {
+    return this.mssql.query<{ rep_codigo: number; papel: string | null; inativo: boolean }>(`
+      SELECT rep_codigo, papel, CAST(inativo AS bit) AS inativo FROM (
+        SELECT rep_codigo, papel, inativo,
                ROW_NUMBER() OVER (PARTITION BY rep_codigo ORDER BY inativo ASC) AS rn
         FROM dbo.ComissaoRepresentante
       ) z WHERE rn = 1`);
