@@ -35,13 +35,21 @@ fração que só se aplica quando o vendedor está **sem bolsa** (ver "Alçada" 
 
 ```
 lista da régua = custo × markup(classe, faixa)
-piso da régua  = lista × (1 − desc_max)
-mínimo         = max( tabela × (1 − desc_max), piso da régua )
+mínimo         = max( tabela × (1 − desc_max), custo × piso do item )
                  nunca acima da tabela, nunca abaixo do custo
 ```
 
-Se a tabela do ERP ainda está **abaixo** da lista da régua (item que não subiu na Onda 1),
-o desconto permitido encolhe até zero: não se dá desconto sobre preço que já está aquém.
+**Todo item com custo e preço de tabela tem o desconto máximo da sua faixa**, esteja a tabela do
+ERP acima ou abaixo da lista da régua (o campo `tabela_abaixo_regua` só informa). O que varia é
+quanto desse máximo o vendedor dá sozinho: sem bolsa, a escala por quantidade; com bolsa, o
+máximo inteiro. O desconto efetivo só encolhe quando a tabela já encosta no piso do item
+(custo × `ORCAMENTO_ITEM_PISO`, 1,25) — abaixo dele é sempre o gestor. Item **sem custo** no
+cadastro continua sem faixa e sem desconto automático.
+
+Até 21/09/2026 existia um segundo piso, o "piso da régua" (lista × (1 − desc_max)): item com a
+tabela abaixo da lista ficava com desconto máximo zero e qualquer desconto virava aprovação,
+mesmo dentro do máximo da faixa. Foi retirado — a proteção da margem já é a bolsa
+(venda − custo × piso) mais o piso do item.
 
 Exceção (exclusivo/oportunidade): mínimo = tabela × (1 − desc. próprio), sem piso da régua.
 
