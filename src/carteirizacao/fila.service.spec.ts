@@ -142,6 +142,32 @@ describe('FilaService', () => {
     expect(porCli.get(1)!.prazo_em.getTime()).toBeLessThan(porCli.get(2)!.prazo_em.getTime());
   });
 
+  it('cliente grande fora do próprio ritmo entra antes da régua da curva; orçado depois da compra não entra', async () => {
+    process.env.ANALYTICS_ATACADO_URL = 'http://analytics';
+    const fetchOriginal = global.fetch;
+    global.fetch = jest.fn(async () => ({
+      ok: true,
+      json: async () => [
+        { cli: 1, dias_sem_compra: 10, intervalo_dias: 3.2 },
+        { cli: 2, dias_sem_compra: 10, intervalo_dias: 3.2 },
+      ],
+    })) as any;
+    try {
+      clientes = [
+        // curva A, 10d sem compra: a régua (15d) ainda não pegaria
+        cliente({ cli_codigo: 1, curva_abc: 'A', dias_sem_compra: 10, dias_sem_orcamento: 10 }),
+        // já foi orçado depois da última compra: alguém está falando com ele
+        cliente({ cli_codigo: 2, curva_abc: 'A', dias_sem_compra: 10, dias_sem_orcamento: 2 }),
+      ];
+      await service.gerar();
+      expect(criadas.map((c) => c.cli_codigo)).toEqual([1]);
+      expect(criadas[0].motivo_geracao).toContain('costuma comprar a cada 3d');
+    } finally {
+      global.fetch = fetchOriginal;
+      delete process.env.ANALYTICS_ATACADO_URL;
+    }
+  });
+
   it('não duplica cliente que já tem tarefa em andamento', async () => {
     clientes = [cliente({ cli_codigo: 1, curva_abc: 'A', dias_sem_compra: 30, dias_sem_orcamento: 30 })];
     tarefasEmAndamento = [
