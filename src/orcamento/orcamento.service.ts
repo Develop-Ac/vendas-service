@@ -30,6 +30,7 @@ import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository } from './orcamento.celta.repository';
 import { chaveIdempotencia, corpoParaCelta } from './celta';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
+import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
 /* =============================================================================
    ORÇAMENTO DO ATACADO — regras.
@@ -790,6 +791,39 @@ export class OrcamentoService {
       })
       .filter((p): p is NonNullable<typeof p> => !!p && !p.inativo && p.estoque_disponivel > 0)
       .slice(0, 8);
+  }
+
+  /**
+   * Sugestões PARA ESTE CLIENTE (analytics-atacado-service): reposição vencendo, item
+   * que ele parou de comprar, item orçado e não comprado, o que clientes de mix parecido
+   * compram. O analytics diz O QUE e POR QUÊ; preço, promoção e saldo são daqui. Item
+   * sem saldo é trocado pelo equivalente com saldo (o cliente troca de marca, não de
+   * peça); sem equivalente, sai — sugestão que não pode ser atendida atrapalha.
+   * Analytics fora = lista vazia, e a tela fica só com o "vendem juntos".
+   */
+  async sugestoesCliente(cli: number, tabelaPreco: string | null, naGrade: number[]) {
+    const excluir = naGrade.filter((n) => Number.isInteger(n) && n > 0).slice(0, 200);
+    const sugestoes = await analyticsAtacadoGet<
+      { pro_codigo: number; chave_item: string; tipo: string; motivo: string; score: number }[]
+    >(`/clientes/${cli}/sugestoes?limite=15&excluir=${excluir.join(',')}`);
+    if (!sugestoes?.length) return [];
+
+    const lista = await this.produtosPorCodigo(sugestoes.map((s) => s.pro_codigo), tabelaPreco, cli);
+    const porCodigo = new Map(lista.map((p) => [p.pro_codigo, p]));
+    const naTela = new Set(excluir);
+    const out: Array<(typeof lista)[number] & { tipo: string; motivo: string; score: number; pro_codigo_sugerido: number }> = [];
+    for (const s of sugestoes) {
+      let p = porCodigo.get(s.pro_codigo);
+      if (!p || p.inativo || p.estoque_disponivel <= 0) {
+        const eq = await this.equivalentes(s.pro_codigo, tabelaPreco, cli).catch(() => []);
+        p = eq.find((e) => e.estoque_disponivel > 0 && !naTela.has(e.pro_codigo));
+      }
+      if (!p || naTela.has(p.pro_codigo)) continue;
+      naTela.add(p.pro_codigo);
+      out.push({ ...p, tipo: s.tipo, motivo: s.motivo, score: s.score, pro_codigo_sugerido: s.pro_codigo });
+      if (out.length >= 8) break;
+    }
+    return out;
   }
 
   async produto(codigo: number, tabelaPreco: string | null, cli?: number) {

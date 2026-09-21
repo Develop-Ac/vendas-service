@@ -8,6 +8,7 @@ import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { DesfechoOrcamentoDto } from './dto/carteirizacao.dto';
+import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
 /**
  * Fila do dia do CRM do Atacado (fase 1) — o princípio inegociável é ESFORÇO DO
@@ -217,25 +218,11 @@ export class FilaService {
    * fora ou lento, a fila sai só pela régua.
    */
   private async cicloAtrasado(): Promise<Map<number, { dias_sem_compra: number; intervalo_dias: number }>> {
-    const base = process.env.ANALYTICS_ATACADO_URL;
-    if (!base) return new Map();
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), envNum('ANALYTICS_ATACADO_TIMEOUT_MS', 3000));
-    try {
-      const minimo = envNum('FILA_CICLO_MINIMO_12M', 50_000);
-      const r = await fetch(`${base.replace(/\/$/, '')}/alertas/ciclo-atrasado?minimo=${minimo}`, {
-        headers: { 'x-app-token': process.env.ANALYTICS_ATACADO_TOKEN ?? '' },
-        signal: ctrl.signal,
-      });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const linhas = (await r.json()) as { cli: number; dias_sem_compra: number; intervalo_dias: number }[];
-      return new Map(linhas.map((l) => [l.cli, l]));
-    } catch (e) {
-      this.logger.warn(`Ciclo atrasado indisponível (fila segue só pela régua): ${(e as Error).message}`);
-      return new Map();
-    } finally {
-      clearTimeout(timer);
-    }
+    const minimo = envNum('FILA_CICLO_MINIMO_12M', 50_000);
+    const linhas = await analyticsAtacadoGet<{ cli: number; dias_sem_compra: number; intervalo_dias: number }[]>(
+      `/alertas/ciclo-atrasado?minimo=${minimo}`,
+    );
+    return new Map((linhas ?? []).map((l) => [l.cli, l]));
   }
 
   // ------------------------------------------------------------ reconciliar

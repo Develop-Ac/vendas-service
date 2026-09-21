@@ -277,6 +277,13 @@ export class OrcamentoController {
     return this.service.relacionados(codigo, tabela ?? null, toNum(cli));
   }
 
+  @Get('sugestoes-cliente')
+  @ApiOperation({ summary: 'Sugestões para o cliente (analytics do atacado), com preço da régua e saldo. `com` = códigos já na grade.' })
+  sugestoesCliente(@Query('cli', ParseIntPipe) cli: number, @Query('tabela') tabela?: string, @Query('com') com?: string) {
+    const naGrade = (com ?? '').split(',').map((x) => Number(x)).filter((n) => Number.isInteger(n) && n > 0);
+    return this.service.sugestoesCliente(cli, tabela ?? null, naGrade);
+  }
+
   @Post('relacionados/recalcular')
   @ApiOperation({ summary: 'Reapura os pares "vendem juntos" no BI (o cron semanal faz o mesmo).' })
   recalcular(@Query('meses') meses?: string) {
