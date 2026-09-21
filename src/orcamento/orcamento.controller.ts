@@ -196,7 +196,7 @@ export class OrcamentoController {
 
   @Get('produtos/chegadas')
   @ApiOperation({
-    summary: 'Previsão de chegada dos produtos em pedido de compra não entregue (itens sem saldo).',
+    summary: 'Previsão de chegada dos produtos em pedido de compra não entregue (itens sem saldo) — do próprio item e dos similares do grupo (`similar: true`) — e os similares que têm saldo agora (`com_saldo`).',
     description: 'Data do CT-e da carga em trânsito (rastreio SSW) quando há NF vinculada com o produto; senão, a previsão que o compras informou no pedido.',
   })
   @ApiQuery({ name: 'codigos', required: true, description: 'pro_codigo separados por vírgula' })

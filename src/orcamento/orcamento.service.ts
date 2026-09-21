@@ -291,10 +291,48 @@ export class OrcamentoService {
     };
   }
 
-  /** Chegadas previstas (pedido de compra / carga em trânsito) dos códigos pedidos — até 200 por chamada. */
-  chegadas(codigos: number[]) {
+  /**
+   * Chegadas previstas (pedido de compra / carga em trânsito) dos códigos pedidos — até 200 por
+   * chamada. Olha o próprio produto E o grupo de similares dele (a mesma regra dos equivalentes):
+   * a chegada de um similar vem marcada `similar: true`, com o código e a descrição de quem chega,
+   * porque o vendedor precisa dizer ao cliente que é outro item. `pro_codigo` é sempre o código
+   * PEDIDO (o que está sem saldo); quem chega está em `chegada_codigo`.
+   * Junto vêm os SIMILARES COM SALDO agora (`com_saldo`, saldo lido do ERP sem cache, ativos e
+   * comercializáveis, maior saldo primeiro): é a resposta mais útil para um item sem saldo.
+   */
+  async chegadas(codigos: number[]) {
     const limpos = [...new Set(codigos.filter((c) => Number.isInteger(c) && c > 0))].slice(0, 200);
-    return this.db.chegadasPrevistas(limpos);
+    if (!limpos.length) return { chegadas: [], com_saldo: [] };
+    const membros = await this.db.gruposDe(limpos); // todos os membros dos grupos dos códigos pedidos
+    const chaveDe = new Map(membros.map((m) => [m.pro_codigo, m.chave]));
+    const doGrupo = new Map<string, number[]>();
+    for (const m of membros) doGrupo.set(m.chave, [...(doGrupo.get(m.chave) ?? []), m.pro_codigo]);
+    const previstas = await this.db.chegadasPrevistas([...new Set([...limpos, ...membros.map((m) => m.pro_codigo)])]);
+    const porCodigo = new Map<number, typeof previstas>();
+    for (const p of previstas) porCodigo.set(p.pro_codigo, [...(porCodigo.get(p.pro_codigo) ?? []), p]);
+    const similaresDe = (cod: number) => {
+      const chave = chaveDe.get(cod);
+      return (chave ? doGrupo.get(chave) ?? [] : []).filter((c) => c !== cod);
+    };
+    const erpSimilares = await this.erp.produtosPorCodigo([...new Set(limpos.flatMap(similaresDe))]);
+    const comSaldo = new Map(
+      erpSimilares.filter((p) => p.ESTOQUE_DISPONIVEL > 0 && p.INATIVO !== 'S' && p.COMERCIALIZAVEL !== 'N').map((p) => [p.PRO_CODIGO, p]),
+    );
+    return {
+      chegadas: limpos.flatMap((cod) => {
+        const linhas = [cod, ...similaresDe(cod)].flatMap((c) =>
+          (porCodigo.get(c) ?? []).map(({ pro_codigo, ...resto }) => ({ pro_codigo: cod, chegada_codigo: pro_codigo, similar: pro_codigo !== cod, ...resto })),
+        );
+        // o próprio item antes dos similares; dentro de cada bloco, a data mais próxima primeiro
+        return linhas.sort((a, b) => Number(a.similar) - Number(b.similar) || a.data.localeCompare(b.data));
+      }),
+      com_saldo: limpos.flatMap((cod) =>
+        similaresDe(cod)
+          .flatMap((c) => (comSaldo.has(c) ? [comSaldo.get(c)!] : []))
+          .sort((a, b) => b.ESTOQUE_DISPONIVEL - a.ESTOQUE_DISPONIVEL)
+          .map((p) => ({ pro_codigo: cod, similar_codigo: p.PRO_CODIGO, descricao: p.PRO_DESCRICAO, estoque_disponivel: p.ESTOQUE_DISPONIVEL })),
+      ),
+    };
   }
 
   /* --------------------------------------------------------------- bolsa */

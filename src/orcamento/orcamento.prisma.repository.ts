@@ -26,6 +26,8 @@ export interface GiroItem {
 /** Uma chegada prevista de um produto: pedido de compra em aberto, com a data e de onde ela veio. */
 export interface ChegadaPrevista {
   pro_codigo: number;
+  descricao: string | null;
+  marca: string | null;
   /** nº do pedido de compra (pedido_cotacao) */
   pedido: number;
   status: string | null;
@@ -202,14 +204,14 @@ export class OrcamentoPrismaRepository {
   async chegadasPrevistas(codigos: number[]): Promise<ChegadaPrevista[]> {
     if (!codigos.length) return [];
     const rows = await this.prisma.$queryRaw<
-      Array<{ pro_codigo: number; pedido: number; status: string | null; quantidade: unknown; data: string; origem: string; ult_evento: string | null }>
+      Array<{ pro_codigo: number; descricao: string | null; marca: string | null; pedido: number; status: string | null; quantidade: unknown; data: string; origem: string; ult_evento: string | null }>
     >`
-      SELECT x.pro_codigo, x.pedido, x.status, x.quantidade,
+      SELECT x.pro_codigo, x.descricao, x.marca, x.pedido, x.status, x.quantidade,
              COALESCE(x.prev_cte, x.prev_pedido) AS data,
              CASE WHEN x.prev_cte IS NOT NULL THEN 'RASTREIO' ELSE 'PEDIDO' END AS origem,
              x.ult_evento
       FROM (
-        SELECT i.pro_codigo, p.pedido_cotacao AS pedido, p.status, i.quantidade,
+        SELECT i.pro_codigo, i.pro_descricao AS descricao, i.mar_descricao AS marca, p.pedido_cotacao AS pedido, p.status, i.quantidade,
                to_char(p.previsao_chegada AT TIME ZONE 'America/Cuiaba', 'YYYY-MM-DD') AS prev_pedido,
                r.prev AS prev_cte, r.ult_evento
         FROM com_pedido_itens i
@@ -230,10 +232,12 @@ export class OrcamentoPrismaRepository {
       ) x
       WHERE COALESCE(x.prev_cte, CASE WHEN x.status = 'Entregue parcialmente' THEN NULL ELSE x.prev_pedido END) IS NOT NULL
         AND COALESCE(x.prev_cte, x.prev_pedido) >= to_char(now() - interval '30 days', 'YYYY-MM-DD')
-      ORDER BY x.pro_codigo, 5
+      ORDER BY x.pro_codigo, 7
     `;
     return rows.map((r) => ({
       pro_codigo: Number(r.pro_codigo),
+      descricao: r.descricao,
+      marca: r.marca,
       pedido: Number(r.pedido),
       status: r.status,
       quantidade: Number(r.quantidade),
