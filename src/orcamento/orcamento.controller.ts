@@ -194,6 +194,16 @@ export class OrcamentoController {
     return this.service.buscarProdutos(q ?? '', tabela ?? null, toNum(cli), Math.min(100, toNum(limite) ?? 30));
   }
 
+  @Get('produtos/chegadas')
+  @ApiOperation({
+    summary: 'Previsão de chegada dos produtos em pedido de compra não entregue (itens sem saldo).',
+    description: 'Data do CT-e da carga em trânsito (rastreio SSW) quando há NF vinculada com o produto; senão, a previsão que o compras informou no pedido.',
+  })
+  @ApiQuery({ name: 'codigos', required: true, description: 'pro_codigo separados por vírgula' })
+  chegadas(@Query('codigos') codigos: string) {
+    return this.service.chegadas(String(codigos ?? '').split(',').map((c) => Number(c.trim())));
+  }
+
   @Get('produtos/pesquisa')
   @ApiOperation({
     summary: 'Pesquisa no padrão da EST012 do Celta: campo, modo, filtros e os similares encadeados (principal + grupo).',

@@ -291,6 +291,12 @@ export class OrcamentoService {
     };
   }
 
+  /** Chegadas previstas (pedido de compra / carga em trânsito) dos códigos pedidos — até 200 por chamada. */
+  chegadas(codigos: number[]) {
+    const limpos = [...new Set(codigos.filter((c) => Number.isInteger(c) && c > 0))].slice(0, 200);
+    return this.db.chegadasPrevistas(limpos);
+  }
+
   /* --------------------------------------------------------------- bolsa */
 
   /**
