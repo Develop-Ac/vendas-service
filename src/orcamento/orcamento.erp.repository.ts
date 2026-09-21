@@ -345,6 +345,27 @@ export class OrcamentoErpRepository {
     return saida;
   }
 
+  /** Das chaves informadas, quais NF de entrada já estão LANÇADAS (STATUS 1) na empresa 3 — a do saldo de venda. */
+  async nfsLancadasNaGerencial(chaves: string[]): Promise<Set<string>> {
+    const unicas = [...new Set(chaves)];
+    const achadas = new Set<string>();
+    for (let i = 0; i < unicas.length; i += 200) {
+      const lote = unicas.slice(i, i + 200);
+      const r = await this.erp.consultar<Record<string, any>>('nf-entrada', {
+        empresa: EMPRESA,
+        campos: ['CHAVE_NFE'],
+        filtros: [
+          { campo: 'STATUS', op: 'igual', valor: 1 },
+          { campo: 'CHAVE_NFE', op: 'em', valor: lote },
+        ],
+        limite: lote.length * 2 + FOLGA,
+        semCache: true,
+      });
+      for (const x of r) achadas.add(String(x.CHAVE_NFE));
+    }
+    return achadas;
+  }
+
   /**
    * Promoções VIGENTES (ATIVA = 'S' e hoje dentro do período) que valem para a
    * TABELA DO CLIENTE: o preço promocional é por tabela (PROM_VALOR2 para a 2,

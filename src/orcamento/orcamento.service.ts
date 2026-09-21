@@ -299,10 +299,13 @@ export class OrcamentoService {
    * PEDIDO (o que está sem saldo); quem chega está em `chegada_codigo`.
    * Junto vêm os SIMILARES COM SALDO agora (`com_saldo`, saldo lido do ERP sem cache, ativos e
    * comercializáveis, maior saldo primeiro): é a resposta mais útil para um item sem saldo.
+   * E o que está AGUARDANDO LIBERAÇÃO (`aguardando`): a nota de compra já foi lançada na empresa
+   * fiscal (o pedido vira "Entregue" e some das chegadas), mas ainda não entrou na empresa 3 —
+   * a peça está na loja, na conferência do recebimento, e ainda não tem saldo para vender.
    */
   async chegadas(codigos: number[]) {
     const limpos = [...new Set(codigos.filter((c) => Number.isInteger(c) && c > 0))].slice(0, 200);
-    if (!limpos.length) return { chegadas: [], com_saldo: [] };
+    if (!limpos.length) return { aguardando: [], chegadas: [], com_saldo: [] };
     const membros = await this.db.gruposDe(limpos); // todos os membros dos grupos dos códigos pedidos
     const chaveDe = new Map(membros.map((m) => [m.pro_codigo, m.chave]));
     const doGrupo = new Map<string, number[]>();
@@ -314,11 +317,23 @@ export class OrcamentoService {
       const chave = chaveDe.get(cod);
       return (chave ? doGrupo.get(chave) ?? [] : []).filter((c) => c !== cod);
     };
+    const universo = [...new Set([...limpos, ...membros.map((m) => m.pro_codigo)])];
+    const lancadas = await this.db.itensDeNfLancada(universo);
+    const naGerencial = lancadas.length ? await this.erp.nfsLancadasNaGerencial(lancadas.map((l) => l.chave_nfe)) : new Set<string>();
+    const aguardandoPorCodigo = new Map<number, typeof lancadas>();
+    for (const l of lancadas.filter((x) => !naGerencial.has(x.chave_nfe))) {
+      aguardandoPorCodigo.set(l.pro_codigo, [...(aguardandoPorCodigo.get(l.pro_codigo) ?? []), l]);
+    }
     const erpSimilares = await this.erp.produtosPorCodigo([...new Set(limpos.flatMap(similaresDe))]);
     const comSaldo = new Map(
       erpSimilares.filter((p) => p.ESTOQUE_DISPONIVEL > 0 && p.INATIVO !== 'S' && p.COMERCIALIZAVEL !== 'N').map((p) => [p.PRO_CODIGO, p]),
     );
     return {
+      aguardando: limpos.flatMap((cod) =>
+        [cod, ...similaresDe(cod)].flatMap((c) =>
+          (aguardandoPorCodigo.get(c) ?? []).map((l) => ({ pro_codigo: cod, item_codigo: c, similar: c !== cod, pedido: l.pedido, quantidade: l.quantidade, dt_entrada: l.dt_entrada })),
+        ),
+      ),
       chegadas: limpos.flatMap((cod) => {
         const linhas = [cod, ...similaresDe(cod)].flatMap((c) =>
           (porCodigo.get(c) ?? []).map(({ pro_codigo, ...resto }) => ({ pro_codigo: cod, chegada_codigo: pro_codigo, similar: pro_codigo !== cod, ...resto })),

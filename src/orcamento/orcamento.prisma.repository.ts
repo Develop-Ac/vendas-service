@@ -247,6 +247,32 @@ export class OrcamentoPrismaRepository {
     }));
   }
 
+  /**
+   * Itens de NF de compra JÁ LANÇADA na empresa fiscal (`com_nfe_conciliacao.status_erp`),
+   * vinculada a pedido e com o produto — candidatos a "aguardando liberação": a nota entra
+   * na empresa 1 quando chega, mas só vai para a empresa 3 (onde está o saldo de venda) quando
+   * a conferência do recebimento termina. Quem decide se já foi é o ERP (ver o serviço).
+   * Janela de 45 dias pela entrada: nota mais velha que isso sem ir para a 3 é caso de cadastro.
+   */
+  async itensDeNfLancada(codigos: number[]): Promise<Array<{ pro_codigo: number; chave_nfe: string; pedido: number; quantidade: number; dt_entrada: string | null }>> {
+    if (!codigos.length) return [];
+    const rows = await this.prisma.$queryRaw<Array<{ pro_codigo: number; chave_nfe: string; pedido: number; quantidade: unknown; dt_entrada: string | null }>>`
+      SELECT vi.pro_codigo, v.chave_nfe, p.pedido_cotacao AS pedido,
+             SUM(COALESCE(vi.quantidade_alocada, vi.quantidade_xml, 0)) AS quantidade,
+             to_char(n.dt_entrada, 'YYYY-MM-DD') AS dt_entrada
+      FROM com_pedido_nfe_vinculo v
+      JOIN com_pedido_nfe_vinculo_item vi ON vi.vinculo_id = v.id
+      JOIN com_pedido p ON p.id = v.pedido_id
+      JOIN com_nfe_conciliacao n ON n.chave_nfe = v.chave_nfe
+      WHERE vi.pro_codigo IN (${Prisma.join(codigos)})
+        AND v.confirmado AND NOT v.rejeitado
+        AND n.status_erp = 'LANCADA'
+        AND COALESCE(n.dt_entrada, n.updated_at) >= now() - interval '45 days'
+      GROUP BY vi.pro_codigo, v.chave_nfe, p.pedido_cotacao, n.dt_entrada
+    `;
+    return rows.map((r) => ({ pro_codigo: Number(r.pro_codigo), chave_nfe: r.chave_nfe, pedido: Number(r.pedido), quantidade: Number(r.quantidade), dt_entrada: r.dt_entrada }));
+  }
+
   /** Curva, situação do saldo e tendência (última execução da análise de estoque). */
   async giro(codigos: number[]): Promise<Map<number, GiroItem>> {
     const saida = new Map<number, GiroItem>();
