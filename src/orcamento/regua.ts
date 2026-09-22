@@ -56,30 +56,35 @@ export interface RegraFaixa {
   desc_max: number;
 }
 
-/** Régua v3 aprovada em ago/2026 — a mesma do seed de ven_regua_atacado. */
+/**
+ * Régua vigente — espelho do seed de ven_regua_atacado (o banco é a fonte; isto só vale se a
+ * tabela estiver vazia). v3 de ago/2026 com dois ajustes da diretoria (09/09/2026): faixas caras
+ * no piso 1,538 com limites maiores, e mix 1 (1A–1D) com 5% de desconto sobre uma lista ~2,1%
+ * mais alta — o preço mínimo do mix 1 fica onde os 3% antigos deixavam.
+ */
 export const REGUA_PADRAO: RegraFaixa[] = [
-  { classe: 'GERAL', faixa: '1A', markup: 2.85, desc_max: 0.03 },
-  { classe: 'GERAL', faixa: '1B', markup: 2.3, desc_max: 0.03 },
-  { classe: 'GERAL', faixa: '1C', markup: 1.95, desc_max: 0.03 },
-  { classe: 'GERAL', faixa: '1D', markup: 1.85, desc_max: 0.03 },
+  { classe: 'GERAL', faixa: '1A', markup: 2.91, desc_max: 0.05 },
+  { classe: 'GERAL', faixa: '1B', markup: 2.35, desc_max: 0.05 },
+  { classe: 'GERAL', faixa: '1C', markup: 1.99, desc_max: 0.05 },
+  { classe: 'GERAL', faixa: '1D', markup: 1.89, desc_max: 0.05 },
   { classe: 'GERAL', faixa: '2A', markup: 1.7, desc_max: 0.05 },
   { classe: 'GERAL', faixa: '2B', markup: 1.62, desc_max: 0.06 },
   { classe: 'GERAL', faixa: '2C', markup: 1.56, desc_max: 0.07 },
-  { classe: 'GERAL', faixa: '3A', markup: 1.51, desc_max: 0.08 },
-  { classe: 'GERAL', faixa: '3B', markup: 1.47, desc_max: 0.08 },
-  { classe: 'GERAL', faixa: '3C', markup: 1.44, desc_max: 0.09 },
-  { classe: 'GERAL', faixa: '3D', markup: 1.42, desc_max: 0.1 },
-  { classe: 'PB', faixa: '1A', markup: 2.3, desc_max: 0.03 },
-  { classe: 'PB', faixa: '1B', markup: 2.1, desc_max: 0.03 },
-  { classe: 'PB', faixa: '1C', markup: 1.9, desc_max: 0.03 },
-  { classe: 'PB', faixa: '1D', markup: 1.75, desc_max: 0.03 },
+  { classe: 'GERAL', faixa: '3A', markup: 1.538, desc_max: 0.1 },
+  { classe: 'GERAL', faixa: '3B', markup: 1.538, desc_max: 0.12 },
+  { classe: 'GERAL', faixa: '3C', markup: 1.538, desc_max: 0.15 },
+  { classe: 'GERAL', faixa: '3D', markup: 1.538, desc_max: 0.17 },
+  { classe: 'PB', faixa: '1A', markup: 2.35, desc_max: 0.05 },
+  { classe: 'PB', faixa: '1B', markup: 2.14, desc_max: 0.05 },
+  { classe: 'PB', faixa: '1C', markup: 1.94, desc_max: 0.05 },
+  { classe: 'PB', faixa: '1D', markup: 1.79, desc_max: 0.05 },
   { classe: 'PB', faixa: '2A', markup: 1.6, desc_max: 0.05 },
-  { classe: 'PB', faixa: '2B', markup: 1.5, desc_max: 0.06 },
-  { classe: 'PB', faixa: '2C', markup: 1.44, desc_max: 0.07 },
-  { classe: 'PB', faixa: '3A', markup: 1.42, desc_max: 0.08 },
-  { classe: 'PB', faixa: '3B', markup: 1.41, desc_max: 0.08 },
-  { classe: 'PB', faixa: '3C', markup: 1.39, desc_max: 0.09 },
-  { classe: 'PB', faixa: '3D', markup: 1.38, desc_max: 0.1 },
+  { classe: 'PB', faixa: '2B', markup: 1.538, desc_max: 0.08 },
+  { classe: 'PB', faixa: '2C', markup: 1.538, desc_max: 0.13 },
+  { classe: 'PB', faixa: '3A', markup: 1.538, desc_max: 0.15 },
+  { classe: 'PB', faixa: '3B', markup: 1.538, desc_max: 0.16 },
+  { classe: 'PB', faixa: '3C', markup: 1.538, desc_max: 0.18 },
+  { classe: 'PB', faixa: '3D', markup: 1.538, desc_max: 0.19 },
 ];
 
 /** Subgrupo P/BRISA no ERP — a classe "comparável" da régua. */
@@ -111,6 +116,10 @@ export function regraDe(regua: RegraFaixa[], classe: ClasseRegua, faixa: FaixaCh
 
 /* ------------------------------------------------------------------ preço */
 
+/** Tabelas do ATACADO no cadastro do cliente: '2' = atacado especial (base oficial), '5' = atacado. */
+export const TABELAS_ATACADO = ['2', '5'];
+export const ehTabelaAtacado = (tabelaPreco: string | null | undefined) => TABELAS_ATACADO.includes(String(tabelaPreco ?? '').trim());
+
 /** Coluna de preço do produto para a tabela do cliente ('2' -> PRECO2). */
 export function colunaTabela(tabelaPreco: string | null | undefined): string {
   const n = parseInt(String(tabelaPreco ?? '').trim(), 10);
@@ -119,15 +128,17 @@ export function colunaTabela(tabelaPreco: string | null | undefined): string {
 
 /**
  * Preço do item na tabela do cliente. Tabela zerada no cadastro (0,00) não é
- * preço zero: cai para PRECO2 (base oficial do atacado), depois PRECO5, depois
- * o preço de venda — e avisa (`fallback`) para a tela mostrar de onde veio.
+ * preço zero: cliente do ATACADO (2/5) cai para a outra tabela do canal e depois
+ * para o preço de venda; cliente de QUALQUER OUTRA tabela (seguro e frota, revenda
+ * etc.) é varejo — sem preço na tabela dele, vale o preço de venda (varejo), nunca
+ * o do atacado. `fallback` avisa a tela de onde o preço veio.
  */
 export function precoDaTabela(
   produto: Record<string, unknown>,
   tabelaPreco: string | null | undefined,
 ): { coluna: string; preco: number; fallback: boolean } {
   const col = colunaTabela(tabelaPreco);
-  const cadeia = [col, 'PRECO2', 'PRECO5', 'PRECO_VENDA'];
+  const cadeia = ehTabelaAtacado(tabelaPreco) ? [col, 'PRECO2', 'PRECO5', 'PRECO_VENDA'] : [col, 'PRECO_VENDA'];
   for (let i = 0; i < cadeia.length; i++) {
     const v = Number(produto[cadeia[i]]);
     if (v > 0) return { coluna: cadeia[i], preco: round2(v), fallback: i > 0 };

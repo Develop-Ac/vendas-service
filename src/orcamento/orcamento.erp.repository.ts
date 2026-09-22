@@ -399,7 +399,8 @@ export class OrcamentoErpRepository {
    * PROM_VALOR5 para a 5…) e coluna zerada significa "não vale para esta
    * tabela". Quase toda promoção do Celta é do balcão (PROM_VALOR); a do
    * atacado é exceção — por isso PROM_VALOR nunca é usado para cliente 2/5.
-   * Produto em mais de uma promoção: fica a de menor preço.
+   * Cliente de outra tabela é varejo: para ele o service aplica o balcão quando
+   * a tabela dele não tem preço. Produto em mais de uma promoção: fica a de menor preço.
    */
   async promocoesVigentes(codigos: number[], tabelaPreco: string | null): Promise<Map<number, PromocaoItem>> {
     const saida = new Map<number, PromocaoItem>();
@@ -438,8 +439,8 @@ export class OrcamentoErpRepository {
       itens.push(...r);
     }
     // Prioridade: promoção com preço NA TABELA DO CLIENTE (menor preço). Sem
-    // nenhuma, fica a do balcão só como informação (a EST012 mostra "de/por"
-    // do varejo mesmo para cliente de atacado) — nunca aplicada ao preço.
+    // nenhuma, fica a do balcão: informação para cliente do atacado (a EST012
+    // mostra "de/por" do varejo mesmo para ele) e preço válido para os demais.
     for (const it of itens) {
       const valor = num(it[colPromo]);
       const balcao = num(it.PROM_VALOR);

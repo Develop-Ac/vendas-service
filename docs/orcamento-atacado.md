@@ -15,9 +15,9 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 | Pergunta | Fonte | Como |
 |---|---|---|
 | Saldo disponível/reservado **agora** | ERP (Celta) | `erp-firebird-api` → `PRODUTOS.ESTOQUE_DISPONIVEL/RESERVADO`, sem cache |
-| Preço do item **para este cliente** | ERP | `CLIENTES.TABELA_PRECO` ('2' → `PRECO2`, '5' → `PRECO5`, … ) em `PRODUTOS`. Tabela zerada cai para PRECO2 → PRECO5 → PRECO_VENDA e a tela avisa |
+| Preço do item **para este cliente** | ERP | `CLIENTES.TABELA_PRECO` ('2' → `PRECO2`, '5' → `PRECO5`, … ) em `PRODUTOS`. Tabela zerada: cliente do atacado (2/5) cai na outra tabela do canal e depois em PRECO_VENDA; cliente de **qualquer outra tabela** (4 = seguro e frota, revenda…) é varejo — cai direto em PRECO_VENDA, nunca no atacado. A tela avisa de onde veio |
 | Classe, mix e faixa | Régua v3 sobre o custo ao vivo | `PRECO_CUSTO` (reposição) → faixa 1A..3D com os **mesmos cortes do ETL** (`sp_Load_Stage_Produtos_FromDelta`); classe PB = subgrupo 154 (ou descrição P/BRISA) |
-| Markup e desconto máximo | Postgres `ven_regua_atacado` | seed = régua v3 aprovada (GERAL 2,85→1,42 / PB 2,30→1,38; desc. 3→10%) |
+| Markup e desconto máximo | Postgres `ven_regua_atacado` | régua v3 + ajustes da diretoria 09/09/2026: GERAL 2,91→1,538 / PB 2,35→1,538; desc. máx 5% no mix 1 (1A–1D, lista +2,1% para o mínimo ficar igual ao dos 3% antigos), 5–7% no mix 2 e 10→17% (GERAL) / 8→19% (PB) nas faixas no piso 1,538 — SQL `regua_mix1_5pct_postgres.sql` |
 | Itens fora da régua | Postgres `ven_regua_item_excecao` | LANÇAMENTO/EXCLUSIVO e OPORTUNIDADE: markup atual congelado, desconto próprio |
 | Equivalentes | Postgres `com_fifo_completo` (última execução) | mesmo `group_id` **e** mesma descrição **e** mesma `marca_linha` (a regra do worker). Só o `group_id` não basta: grupos mesclados à mão viraram "grupões" |
 | Desconto por volume | Postgres `ven_regua_volume` | o máximo da faixa é o teto; a quantidade libera uma fração dele: 50% até 2 un, 75% de 3 a 5, 100% a partir de 6 (ex.: 1D 3% → 1,5% / 2,25% / 3%). A API devolve `escala_volume` por item. **Só vale sem bolsa**: com saldo (já com o orçamento) ≥ 0 o limite é o máximo inteiro da faixa |
@@ -25,7 +25,7 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 | Bolsa de desconto do vendedor | BI | `vw_analise_vendas` no mês comissional (26→25), canal ATACADO: receita, custo, desconto, MIX1, por cliente |
 | Crédito do cliente | BI + ERP | limite (ERP) − títulos em aberto (`Stage_ContasReceber_Titulos`), bloqueio de crediário |
 | Último preço pago pelo cliente | BI | última nota do cliente com o item |
-| Promoção | ERP `PROMOCOES` + `PROMOCOES_ITENS` | vigente (ATIVA, período) **e com preço na tabela do cliente** (`PROM_VALOR2`/`PROM_VALOR5`; zero = não vale). O preço passa a ser o promocional, sem desconto por cima. `PROM_VALOR` (balcão) nunca vale para cliente 2/5 |
+| Promoção | ERP `PROMOCOES` + `PROMOCOES_ITENS` | vigente (ATIVA, período) **e com preço na tabela do cliente** (`PROM_VALOR2`/`PROM_VALOR5`; zero = não vale). O preço passa a ser o promocional, sem desconto por cima. `PROM_VALOR` (balcão) nunca vale para cliente 2/5; para cliente de outra tabela (varejo) vale quando a tabela dele não tem preço promocional |
 
 ## Regra do preço mínimo (a que o vendedor decide sozinho)
 

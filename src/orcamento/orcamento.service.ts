@@ -21,7 +21,7 @@ import {
   degrauMix1,
   FAIXAS,
   FaixaVolume,
-  precoDaTabela,
+  ehTabelaAtacado, precoDaTabela,
   RegraFaixa,
   round2,
 } from './regua';
@@ -197,7 +197,7 @@ export class OrcamentoService {
       rep_codigo: c.REP_CODIGO,
       tabela_preco: tabela,
       tabela_coluna: precoDaTabela({}, tabela).coluna,
-      atacado: ['2', '5'].includes(tabela ?? ''),
+      atacado: ehTabelaAtacado(tabela),
       inativo: c.INATIVO === 'S',
       con_codigo: c.CON_CODIGO,
       limite_credito: Number(c.LIMITE_CREDITO ?? 0),
@@ -569,9 +569,11 @@ export class OrcamentoService {
   ): ProdutoOrcamento {
     const tabela = precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
     // Item em promoção vigente na tabela do cliente: o preço É o promocional e
-    // não há desconto por cima dele — o mínimo é o próprio preço.
-    const aplica = promo != null && promo.valor != null;
-    const preco = aplica ? { coluna: 'PROMOCAO', preco: promo!.valor as number, fallback: false } : tabela;
+    // não há desconto por cima dele — o mínimo é o próprio preço. Cliente fora do
+    // atacado é varejo: sem preço na tabela dele, a promoção do balcão VALE.
+    const precoPromo = promo == null ? null : promo.valor ?? (!ehTabelaAtacado(tabelaPreco) ? promo.valor_balcao : null);
+    const aplica = precoPromo != null;
+    const preco = aplica ? { coluna: 'PROMOCAO', preco: precoPromo as number, fallback: false } : tabela;
     const custo = p.PRECO_CUSTO > 0 ? p.PRECO_CUSTO : null;
     // Avaliação da régua sobre a tabela NORMAL do cliente: é a que vale sem
     // promoção e a que volta quando o vendedor escolhe vender fora dela.
@@ -592,9 +594,9 @@ export class OrcamentoService {
         ...avaliacaoNormal,
         desc_max_pct: 0,
         desc_max_efetivo_pct: 0,
-        preco_minimo: promo.valor as number,
+        preco_minimo: precoPromo as number,
         fracao_volume: 0,
-        escala_volume: avaliacao.escala_volume.map((d) => ({ ...d, desc_max_pct: 0, desc_max_efetivo_pct: 0, preco_minimo: promo.valor as number })),
+        escala_volume: avaliacao.escala_volume.map((d) => ({ ...d, desc_max_pct: 0, desc_max_efetivo_pct: 0, preco_minimo: precoPromo as number })),
         motivo: `Promoção "${promo.descricao}" até ${fim}: preço fechado, sem desconto.`,
       };
     }
@@ -1546,8 +1548,8 @@ function faltaSaldo(aEntregar: number, disponivel: number | undefined, aguardand
 /** Mesmo vocabulário da tela: nada de "tabela 2" para o cliente. */
 function nomeTabelaCliente(t: string | null | undefined): string | null {
   const v = (t ?? '').trim();
-  if (v === '2') return 'Cliente atacado';
-  if (v === '5') return 'Cliente atacado especial';
+  if (v === '2') return 'Cliente atacado especial';
+  if (v === '5') return 'Cliente atacado';
   if (v === '1' || v === '') return v ? 'Cliente varejo' : null;
   return `Tabela ${v}`;
 }

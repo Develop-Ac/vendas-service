@@ -29,14 +29,16 @@ CREATE TABLE IF NOT EXISTS ven_regua_atacado (
   CONSTRAINT uq_ven_regua_atacado UNIQUE (classe, faixa)
 );
 
--- Seed = régua v3 aprovada (ago/2026). ON CONFLICT mantém o que já estiver ajustado.
+-- Seed = régua vigente (v3 ago/2026 + ajustes da diretoria 09/09/2026: faixas caras no piso
+-- 1,538 com limites maiores; mix 1 com 5% sobre lista ~2,1% mais alta — ver
+-- regua_mix1_5pct_postgres.sql). ON CONFLICT mantém o que já estiver ajustado.
 INSERT INTO ven_regua_atacado (classe, faixa, markup, desc_max) VALUES
-  ('GERAL','1A',2.850,0.03),('GERAL','1B',2.300,0.03),('GERAL','1C',1.950,0.03),('GERAL','1D',1.850,0.03),
-  ('GERAL','2A',1.700,0.05),('GERAL','2B',1.620,0.06),('GERAL','2C',1.560,0.07),
-  ('GERAL','3A',1.510,0.08),('GERAL','3B',1.470,0.08),('GERAL','3C',1.440,0.09),('GERAL','3D',1.420,0.10),
-  ('PB','1A',2.300,0.03),('PB','1B',2.100,0.03),('PB','1C',1.900,0.03),('PB','1D',1.750,0.03),
-  ('PB','2A',1.600,0.05),('PB','2B',1.500,0.06),('PB','2C',1.440,0.07),
-  ('PB','3A',1.420,0.08),('PB','3B',1.410,0.08),('PB','3C',1.390,0.09),('PB','3D',1.380,0.10)
+  ('GERAL','1A',2.910,0.05),('GERAL','1B',2.350,0.05),('GERAL','1C',1.990,0.05),('GERAL','1D',1.890,0.05),
+  ('GERAL','2A',1.700,0.05),('GERAL','2B',1.620,0.06),('GERAL','2C',1.560,0.07),('GERAL','3A',1.538,0.10),
+  ('GERAL','3B',1.538,0.12),('GERAL','3C',1.538,0.15),('GERAL','3D',1.538,0.17),('PB','1A',2.350,0.05),
+  ('PB','1B',2.140,0.05),('PB','1C',1.940,0.05),('PB','1D',1.790,0.05),('PB','2A',1.600,0.05),
+  ('PB','2B',1.538,0.08),('PB','2C',1.538,0.13),('PB','3A',1.538,0.15),('PB','3B',1.538,0.16),
+  ('PB','3C',1.538,0.18),('PB','3D',1.538,0.19)
 ON CONFLICT (classe, faixa) DO NOTHING;
 
 -- 1b) Escala por VOLUME (quantidade na linha) ----------------------------------
