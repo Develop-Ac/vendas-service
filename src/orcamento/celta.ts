@@ -86,6 +86,14 @@ export interface CorpoCelta {
 
 const OBSERVACAO_MAX = 2000;
 
+/**
+ * O Celta guarda a observação em ISO-8859-1 e a API do ERP repassa os bytes como chegam:
+ * acento vira "Ã§" e o separador "Â·" na tela do ERP. Por isso a observação sai só em
+ * ASCII — acentos removidos, travessão e ponto-médio viram hífen, o resto some.
+ */
+export const soAscii = (s: string) =>
+  s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u00b7\u2014\u2013]/g, '-').replace(/[^\x20-\x7e\n]/g, '');
+
 export function corpoParaCelta(o: OrcamentoParaCelta): CorpoCelta {
   const itens = (o.itens ?? []).map((i) => ({
     pro_codigo: i.pro_codigo,
@@ -105,7 +113,7 @@ export function corpoParaCelta(o: OrcamentoParaCelta): CorpoCelta {
     rep_codigo: o.rep_codigo,
     ...(o.cp_codigo ? { cp_codigo: o.cp_codigo } : {}),
     ...(fp ? { fp_entrada: fp, fp_demais_parcelas: fp } : {}),
-    observacao: obs.slice(0, OBSERVACAO_MAX),
+    observacao: soAscii(obs).slice(0, OBSERVACAO_MAX),
     itens,
   };
 }

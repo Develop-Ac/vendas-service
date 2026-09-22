@@ -24,11 +24,12 @@ describe('corpoParaCelta', () => {
     expect(c.cp_codigo).toBe(7);
     expect(c.fp_entrada).toBe('12');
     expect(c.fp_demais_parcelas).toBe('12');
+    // só ASCII: o Celta grava em ISO-8859-1 e acento vira "Ã§" na tela do ERP
     expect(c.observacao).toBe(
-      'Intranet ORC-000042 · vendedor 349\n' +
-        'Alçada: dentro do limite do vendedor. Desconto total 0,0%.\n' +
-        'Itens com desconto: 40381 5,0% (máx —, ok)\n' +
-        'entregar de manhã',
+      'Intranet ORC-000042 - vendedor 349\n' +
+        'Alcada: dentro do limite do vendedor. Desconto total 0,0%.\n' +
+        'Itens com desconto: 40381 5,0% (max -, ok)\n' +
+        'entregar de manha',
     );
   });
 
@@ -36,7 +37,7 @@ describe('corpoParaCelta', () => {
     const c = corpoParaCelta({ ...base, cp_codigo: null, fp_codigo: ' ', observacao: null, itens: [{ ...base.itens[0], desc_pct: 1 }] });
     expect(c).not.toHaveProperty('cp_codigo');
     expect(c).not.toHaveProperty('fp_entrada');
-    expect(c.observacao).toMatch(/^Intranet ORC-000042 · vendedor 349\nAlçada/);
+    expect(c.observacao).toMatch(/^Intranet ORC-000042 - vendedor 349\nAlcada/);
     expect(c.observacao).not.toMatch(/\n$/);
     expect(c.itens[0].perc_descto).toBe(99.99);
   });
