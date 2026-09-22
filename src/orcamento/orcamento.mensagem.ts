@@ -20,7 +20,8 @@ export function mensagemWhatsapp(o: PdfOrcamento): string {
     const marca = it.marca ? ` (${it.marca})` : '';
     const promo = it.promocao_fim ? ' — promoção' : '';
     const enc = it.qtd_encomenda > 0 ? ` (${it.qtd_encomenda} sob encomenda)` : '';
-    linhas.push(`${qtd} × ${it.descricao}${marca}${promo}${enc} — ${brl(it.total)}`);
+    const falta = (it.falta_saldo ?? 0) > 0 ? ` (${it.falta_saldo} ${it.saldo_situacao === 'AGUARDANDO' ? 'aguardando liberação' : 'sem estoque no momento'})` : '';
+    linhas.push(`${qtd} × ${it.descricao}${marca}${promo}${enc}${falta} — ${brl(it.total)}`);
   }
   linhas.push('');
   linhas.push(`Subtotal: ${brl(o.subtotal)}`);

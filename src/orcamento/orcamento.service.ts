@@ -1,4 +1,4 @@
-import { gerarPdfOrcamento, ModoDesconto, PdfOrcamento } from './orcamento.pdf';
+import { gerarPdfOrcamento, ModoDesconto, PdfItem, PdfOrcamento } from './orcamento.pdf';
 import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -306,6 +306,31 @@ export class OrcamentoService {
    * fiscal (o pedido vira "Entregue" e some das chegadas), mas ainda não entrou na empresa 3 —
    * a peça está na loja, na conferência do recebimento, e ainda não tem saldo para vender.
    */
+  /**
+   * AGUARDANDO LIBERAÇÃO por código: itens de nota de compra lançada na empresa fiscal cuja
+   * NF ainda não entrou na gerencial (peça na loja, em conferência, sem saldo para vender).
+   */
+  private async aguardandoLiberacao(codigos: number[]) {
+    const lancadas = await this.db.itensDeNfLancada(codigos);
+    const naGerencial = lancadas.length ? await this.erp.nfsLancadasNaGerencial(lancadas.map((l) => l.chave_nfe)) : new Set<string>();
+    const m = new Map<number, typeof lancadas>();
+    for (const l of lancadas.filter((x) => !naGerencial.has(x.chave_nfe))) m.set(l.pro_codigo, [...(m.get(l.pro_codigo) ?? []), l]);
+    return m;
+  }
+
+  /**
+   * Saldo que vale para decidir o orçamento: disponível no ERP + aguardando liberação. Peça em
+   * conferência não é pendência de saldo (o vendedor segue, e o papel avisa "aguardando liberação").
+   */
+  private async saldoComLiberacao(codigos: number[], produtos: ProdutoOrcamento[]) {
+    const aguardando = await this.aguardandoLiberacao(codigos).catch(() => new Map<number, Array<{ quantidade: number }>>());
+    const soma = (cod: number) => (aguardando.get(cod) ?? []).reduce((s, a) => s + Number(a.quantidade), 0);
+    return {
+      aguardando: soma,
+      saldoPor: new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, Math.max(0, p.estoque_disponivel) + soma(p.pro_codigo)])),
+    };
+  }
+
   async chegadas(codigos: number[]) {
     const limpos = [...new Set(codigos.filter((c) => Number.isInteger(c) && c > 0))].slice(0, 200);
     if (!limpos.length) return { aguardando: [], chegadas: [], com_saldo: [] };
@@ -320,13 +345,7 @@ export class OrcamentoService {
       const chave = chaveDe.get(cod);
       return (chave ? doGrupo.get(chave) ?? [] : []).filter((c) => c !== cod);
     };
-    const universo = [...new Set([...limpos, ...membros.map((m) => m.pro_codigo)])];
-    const lancadas = await this.db.itensDeNfLancada(universo);
-    const naGerencial = lancadas.length ? await this.erp.nfsLancadasNaGerencial(lancadas.map((l) => l.chave_nfe)) : new Set<string>();
-    const aguardandoPorCodigo = new Map<number, typeof lancadas>();
-    for (const l of lancadas.filter((x) => !naGerencial.has(x.chave_nfe))) {
-      aguardandoPorCodigo.set(l.pro_codigo, [...(aguardandoPorCodigo.get(l.pro_codigo) ?? []), l]);
-    }
+    const aguardandoPorCodigo = await this.aguardandoLiberacao([...new Set([...limpos, ...membros.map((m) => m.pro_codigo)])]);
     const erpSimilares = await this.erp.produtosPorCodigo([...new Set(limpos.flatMap(similaresDe))]);
     const comSaldo = new Map(
       erpSimilares.filter((p) => p.ESTOQUE_DISPONIVEL > 0 && p.INATIVO !== 'S' && p.COMERCIALIZAVEL !== 'N').map((p) => [p.PRO_CODIGO, p]),
@@ -1165,12 +1184,8 @@ export class OrcamentoService {
     if (!o.itens?.length) throw new BadRequestException('Orçamento sem itens.');
     // O Celta pede a condição; a forma é opcional (vai a sugerida pela condição ou o padrão do cliente).
     if (o.cp_codigo == null) throw new BadRequestException('Informe a condição de pagamento antes de enviar.');
-    // Saldo relido do ERP: item sem saldo para a parte a entregar agora não
-    // conclui sem decisão do vendedor (venda perdida / encomenda / retirar).
-    const pend = await this.pendenciasDe(o);
-    if (pend.length) {
-      throw new BadRequestException(`Sem saldo para: ${pend.map((p) => `${p.pro_codigo} (pedido ${p.a_entregar}, disponível ${p.disponivel})`).join('; ')}. Decida o que fazer com esses itens antes de concluir.`);
-    }
+    // Item sem saldo NÃO trava o envio: a proposta vai ao cliente com o aviso na linha
+    // ("sem estoque" / "aguardando liberação"); a decisão de saldo é só no FECHOU (tela).
     const precisaAprovar = o.acima_alcada && !o.aprovado_em;
     return this.db.atualizar(id, {
       status: precisaAprovar ? 'APROVACAO' : 'ENVIADO',
@@ -1220,6 +1235,7 @@ export class OrcamentoService {
         : Promise.resolve([] as ProdutoOrcamento[]),
     ]);
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
+    const { aguardando } = produtos.length ? await this.saldoComLiberacao(produtos.map((p) => p.pro_codigo), produtos) : { aguardando: () => 0 };
     const dmy = (v: Date | string | null | undefined) => {
       if (!v) return null;
       const s = v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
@@ -1243,6 +1259,7 @@ export class OrcamentoService {
         promocao_fim: promoFim,
         preco_original: promoFim && p && p.preco_original > n(i.preco_tabela) ? p.preco_original : null,
         qtd_encomenda: n(i.qtd_encomenda),
+        ...faltaSaldo(n(i.quantidade) - n(i.qtd_encomenda), p?.estoque_disponivel, aguardando(Number(i.pro_codigo))),
       };
     });
     const numero = String(o.numero).padStart(6, '0');
@@ -1451,7 +1468,7 @@ export class OrcamentoService {
     const itens = (o.itens ?? []) as Array<{ pro_codigo: number; descricao: string | null; quantidade: number; qtd_encomenda?: number | null }>;
     if (!itens.length) return [];
     const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo);
-    const saldoPor = new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, p.estoque_disponivel]));
+    const { saldoPor } = await this.saldoComLiberacao(itens.map((i) => i.pro_codigo), produtos);
     return pendenciasSaldo(itens, saldoPor);
   }
 
@@ -1476,7 +1493,7 @@ export class OrcamentoService {
       desc_pct: number; preco_tabela: number; preco_unit: number; substituto_de: number | null; observacao: string | null; fora_promocao?: boolean;
     }>;
     const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo);
-    const saldoPor = new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, p.estoque_disponivel]));
+    const { saldoPor } = await this.saldoComLiberacao(itens.map((i) => i.pro_codigo), produtos);
     const r = aplicarDecisoes(itens, saldoPor, dto.decisoes);
     if (r.sem_decisao.length) throw new BadRequestException(`Falta decidir o que fazer com: ${r.sem_decisao.join(', ')}.`);
     // Similar com saldo: a tela informa qual era; venda perdida só com justificativa escrita.
@@ -1514,6 +1531,16 @@ export class OrcamentoService {
     });
     return { orcamento: salvo, sem_itens: false, venda_perdida: r.venda_perdida.length };
   }
+}
+
+/**
+ * Linha de aviso do papel para a parte sem saldo: coberta pelo que aguarda liberação
+ * (nota lançada, peça em conferência) ou simplesmente sem estoque. Produto que sumiu do ERP conta como zero.
+ */
+function faltaSaldo(aEntregar: number, disponivel: number | undefined, aguardando: number): Pick<PdfItem, 'falta_saldo' | 'saldo_situacao'> {
+  const falta = Math.max(0, aEntregar - Math.max(0, disponivel ?? 0));
+  if (falta <= 0) return { falta_saldo: 0, saldo_situacao: null };
+  return { falta_saldo: falta, saldo_situacao: aguardando >= falta ? 'AGUARDANDO' : 'INDISPONIVEL' };
 }
 
 /** Mesmo vocabulário da tela: nada de "tabela 2" para o cliente. */

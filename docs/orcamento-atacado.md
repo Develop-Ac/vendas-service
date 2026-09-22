@@ -182,9 +182,18 @@ como hoje e registra o número em "Fechado".
 
 ## Itens sem saldo ao concluir
 
-Ao enviar (`POST /:id/enviar`) o saldo é relido do ERP. Item cujo saldo não cobre a parte
-**a entregar agora** (quantidade − `qtd_encomenda`) trava a conclusão: o serviço recusa com a
-lista e a tela abre a decisão item a item (`GET /:id/saldo` → pendências; `POST /:id/saldo/decidir`):
+Item sem saldo **não trava o envio** (`POST /:id/enviar`, WhatsApp, "marcar como enviado"): a
+proposta vai ao cliente com o aviso na linha do item, no PDF e na mensagem — "N UN sem estoque no
+momento — prazo a combinar com o vendedor". A decisão do que fazer com a falta acontece só no
+**Fechou**: a tela relê o saldo (`GET /:id/saldo` → pendências) e abre a decisão item a item
+(`POST /:id/saldo/decidir`). Pendência = saldo que não cobre a parte **a entregar agora**
+(quantidade − `qtd_encomenda`), onde saldo = disponível no ERP **+ aguardando liberação**.
+
+**Aguardando liberação** = nota de compra já lançada na empresa 1 (fiscal) cuja chave ainda não
+entrou na empresa 3 (gerencial): a peça está na loja, na conferência do recebimento, e ainda não
+tem saldo. Não é decisão do vendedor: o item segue no orçamento com o selo "aguardando liberação
+do produto" na grade e a linha "N UN aguardando liberação do produto — já na loja, em conferência"
+no PDF/mensagem (`saldoComLiberacao()` no service; `PdfItem.falta_saldo` / `saldo_situacao`).
 
 | Decisão | O que acontece com a parte sem saldo |
 |---|---|

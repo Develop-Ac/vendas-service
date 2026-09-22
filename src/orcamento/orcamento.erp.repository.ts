@@ -64,6 +64,28 @@ const CAMPOS_PRODUTO: Array<string | { campo: string; como: string }> = [
 const INCLUIR_PRODUTO = ['marca', 'subgrupo', 'grupo'];
 
 export type ModoBusca = 'comeca' | 'contem';
+
+/** Colunas de texto onde uma palavra da pesquisa genérica pode estar (o código é à parte: número exato). */
+export const COLUNAS_GENERICA = ['PRO_DESCRICAO', 'marca.MAR_DESCRICAO', 'REFERENCIA', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'CODIGO_BARRAS', 'APLICACOES', 'subgrupo.SUBGRP_DESCRICAO'];
+
+/**
+ * Pesquisa genérica: um grupo OU por palavra (a palavra em qualquer coluna), grupos em E.
+ * Palavra só de dígitos também vale como CÓDIGO exato do produto. Palavras de texto com
+ * menos de 3 letras ("de") ficam de fora — a API não busca texto tão curto e elas não
+ * distinguem nada. Com `%` no termo, vale o padrão inteiro (LIKE) em qualquer coluna.
+ */
+export function filtrosGenerica(termo: string): FiltroErp[] {
+  const T = termo.trim().toUpperCase();
+  if (T.includes('%')) return [{ ou: COLUNAS_GENERICA.map<FiltroErp>((campo) => ({ campo, op: 'parecido', valor: T })) }];
+  return [...new Set(T.split(/\s+/).filter((p) => p.length >= 3 || /^\d+$/.test(p)))]
+    .slice(0, 6)
+    .map<FiltroErp>((p) => ({
+      ou: [
+        ...(/^\d+$/.test(p) ? [{ campo: 'PRO_CODIGO', op: 'igual', valor: Number(p) } as FiltroErp] : []),
+        ...(p.length >= 3 ? COLUNAS_GENERICA.map<FiltroErp>((campo) => ({ campo, op: 'contem', valor: p })) : []),
+      ],
+    }));
+}
 /** Os "Localizar por" da EST012 do Celta. */
 export type CampoBusca =
   | 'descricao'          // Descrição / Código (numérico = código)
@@ -78,7 +100,7 @@ export type CampoBusca =
   | 'localizacao'
   | 'todas_referencias' // referência OU fabricante OU fornecedor
   | 'marca'
-  | 'generica';         // descrição (palavras em qualquer ordem) OU qualquer referência
+  | 'generica';         // cada palavra em QUALQUER campo (descrição, marca, referências, aplicação, subgrupo)
 export interface OpcoesBusca {
   modo?: ModoBusca;
   campo?: CampoBusca;
@@ -242,9 +264,13 @@ export class OrcamentoErpRepository {
    * "Localizar por" da tela, "Que começa com" ou "Contém", e os filtros (só
    * com estoque, listar inativos, só comercializável). O `%` no termo é
    * curinga, como lá. Em "Descrição / Código" e "Código", termo numérico é o
-   * código exato. "Todas as referências" e "Pesquisa genérica" são OU entre
-   * colunas — o montador da API só combina filtros com E, então viram
-   * consultas paralelas com o resultado unido (sem repetir código).
+   * código exato. "Todas as referências" é OU entre colunas com o termo
+   * inteiro: viram consultas paralelas com o resultado unido (sem repetir
+   * código). "Pesquisa genérica" é a busca livre: CADA PALAVRA precisa
+   * aparecer em algum campo (descrição, marca, referência, ref. do fabricante,
+   * ref. do fornecedor, aplicações, subgrupo) — "calha de chuva bepo" acha a
+   * calha da marca Bepo, "calha de chuva VW-152" acha pela referência. Um
+   * grupo `ou` por palavra, combinados com E, numa consulta só.
    */
   async buscarProdutos(termo: string, o: OpcoesBusca = {}): Promise<{ produtos: ProdutoErp[]; truncado: boolean }> {
     const t = termo.trim();
@@ -303,8 +329,9 @@ export class OrcamentoErpRepository {
     if (campo === 'todas_referencias') {
       lotes = [parecido('REFERENCIA'), parecido('REF_FABRICANTE'), parecido('REF_FORNECEDOR')];
     } else if (campo === 'generica') {
-      const desc = palavras('PRO_DESCRICAO');
-      lotes = [...(desc.length ? [desc] : []), parecido('REFERENCIA'), parecido('REF_FABRICANTE'), parecido('REF_FORNECEDOR'), parecido('APLICACOES')];
+      const f = filtrosGenerica(T);
+      if (!f.length) return { produtos: [], truncado: false };
+      lotes = [f];
     } else {
       const coluna = COLUNA[campo] ?? 'PRO_DESCRICAO';
       const f = campo === 'descricao' || campo === 'so_descricao' || campo === 'aplicacao' ? palavras(coluna) : parecido(coluna);

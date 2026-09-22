@@ -36,11 +36,10 @@ export type OperadorErp =
   | 'nulo'
   | 'nao_nulo';
 
-export interface FiltroErp {
-  campo: string;
-  op: OperadorErp;
-  valor?: unknown;
-}
+export type FiltroErp =
+  | { campo: string; op: OperadorErp; valor?: unknown }
+  /** grupo OU: `(f1 OR f2 …)`; os itens de `filtros` seguem combinados com E */
+  | { ou: FiltroErp[] };
 
 export interface AgregacaoErp {
   fn: 'contar' | 'contar_distinto' | 'somar' | 'maximo' | 'minimo' | 'media';

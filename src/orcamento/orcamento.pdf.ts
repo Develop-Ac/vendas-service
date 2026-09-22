@@ -60,6 +60,10 @@ export interface PdfItem {
   preco_original: number | null;
   /** parte da quantidade sem saldo hoje, combinada para entrega posterior */
   qtd_encomenda: number;
+  /** parte a entregar agora que não tem saldo; `saldo_situacao` diz por quê */
+  falta_saldo?: number;
+  /** AGUARDANDO = nota de compra lançada, peça em conferência; INDISPONIVEL = sem estoque */
+  saldo_situacao?: 'AGUARDANDO' | 'INDISPONIVEL' | null;
 }
 
 export interface PdfOrcamento {
@@ -258,6 +262,16 @@ function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem, cols: Col[],
   if (it.qtd_encomenda > 0) {
     doc.fillColor(SUAVE).fontSize(7.5).text(
       `${qtd(it.qtd_encomenda)} ${it.unidade ?? 'UN'} sob encomenda — entrega combinada com o vendedor`,
+      cols[0][1] + 44, y, { lineBreak: false },
+    );
+    doc.fillColor(TEXTO);
+    y += 10;
+  }
+  if ((it.falta_saldo ?? 0) > 0 && it.saldo_situacao) {
+    doc.fillColor(SUAVE).fontSize(7.5).text(
+      it.saldo_situacao === 'AGUARDANDO'
+        ? `${qtd(it.falta_saldo!)} ${it.unidade ?? 'UN'} aguardando liberação do produto — já na loja, em conferência`
+        : `${qtd(it.falta_saldo!)} ${it.unidade ?? 'UN'} sem estoque no momento — prazo a combinar com o vendedor`,
       cols[0][1] + 44, y, { lineBreak: false },
     );
     doc.fillColor(TEXTO);
