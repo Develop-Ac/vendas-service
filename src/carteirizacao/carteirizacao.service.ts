@@ -1313,6 +1313,9 @@ export class CarteirizacaoService {
     // ficam fora de `ativos`); usado pelo filtro de papéis do painel da Gerência.
     const papelMap = new Map<number, string | null>();
     papeis.forEach((p) => papelMap.set(Number(p.rep_codigo), p.papel ?? null));
+    // Inativo = todos os cadastros do rep na comissão estão inativos (a consulta prefere o ativo).
+    // Rep sem cadastro na comissão não é tratado como inativo.
+    const inativos = new Set(papeis.filter((p) => !!p.inativo).map((p) => Number(p.rep_codigo)));
 
     // universo: ativos (comissões) + quem tem meta/override/realizado
     const codigos = new Set<number>([
@@ -1367,6 +1370,12 @@ export class CarteirizacaoService {
       linhas = linhas.filter((l) => team.has(l.rep_codigo));
     }
 
+    // Totais antes de tirar os inativos: a venda de quem saiu no período continua sendo da empresa.
+    const totalMeta = linhas.reduce((s, l) => s + l.meta, 0);
+    const totalRealizado = linhas.reduce((s, l) => s + l.realizado, 0);
+    // Gerência (empresa toda): representante inativo na comissão não aparece na lista nem no ranking.
+    if (canal === 'gerencia') linhas = linhas.filter((l) => !inativos.has(l.rep_codigo));
+
     linhas.sort((x, y) => {
       const ax = x.atingimento_pct ?? -1;
       const ay = y.atingimento_pct ?? -1;
@@ -1374,9 +1383,6 @@ export class CarteirizacaoService {
       return y.realizado - x.realizado;
     });
     linhas.forEach((l, i) => ((l as any).ranking = i + 1));
-
-    const totalMeta = linhas.reduce((s, l) => s + l.meta, 0);
-    const totalRealizado = linhas.reduce((s, l) => s + l.realizado, 0);
 
     return {
       periodo: {

@@ -83,20 +83,26 @@ describe('avaliarItem', () => {
     expect(a.markup_tabela).toBeCloseTo(2.52, 2);
   });
 
-  it('tabela abaixo da lista da régua: desconto encolhe até o piso (nunca acima da tabela)', () => {
-    // custo 240,96 PB (154) -> 2A PB markup 1,60 -> lista 385,54; piso 385,54×0,95=366,26; tabela 377,87
+  it('tabela abaixo da lista da régua: o desconto da faixa vale inteiro', () => {
+    // custo 240,96 PB (154) -> 2A PB markup 1,60 -> lista 385,54; tabela 377,87; 5% -> 358,98
     const a = avaliarItem({ custo: 240.96, preco_tabela: 377.87, subgrp_codigo: 154, descricao: 'P/BRISA', quantidade: 6 });
     expect(a.classe).toBe('PB');
     expect(a.faixa).toBe('2A');
     expect(a.tabela_abaixo_regua).toBe(true);
-    expect(a.preco_minimo).toBe(366.26);
-    expect(a.desc_max_efetivo_pct).toBeCloseTo(0.0307, 3);
+    expect(a.preco_minimo).toBe(358.98);
+    expect(a.desc_max_efetivo_pct).toBe(0.05);
   });
 
-  it('tabela muito abaixo da régua: zero de desconto', () => {
-    const a = avaliarItem({ custo: 100, preco_tabela: 150, subgrp_codigo: 1, descricao: 'X', quantidade: 6 }); // 1D GERAL 1,85 -> 185; piso 179,45
-    expect(a.preco_minimo).toBe(150);
-    expect(a.desc_max_efetivo_pct).toBe(0);
+  it('tabela muito abaixo da régua ainda tem o desconto da faixa', () => {
+    const a = avaliarItem({ custo: 100, preco_tabela: 150, subgrp_codigo: 1, descricao: 'X', quantidade: 6 }); // 1D GERAL 3%
+    expect(a.preco_minimo).toBe(145.5);
+    expect(a.desc_max_efetivo_pct).toBe(0.03);
+  });
+
+  it('o desconto só encolhe no piso absoluto do item (custo × 1,25)', () => {
+    const a = avaliarItem({ custo: 100, preco_tabela: 127, subgrp_codigo: 1, descricao: 'X', quantidade: 6 }); // 3% daria 123,19
+    expect(a.preco_minimo).toBe(125);
+    expect(a.desc_max_efetivo_pct).toBeCloseTo(0.0157, 4);
   });
 
   it('nunca abaixo do custo', () => {

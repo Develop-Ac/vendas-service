@@ -1,4 +1,4 @@
-import { gerarPdfOrcamento, ModoDesconto, PdfOrcamento } from './orcamento.pdf';
+import { gerarPdfOrcamento, ModoDesconto, PdfItem, PdfOrcamento } from './orcamento.pdf';
 import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
@@ -30,6 +30,7 @@ import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository } from './orcamento.celta.repository';
 import { chaveIdempotencia, corpoParaCelta } from './celta';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
+import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
 /* =============================================================================
    ORÇAMENTO DO ATACADO — regras.
@@ -277,6 +278,8 @@ export class OrcamentoService {
     const dias = dataUlt ? Math.floor((Date.now() - new Date(dataUlt).getTime()) / 86_400_000) : null;
     return {
       ...base,
+      // vendedor da carteira: a tela avisa quando o orçamento é de outro vendedor
+      rep_nome: await this.erp.nomeRepresentante(base.rep_codigo),
       conceito: base.con_codigo != null ? CONCEITO[base.con_codigo] ?? `Conceito ${base.con_codigo}` : null,
       crediario_liberado: liberado,
       valor_em_aberto: emAberto,
@@ -288,6 +291,84 @@ export class OrcamentoService {
       dias_sem_compra: dias,
       desconto_padrao_erp: resumo?.desconto_padrao ?? null,
       bi_disponivel: resumo != null,
+    };
+  }
+
+  /**
+   * Chegadas previstas (pedido de compra / carga em trânsito) dos códigos pedidos — até 200 por
+   * chamada. Olha o próprio produto E o grupo de similares dele (a mesma regra dos equivalentes):
+   * a chegada de um similar vem marcada `similar: true`, com o código e a descrição de quem chega,
+   * porque o vendedor precisa dizer ao cliente que é outro item. `pro_codigo` é sempre o código
+   * PEDIDO (o que está sem saldo); quem chega está em `chegada_codigo`.
+   * Junto vêm os SIMILARES COM SALDO agora (`com_saldo`, saldo lido do ERP sem cache, ativos e
+   * comercializáveis, maior saldo primeiro): é a resposta mais útil para um item sem saldo.
+   * E o que está AGUARDANDO LIBERAÇÃO (`aguardando`): a nota de compra já foi lançada na empresa
+   * fiscal (o pedido vira "Entregue" e some das chegadas), mas ainda não entrou na empresa 3 —
+   * a peça está na loja, na conferência do recebimento, e ainda não tem saldo para vender.
+   */
+  /**
+   * AGUARDANDO LIBERAÇÃO por código: itens de nota de compra lançada na empresa fiscal cuja
+   * NF ainda não entrou na gerencial (peça na loja, em conferência, sem saldo para vender).
+   */
+  private async aguardandoLiberacao(codigos: number[]) {
+    const lancadas = await this.db.itensDeNfLancada(codigos);
+    const naGerencial = lancadas.length ? await this.erp.nfsLancadasNaGerencial(lancadas.map((l) => l.chave_nfe)) : new Set<string>();
+    const m = new Map<number, typeof lancadas>();
+    for (const l of lancadas.filter((x) => !naGerencial.has(x.chave_nfe))) m.set(l.pro_codigo, [...(m.get(l.pro_codigo) ?? []), l]);
+    return m;
+  }
+
+  /**
+   * Saldo que vale para decidir o orçamento: disponível no ERP + aguardando liberação. Peça em
+   * conferência não é pendência de saldo (o vendedor segue, e o papel avisa "aguardando liberação").
+   */
+  private async saldoComLiberacao(codigos: number[], produtos: ProdutoOrcamento[]) {
+    const aguardando = await this.aguardandoLiberacao(codigos).catch(() => new Map<number, Array<{ quantidade: number }>>());
+    const soma = (cod: number) => (aguardando.get(cod) ?? []).reduce((s, a) => s + Number(a.quantidade), 0);
+    return {
+      aguardando: soma,
+      saldoPor: new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, Math.max(0, p.estoque_disponivel) + soma(p.pro_codigo)])),
+    };
+  }
+
+  async chegadas(codigos: number[]) {
+    const limpos = [...new Set(codigos.filter((c) => Number.isInteger(c) && c > 0))].slice(0, 200);
+    if (!limpos.length) return { aguardando: [], chegadas: [], com_saldo: [] };
+    const membros = await this.db.gruposDe(limpos); // todos os membros dos grupos dos códigos pedidos
+    const chaveDe = new Map(membros.map((m) => [m.pro_codigo, m.chave]));
+    const doGrupo = new Map<string, number[]>();
+    for (const m of membros) doGrupo.set(m.chave, [...(doGrupo.get(m.chave) ?? []), m.pro_codigo]);
+    const previstas = await this.db.chegadasPrevistas([...new Set([...limpos, ...membros.map((m) => m.pro_codigo)])]);
+    const porCodigo = new Map<number, typeof previstas>();
+    for (const p of previstas) porCodigo.set(p.pro_codigo, [...(porCodigo.get(p.pro_codigo) ?? []), p]);
+    const similaresDe = (cod: number) => {
+      const chave = chaveDe.get(cod);
+      return (chave ? doGrupo.get(chave) ?? [] : []).filter((c) => c !== cod);
+    };
+    const aguardandoPorCodigo = await this.aguardandoLiberacao([...new Set([...limpos, ...membros.map((m) => m.pro_codigo)])]);
+    const erpSimilares = await this.erp.produtosPorCodigo([...new Set(limpos.flatMap(similaresDe))]);
+    const comSaldo = new Map(
+      erpSimilares.filter((p) => p.ESTOQUE_DISPONIVEL > 0 && p.INATIVO !== 'S' && p.COMERCIALIZAVEL !== 'N').map((p) => [p.PRO_CODIGO, p]),
+    );
+    return {
+      aguardando: limpos.flatMap((cod) =>
+        [cod, ...similaresDe(cod)].flatMap((c) =>
+          (aguardandoPorCodigo.get(c) ?? []).map((l) => ({ pro_codigo: cod, item_codigo: c, similar: c !== cod, pedido: l.pedido, quantidade: l.quantidade, dt_entrada: l.dt_entrada })),
+        ),
+      ),
+      chegadas: limpos.flatMap((cod) => {
+        const linhas = [cod, ...similaresDe(cod)].flatMap((c) =>
+          (porCodigo.get(c) ?? []).map(({ pro_codigo, ...resto }) => ({ pro_codigo: cod, chegada_codigo: pro_codigo, similar: pro_codigo !== cod, ...resto })),
+        );
+        // o próprio item antes dos similares; dentro de cada bloco, a data mais próxima primeiro
+        return linhas.sort((a, b) => Number(a.similar) - Number(b.similar) || a.data.localeCompare(b.data));
+      }),
+      com_saldo: limpos.flatMap((cod) =>
+        similaresDe(cod)
+          .flatMap((c) => (comSaldo.has(c) ? [comSaldo.get(c)!] : []))
+          .sort((a, b) => b.ESTOQUE_DISPONIVEL - a.ESTOQUE_DISPONIVEL)
+          .map((p) => ({ pro_codigo: cod, similar_codigo: p.PRO_CODIGO, descricao: p.PRO_DESCRICAO, estoque_disponivel: p.ESTOQUE_DISPONIVEL })),
+      ),
     };
   }
 
@@ -733,6 +814,39 @@ export class OrcamentoService {
       .slice(0, 8);
   }
 
+  /**
+   * Sugestões PARA ESTE CLIENTE (analytics-atacado-service): reposição vencendo, item
+   * que ele parou de comprar, item orçado e não comprado, o que clientes de mix parecido
+   * compram. O analytics diz O QUE e POR QUÊ; preço, promoção e saldo são daqui. Item
+   * sem saldo é trocado pelo equivalente com saldo (o cliente troca de marca, não de
+   * peça); sem equivalente, sai — sugestão que não pode ser atendida atrapalha.
+   * Analytics fora = lista vazia, e a tela fica só com o "vendem juntos".
+   */
+  async sugestoesCliente(cli: number, tabelaPreco: string | null, naGrade: number[]) {
+    const excluir = naGrade.filter((n) => Number.isInteger(n) && n > 0).slice(0, 200);
+    const sugestoes = await analyticsAtacadoGet<
+      { pro_codigo: number; chave_item: string; tipo: string; motivo: string; score: number }[]
+    >(`/clientes/${cli}/sugestoes?limite=15&excluir=${excluir.join(',')}`);
+    if (!sugestoes?.length) return [];
+
+    const lista = await this.produtosPorCodigo(sugestoes.map((s) => s.pro_codigo), tabelaPreco, cli);
+    const porCodigo = new Map(lista.map((p) => [p.pro_codigo, p]));
+    const naTela = new Set(excluir);
+    const out: Array<(typeof lista)[number] & { tipo: string; motivo: string; score: number; pro_codigo_sugerido: number }> = [];
+    for (const s of sugestoes) {
+      let p = porCodigo.get(s.pro_codigo);
+      if (!p || p.inativo || p.estoque_disponivel <= 0) {
+        const eq = await this.equivalentes(s.pro_codigo, tabelaPreco, cli).catch(() => []);
+        p = eq.find((e) => e.estoque_disponivel > 0 && !naTela.has(e.pro_codigo));
+      }
+      if (!p || naTela.has(p.pro_codigo)) continue;
+      naTela.add(p.pro_codigo);
+      out.push({ ...p, tipo: s.tipo, motivo: s.motivo, score: s.score, pro_codigo_sugerido: s.pro_codigo });
+      if (out.length >= 8) break;
+    }
+    return out;
+  }
+
   async produto(codigo: number, tabelaPreco: string | null, cli?: number) {
     const [lista, equivalentes, relacionados] = await Promise.all([
       this.produtosPorCodigo([codigo], tabelaPreco, cli),
@@ -834,13 +948,14 @@ export class OrcamentoService {
       const tabela = fora ? p.sem_promocao!.preco_tabela : p.preco_tabela;
       const av = fora ? p.sem_promocao!.avaliacao : p.avaliacao;
       // O preço nasce da tabela do cliente menos o desconto. `preco_unit` vale por
-      // cima quando o vendedor fechou o TOTAL da linha (arredondamento): um unitário
-      // exato em centavos, nunca acima da tabela — a régua e a bolsa avaliam esse preço.
+      // cima quando o vendedor fechou o unitário ou o TOTAL da linha: um unitário exato
+      // em centavos. Abaixo da tabela é desconto (a régua e a bolsa avaliam esse preço);
+      // acima é acréscimo — desconto zero e a diferença gravada em `acrescimo`.
       const descPedido = Math.min(1, Math.max(0, Number(i.desc_pct ?? 0)));
       const unitFechado = Number(i.preco_unit ?? 0);
       let preco =
         tabela > 0
-          ? unitFechado > 0 && unitFechado <= tabela
+          ? unitFechado > 0
             ? round2(unitFechado)
             : round2(tabela * (1 - descPedido))
           : round2(unitFechado);
@@ -871,7 +986,8 @@ export class OrcamentoService {
       const linhaTotal = round2(preco * qtd);
       if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
       else semCusto += linhaTotal;
-      subtotal += round2((tabela > 0 ? tabela : preco) * qtd);
+      // linha com acréscimo entra no subtotal pelo próprio preço: o acréscimo não abate o desconto das outras
+      subtotal += round2(Math.max(tabela, preco) * qtd);
       total += linhaTotal;
       linhas.push({
         orcamento_id: '',
@@ -886,6 +1002,8 @@ export class OrcamentoService {
         preco_unit: preco,
         desc_pct: descPct,
         total: linhaTotal,
+        // R$ cobrados acima da tabela na linha inteira; só no banco (relatório), nenhuma tela mostra
+        acrescimo: tabela > 0 && preco > tabela ? round2((preco - tabela) * qtd) : 0,
         custo_ref: p.custo,
         classe: av.classe,
         mix: av.mix,
@@ -1072,12 +1190,8 @@ export class OrcamentoService {
     if (!o.itens?.length) throw new BadRequestException('Orçamento sem itens.');
     // O Celta pede a condição; a forma é opcional (vai a sugerida pela condição ou o padrão do cliente).
     if (o.cp_codigo == null) throw new BadRequestException('Informe a condição de pagamento antes de enviar.');
-    // Saldo relido do ERP: item sem saldo para a parte a entregar agora não
-    // conclui sem decisão do vendedor (venda perdida / encomenda / retirar).
-    const pend = await this.pendenciasDe(o);
-    if (pend.length) {
-      throw new BadRequestException(`Sem saldo para: ${pend.map((p) => `${p.pro_codigo} (pedido ${p.a_entregar}, disponível ${p.disponivel})`).join('; ')}. Decida o que fazer com esses itens antes de concluir.`);
-    }
+    // Item sem saldo NÃO trava o envio: a proposta vai ao cliente com o aviso na linha
+    // ("sem estoque" / "aguardando liberação"); a decisão de saldo é só no FECHOU (tela).
     const precisaAprovar = o.acima_alcada && !o.aprovado_em;
     return this.db.atualizar(id, {
       status: precisaAprovar ? 'APROVACAO' : 'ENVIADO',
@@ -1127,6 +1241,7 @@ export class OrcamentoService {
         : Promise.resolve([] as ProdutoOrcamento[]),
     ]);
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
+    const { aguardando } = produtos.length ? await this.saldoComLiberacao(produtos.map((p) => p.pro_codigo), produtos) : { aguardando: () => 0 };
     const dmy = (v: Date | string | null | undefined) => {
       if (!v) return null;
       const s = v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
@@ -1150,6 +1265,7 @@ export class OrcamentoService {
         promocao_fim: promoFim,
         preco_original: promoFim && p && p.preco_original > n(i.preco_tabela) ? p.preco_original : null,
         qtd_encomenda: n(i.qtd_encomenda),
+        ...faltaSaldo(n(i.quantidade) - n(i.qtd_encomenda), p?.estoque_disponivel, aguardando(Number(i.pro_codigo))),
       };
     });
     const numero = String(o.numero).padStart(6, '0');
@@ -1369,7 +1485,7 @@ export class OrcamentoService {
     const itens = (o.itens ?? []) as Array<{ pro_codigo: number; descricao: string | null; quantidade: number; qtd_encomenda?: number | null }>;
     if (!itens.length) return [];
     const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo);
-    const saldoPor = new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, p.estoque_disponivel]));
+    const { saldoPor } = await this.saldoComLiberacao(itens.map((i) => i.pro_codigo), produtos);
     return pendenciasSaldo(itens, saldoPor);
   }
 
@@ -1394,7 +1510,7 @@ export class OrcamentoService {
       desc_pct: number; preco_tabela: number; preco_unit: number; substituto_de: number | null; observacao: string | null; fora_promocao?: boolean;
     }>;
     const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo);
-    const saldoPor = new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, p.estoque_disponivel]));
+    const { saldoPor } = await this.saldoComLiberacao(itens.map((i) => i.pro_codigo), produtos);
     const r = aplicarDecisoes(itens, saldoPor, dto.decisoes);
     if (r.sem_decisao.length) throw new BadRequestException(`Falta decidir o que fazer com: ${r.sem_decisao.join(', ')}.`);
     // Similar com saldo: a tela informa qual era; venda perdida só com justificativa escrita.
@@ -1422,7 +1538,8 @@ export class OrcamentoService {
         pro_codigo: i.pro_codigo,
         quantidade: i.quantidade,
         desc_pct: i.desc_pct,
-        preco_unit: i.preco_tabela > 0 ? undefined : i.preco_unit,
+        // com tabela o preço renasce do desconto; o acréscimo (unitário acima da tabela) é mantido
+        preco_unit: i.preco_tabela > 0 && i.preco_unit <= i.preco_tabela ? undefined : i.preco_unit,
         substituto_de: i.substituto_de ?? undefined,
         observacao: i.observacao ?? undefined,
         qtd_encomenda: i.qtd_encomenda ?? 0,
@@ -1431,6 +1548,16 @@ export class OrcamentoService {
     });
     return { orcamento: salvo, sem_itens: false, venda_perdida: r.venda_perdida.length };
   }
+}
+
+/**
+ * Linha de aviso do papel para a parte sem saldo: coberta pelo que aguarda liberação
+ * (nota lançada, peça em conferência) ou simplesmente sem estoque. Produto que sumiu do ERP conta como zero.
+ */
+function faltaSaldo(aEntregar: number, disponivel: number | undefined, aguardando: number): Pick<PdfItem, 'falta_saldo' | 'saldo_situacao'> {
+  const falta = Math.max(0, aEntregar - Math.max(0, disponivel ?? 0));
+  if (falta <= 0) return { falta_saldo: 0, saldo_situacao: null };
+  return { falta_saldo: falta, saldo_situacao: aguardando >= falta ? 'AGUARDANDO' : 'INDISPONIVEL' };
 }
 
 /** Mesmo vocabulário da tela: nada de "tabela 2" para o cliente. */

@@ -23,6 +23,23 @@ export interface GiroItem {
   group_id: string | null;
 }
 
+/** Uma chegada prevista de um produto: pedido de compra em aberto, com a data e de onde ela veio. */
+export interface ChegadaPrevista {
+  pro_codigo: number;
+  descricao: string | null;
+  marca: string | null;
+  /** nº do pedido de compra (pedido_cotacao) */
+  pedido: number;
+  status: string | null;
+  quantidade: number;
+  /** YYYY-MM-DD */
+  data: string;
+  /** RASTREIO = CT-e da carga em trânsito; PEDIDO = previsão informada pelo compras */
+  origem: 'RASTREIO' | 'PEDIDO';
+  /** último evento do rastreio SSW, quando há */
+  ult_evento: string | null;
+}
+
 @Injectable()
 export class OrcamentoPrismaRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -171,6 +188,89 @@ export class OrcamentoPrismaRepository {
         )
     `;
     return new Set(rows.map((r) => Number(r.pro_codigo)));
+  }
+
+  /**
+   * Previsão de chegada dos produtos em pedido de compra ainda não entregue — o que o
+   * vendedor responde quando o item está sem saldo. Por item de pedido, a data vem:
+   *   1. do CT-e da NF vinculada que traz o produto, enquanto a carga está em trânsito
+   *      (previsão gravada pelo rastreio SSW; sem ela, a previsão de entrega do próprio CT-e);
+   *   2. senão, da previsão de chegada que o compras pôs no pedido.
+   * Pedido "Entregue parcialmente" só entra pelo caminho 1: sem carga em trânsito não dá
+   * para saber se aquele item já chegou. Data vencida há mais de 30 dias é descartada
+   * (pedido velho que ninguém encerrou). Ficam de fora o item marcado `nao_atendido` e o
+   * pedido ainda em análise (não foi comprado: prometer a data dele seria chute).
+   */
+  async chegadasPrevistas(codigos: number[]): Promise<ChegadaPrevista[]> {
+    if (!codigos.length) return [];
+    const rows = await this.prisma.$queryRaw<
+      Array<{ pro_codigo: number; descricao: string | null; marca: string | null; pedido: number; status: string | null; quantidade: unknown; data: string; origem: string; ult_evento: string | null }>
+    >`
+      SELECT x.pro_codigo, x.descricao, x.marca, x.pedido, x.status, x.quantidade,
+             COALESCE(x.prev_cte, x.prev_pedido) AS data,
+             CASE WHEN x.prev_cte IS NOT NULL THEN 'RASTREIO' ELSE 'PEDIDO' END AS origem,
+             x.ult_evento
+      FROM (
+        SELECT i.pro_codigo, i.pro_descricao AS descricao, i.mar_descricao AS marca, p.pedido_cotacao AS pedido, p.status, i.quantidade,
+               to_char(p.previsao_chegada AT TIME ZONE 'America/Cuiaba', 'YYYY-MM-DD') AS prev_pedido,
+               r.prev AS prev_cte, r.ult_evento
+        FROM com_pedido_itens i
+        JOIN com_pedido p ON p.id = i.pedido_id
+        LEFT JOIN LATERAL (
+          SELECT MIN(COALESCE(to_char(c.rastreio_previsao, 'YYYY-MM-DD'), NULLIF(LEFT(c.dados_json->>'prevEntrega', 10), ''))) AS prev,
+                 MAX(c.rastreio_ult_evento) AS ult_evento
+          FROM com_pedido_nfe_vinculo v
+          JOIN com_pedido_nfe_vinculo_item vi ON vi.vinculo_id = v.id AND vi.pro_codigo = i.pro_codigo
+          JOIN com_cte_documento c ON c.dados_json->'documentosNFe' @> to_jsonb(v.chave_nfe::text)
+          WHERE v.pedido_id = p.id AND v.confirmado AND NOT v.rejeitado
+            AND c.rastreio_entregue_em IS NULL AND c.status <> 'LANCADA'
+        ) r ON true
+        WHERE i.pro_codigo IN (${Prisma.join(codigos)})
+          AND i.quantidade > 0
+          AND COALESCE(i.status_item, '') <> 'nao_atendido'
+          AND COALESCE(p.status, '') NOT IN ('Entregue', 'Cancelado', 'Aguardando analise')
+      ) x
+      WHERE COALESCE(x.prev_cte, CASE WHEN x.status = 'Entregue parcialmente' THEN NULL ELSE x.prev_pedido END) IS NOT NULL
+        AND COALESCE(x.prev_cte, x.prev_pedido) >= to_char(now() - interval '30 days', 'YYYY-MM-DD')
+      ORDER BY x.pro_codigo, 7
+    `;
+    return rows.map((r) => ({
+      pro_codigo: Number(r.pro_codigo),
+      descricao: r.descricao,
+      marca: r.marca,
+      pedido: Number(r.pedido),
+      status: r.status,
+      quantidade: Number(r.quantidade),
+      data: r.data,
+      origem: r.origem === 'RASTREIO' ? 'RASTREIO' : 'PEDIDO',
+      ult_evento: r.ult_evento,
+    }));
+  }
+
+  /**
+   * Itens de NF de compra JÁ LANÇADA na empresa fiscal (`com_nfe_conciliacao.status_erp`),
+   * vinculada a pedido e com o produto — candidatos a "aguardando liberação": a nota entra
+   * na empresa 1 quando chega, mas só vai para a empresa 3 (onde está o saldo de venda) quando
+   * a conferência do recebimento termina. Quem decide se já foi é o ERP (ver o serviço).
+   * Janela de 45 dias pela entrada: nota mais velha que isso sem ir para a 3 é caso de cadastro.
+   */
+  async itensDeNfLancada(codigos: number[]): Promise<Array<{ pro_codigo: number; chave_nfe: string; pedido: number; quantidade: number; dt_entrada: string | null }>> {
+    if (!codigos.length) return [];
+    const rows = await this.prisma.$queryRaw<Array<{ pro_codigo: number; chave_nfe: string; pedido: number; quantidade: unknown; dt_entrada: string | null }>>`
+      SELECT vi.pro_codigo, v.chave_nfe, p.pedido_cotacao AS pedido,
+             SUM(COALESCE(vi.quantidade_alocada, vi.quantidade_xml, 0)) AS quantidade,
+             to_char(n.dt_entrada, 'YYYY-MM-DD') AS dt_entrada
+      FROM com_pedido_nfe_vinculo v
+      JOIN com_pedido_nfe_vinculo_item vi ON vi.vinculo_id = v.id
+      JOIN com_pedido p ON p.id = v.pedido_id
+      JOIN com_nfe_conciliacao n ON n.chave_nfe = v.chave_nfe
+      WHERE vi.pro_codigo IN (${Prisma.join(codigos)})
+        AND v.confirmado AND NOT v.rejeitado
+        AND n.status_erp = 'LANCADA'
+        AND COALESCE(n.dt_entrada, n.updated_at) >= now() - interval '45 days'
+      GROUP BY vi.pro_codigo, v.chave_nfe, p.pedido_cotacao, n.dt_entrada
+    `;
+    return rows.map((r) => ({ pro_codigo: Number(r.pro_codigo), chave_nfe: r.chave_nfe, pedido: Number(r.pedido), quantidade: Number(r.quantidade), dt_entrada: r.dt_entrada }));
   }
 
   /** Curva, situação do saldo e tendência (última execução da análise de estoque). */

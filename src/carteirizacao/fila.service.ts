@@ -8,6 +8,7 @@ import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { DesfechoOrcamentoDto } from './dto/carteirizacao.dto';
+import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
 /**
  * Fila do dia do CRM do Atacado (fase 1) — o princípio inegociável é ESFORÇO DO
@@ -121,6 +122,7 @@ export class FilaService {
     // 2) Gera pela régua.
     const agora = Date.now();
     const regua = this.regua;
+    const ciclo = await this.cicloAtrasado();
     const novas: Parameters<CarteirizacaoPrismaRepository['criarTarefas']>[0] = [];
     for (const cli of clientes) {
       if (!cli.em_carteira || cli.rep_codigo == null) continue;
@@ -147,6 +149,23 @@ export class FilaService {
           curva: cli.curva_abc,
           motivo_geracao: `Curva A a ${diasCompra}d sem compra — janela de resgate de ${this.prazoResgateHoras}h antes de inativar`,
           prazo_em: new Date(agora + this.prazoResgateHoras * 3_600_000),
+        });
+        continue;
+      }
+
+      // Ciclo próprio: cliente grande que compra a cada poucos dias some muito antes
+      // de a régua da curva perceber. Só vale se ninguém falou com ele desde a última compra.
+      const c = ciclo.get(cli.cli_codigo);
+      if (c && diasSemContato >= c.dias_sem_compra) {
+        novas.push({
+          tipo: 'CONTATO',
+          cli_codigo: cli.cli_codigo,
+          cli_nome: cli.cli_nome,
+          rep_codigo: cli.rep_codigo,
+          rep_nome: cli.rep_nome,
+          curva: cli.curva_abc,
+          motivo_geracao: `Fora do ritmo: ${c.dias_sem_compra}d sem compra e costuma comprar a cada ${Math.round(c.intervalo_dias)}d`,
+          prazo_em: new Date(agora + this.prazoContatoDias * DIA_MS),
         });
         continue;
       }
@@ -191,6 +210,19 @@ export class FilaService {
         `${resumo.canceladas} canceladas, ${resumo.ja_em_andamento} já em andamento.`,
     );
     return resumo;
+  }
+
+  /**
+   * Clientes grandes em silêncio pelo próprio ritmo de compra, calculados toda noite
+   * pelo analytics-atacado-service. Opcional: sem ANALYTICS_ATACADO_URL, com o serviço
+   * fora ou lento, a fila sai só pela régua.
+   */
+  private async cicloAtrasado(): Promise<Map<number, { dias_sem_compra: number; intervalo_dias: number }>> {
+    const minimo = envNum('FILA_CICLO_MINIMO_12M', 50_000);
+    const linhas = await analyticsAtacadoGet<{ cli: number; dias_sem_compra: number; intervalo_dias: number }[]>(
+      `/alertas/ciclo-atrasado?minimo=${minimo}`,
+    );
+    return new Map((linhas ?? []).map((l) => [l.cli, l]));
   }
 
   // ------------------------------------------------------------ reconciliar

@@ -60,6 +60,10 @@ export interface PdfItem {
   preco_original: number | null;
   /** parte da quantidade sem saldo hoje, combinada para entrega posterior */
   qtd_encomenda: number;
+  /** parte a entregar agora que não tem saldo; `saldo_situacao` diz por quê */
+  falta_saldo?: number;
+  /** AGUARDANDO = nota de compra lançada, peça em conferência; INDISPONIVEL = sem estoque */
+  saldo_situacao?: 'AGUARDANDO' | 'INDISPONIVEL' | null;
 }
 
 export interface PdfOrcamento {
@@ -166,12 +170,13 @@ function cabecalho(doc: PDFKit.PDFDocument, o: PdfOrcamento): number {
   let y = M;
   let xTexto = M;
   try {
-    doc.image(LOGO_AC(), M, y - 2, { width: 64 });
-    xTexto = M + 76;
+    // logo empilhada (símbolo + "ATACADO"): 78 pt de largura dão ~44 pt de altura, a altura do bloco de texto
+    doc.image(LOGO_AC(), M, y - 1, { width: 78 });
+    xTexto = M + 88;
   } catch {
     /* logo ilegível: segue sem ela */
   }
-  doc.fillColor(TEXTO).font('Helvetica-Bold').fontSize(12).text(EMPRESA_PDF.razao, xTexto, y, { width: 330, lineBreak: false });
+  doc.fillColor(TEXTO).font('Helvetica-Bold').fontSize(11).text(EMPRESA_PDF.razao, xTexto, y + 1, { width: 330, lineBreak: false });
   doc.font('Helvetica').fontSize(8.5).text(EMPRESA_PDF.endereco, xTexto, y + 15).text(EMPRESA_PDF.cidade, xTexto, y + 26);
   doc.font('Helvetica-Bold').fontSize(10).text(`Fone: ${EMPRESA_PDF.fones}`, xTexto, y + 39);
 
@@ -233,12 +238,14 @@ function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem, cols: Col[],
   cel(1, it.marca ?? '');
   cel(2, it.unidade ?? 'UN');
   cel(3, qtd(it.quantidade));
+  // item com acréscimo aparece pelo preço cobrado, como se fosse o de tabela
+  const cheio = Math.max(it.preco_tabela, it.preco_unit);
   if (modo === 'geral') {
     // preço de tabela na linha; o desconto vai uma vez só, no bloco de totais
-    cel(4, brl(it.preco_tabela));
-    cel(5, brl(it.preco_tabela * it.quantidade));
+    cel(4, brl(cheio));
+    cel(5, brl(cheio * it.quantidade));
   } else {
-    cel(4, brl(it.preco_original ?? it.preco_tabela));
+    cel(4, brl(it.preco_original ?? cheio));
     cel(5, it.promocao_fim ? '—' : it.desc_pct > 0 ? pct(it.desc_pct) : '');
     cel(6, brl(it.preco_unit));
     cel(7, brl(it.total));
@@ -255,6 +262,16 @@ function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem, cols: Col[],
   if (it.qtd_encomenda > 0) {
     doc.fillColor(SUAVE).fontSize(7.5).text(
       `${qtd(it.qtd_encomenda)} ${it.unidade ?? 'UN'} sob encomenda — entrega combinada com o vendedor`,
+      cols[0][1] + 44, y, { lineBreak: false },
+    );
+    doc.fillColor(TEXTO);
+    y += 10;
+  }
+  if ((it.falta_saldo ?? 0) > 0 && it.saldo_situacao) {
+    doc.fillColor(SUAVE).fontSize(7.5).text(
+      it.saldo_situacao === 'AGUARDANDO'
+        ? `${qtd(it.falta_saldo!)} ${it.unidade ?? 'UN'} aguardando liberação do produto — já na loja, em conferência`
+        : `${qtd(it.falta_saldo!)} ${it.unidade ?? 'UN'} sem estoque no momento — prazo a combinar com o vendedor`,
       cols[0][1] + 44, y, { lineBreak: false },
     );
     doc.fillColor(TEXTO);

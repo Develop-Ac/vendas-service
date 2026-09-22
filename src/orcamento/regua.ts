@@ -224,12 +224,11 @@ const round4 = (v: number) => Math.round(v * 10000 + 1e-7) / 10000;
  * Avalia um item: classe, faixa, desconto máximo e PREÇO MÍNIMO.
  *
  * Regra do mínimo (a que o vendedor decide sozinho):
- *   piso da régua  = custo × markup × (1 − desc_max)
- *   mínimo         = max(tabela × (1 − desc_max), piso da régua), nunca acima da
- *                    própria tabela e nunca abaixo do custo.
- * Se a tabela do ERP está abaixo da lista da régua (item que ainda não subiu),
- * o desconto permitido encolhe até zero — não se dá desconto sobre preço que já
- * está aquém. Exceção (exclusivo/oportunidade) congela o markup atual: o mínimo
+ *   mínimo = tabela × (1 − desc_max da faixa × fração da quantidade), nunca abaixo
+ *            do piso absoluto do item (custo × piso_item) nem acima da própria tabela.
+ * Todo item com custo e tabela tem o desconto da sua faixa, esteja a tabela do ERP
+ * acima ou abaixo da lista da régua (`tabela_abaixo_regua` só informa). O desconto
+ * efetivo só encolhe quando a tabela já encosta no piso absoluto. Exceção (exclusivo/oportunidade) congela o markup atual: o mínimo
  * é a tabela menos o desconto próprio, sem piso da régua.
  */
 export function avaliarItem(e: EntradaAvaliacao): Avaliacao {
@@ -308,11 +307,10 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
   }
 
   const alvo = round2(custo * regra.markup);
-  // O piso da régua é sempre o da FAIXA (desc. máx cheio); a quantidade só
-  // decide quanto desse máximo o vendedor pode dar sozinho.
+  // A quantidade decide quanto do máximo da faixa o vendedor pode dar sozinho.
+  // Abaixo do piso absoluto (custo × piso_item) é sempre o gestor, então o mínimo para ali.
   const descMax = round4(regra.desc_max * fracao);
-  const pisoRegua = round2(custo * regra.markup * (1 - regra.desc_max));
-  let minimo = Math.max(round2(tabela * (1 - descMax)), pisoRegua);
+  let minimo = Math.max(round2(tabela * (1 - descMax)), pisoBolsa);
   minimo = Math.min(minimo, tabela);
   minimo = Math.max(minimo, round2(custo));
   const abaixo = tabela < alvo - 0.005;
@@ -330,10 +328,10 @@ function avaliarBase(e: EntradaAvaliacao, fracao: number): AvaliacaoBase {
     preco_piso_bolsa: pisoBolsa,
     markup_tabela: markupTabela,
     tabela_abaixo_regua: abaixo,
-    motivo: abaixo
+    motivo: descEfetivo < descMax - 0.00005
       ? descEfetivo <= 0
-        ? 'Tabela já abaixo da lista da régua — sem margem para desconto.'
-        : 'Tabela abaixo da lista da régua — desconto reduzido ao piso.'
+        ? 'Tabela já no piso do item (custo × piso) — sem margem para desconto.'
+        : 'Desconto reduzido ao piso do item (custo × piso).'
       : `Faixa ${fx.chave} ${base}: até ${(descMax * 100).toFixed(1)}% de desconto${fracao < 1 ? ` (${(regra.desc_max * 100).toFixed(0)}% com volume)` : ''}.`,
   };
 }

@@ -11,6 +11,8 @@ export interface ItemParaCelta {
   pro_codigo: number;
   quantidade: number;
   preco_tabela: number;
+  /** unitário cobrado; acima da tabela = acréscimo */
+  preco_unit?: number;
   desc_pct: number;
   desc_max_pct?: number | null;
   acima_alcada?: boolean;
@@ -88,7 +90,8 @@ export function corpoParaCelta(o: OrcamentoParaCelta): CorpoCelta {
   const itens = (o.itens ?? []).map((i) => ({
     pro_codigo: i.pro_codigo,
     quantidade: Number(i.quantidade),
-    unitario: Math.round(Number(i.preco_tabela) * 100) / 100,
+    // item com acréscimo vai pelo unitário cobrado (desconto zero); os demais, tabela + % de desconto
+    unitario: Math.round(Math.max(Number(i.preco_tabela), Number(i.preco_unit ?? 0)) * 100) / 100,
     perc_descto: Math.min(99.99, Math.max(0, Math.round(Number(i.desc_pct) * 10000) / 100)),
   }));
   if (!itens.length) throw new Error('Orçamento sem itens não vai ao Celta.');
