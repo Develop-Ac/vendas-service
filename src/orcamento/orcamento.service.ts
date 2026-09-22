@@ -63,6 +63,8 @@ export interface ProdutoOrcamento {
   subgrupo: string | null;
   subgrp_codigo: number | null;
   inativo: boolean;
+  /** subtipo 09 (serviço): não tem preço de tabela nem saldo — entra com quantidade 1 e o preço informado no orçamento */
+  servico: boolean;
   comercializavel: boolean;
   estoque_disponivel: number;
   estoque_reservado: number;
@@ -327,7 +329,8 @@ export class OrcamentoService {
     const soma = (cod: number) => (aguardando.get(cod) ?? []).reduce((s, a) => s + Number(a.quantidade), 0);
     return {
       aguardando: soma,
-      saldoPor: new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, Math.max(0, p.estoque_disponivel) + soma(p.pro_codigo)])),
+      // serviço não controla estoque: saldo infinito, nunca é pendência
+      saldoPor: new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, p.servico ? Number.POSITIVE_INFINITY : Math.max(0, p.estoque_disponivel) + soma(p.pro_codigo)])),
     };
   }
 
@@ -628,6 +631,7 @@ export class OrcamentoService {
       subgrupo: p.SUBGRUPO,
       subgrp_codigo: p.SUBGRP_CODIGO,
       inativo: p.INATIVO === 'S',
+      servico: ehServico(p.SUBTIPO),
       comercializavel: p.COMERCIALIZAVEL !== 'N',
       estoque_disponivel: p.ESTOQUE_DISPONIVEL,
       estoque_reservado: p.ESTOQUE_RESERVADO,
@@ -1288,7 +1292,7 @@ export class OrcamentoService {
         promocao_fim: promoFim,
         preco_original: promoFim && p && p.preco_original > n(i.preco_tabela) ? p.preco_original : null,
         qtd_encomenda: n(i.qtd_encomenda),
-        ...faltaSaldo(n(i.quantidade) - n(i.qtd_encomenda), p?.estoque_disponivel, aguardando(Number(i.pro_codigo))),
+        ...faltaSaldo(n(i.quantidade) - n(i.qtd_encomenda), p?.servico ? Number.POSITIVE_INFINITY : p?.estoque_disponivel, aguardando(Number(i.pro_codigo))),
       };
     });
     const numero = String(o.numero).padStart(6, '0');
@@ -1358,9 +1362,11 @@ export class OrcamentoService {
     if (o.celta_orcamento) return { orcamento: o, celta_orcamento: o.celta_orcamento, repetido: true };
     if (o.status !== 'FECHADO') throw new BadRequestException('Só orçamento fechado vai ao Celta.');
     if (!o.rep_codigo) throw new BadRequestException('Orçamento sem vendedor não pode ir ao Celta.');
+    // piso da bolsa de hoje: a observação diz quanto o orçamento se compensou contra ele
+    const piso = await this.pisoVigente(mesComissional()).then((x) => x.piso).catch(() => this.parametros().bolsa_piso);
     let corpo;
     try {
-      corpo = corpoParaCelta(o);
+      corpo = corpoParaCelta({ ...o, piso_bolsa: piso });
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     }
@@ -1500,7 +1506,7 @@ export class OrcamentoService {
       const p = porCodigo.get(i.pro_codigo);
       if (!p) return [`${i.pro_codigo}: produto não encontrado no ERP.`];
       const a: string[] = [];
-      if (p.estoque_disponivel < i.quantidade) a.push(`${i.pro_codigo} ${i.descricao}: saldo ${p.estoque_disponivel} < ${i.quantidade} orçados.`);
+      if (!p.servico && p.estoque_disponivel < i.quantidade) a.push(`${i.pro_codigo} ${i.descricao}: saldo ${p.estoque_disponivel} < ${i.quantidade} orçados.`);
       if (Math.abs(p.preco_tabela - i.preco_tabela) > 0.005) a.push(`${i.pro_codigo} ${i.descricao}: tabela mudou de ${i.preco_tabela.toFixed(2)} para ${p.preco_tabela.toFixed(2)}.`);
       return a;
     });
@@ -1585,6 +1591,9 @@ function faltaSaldo(aEntregar: number, disponivel: number | undefined, aguardand
   if (falta <= 0) return { falta_saldo: 0, saldo_situacao: null };
   return { falta_saldo: falta, saldo_situacao: aguardando >= falta ? 'AGUARDANDO' : 'INDISPONIVEL' };
 }
+
+/** Subtipo fiscal '09' = serviço (o ERP grava com zero à esquerda; '9' também vale). */
+const ehServico = (subtipo: string | null | undefined) => String(subtipo ?? '').trim().replace(/^0+/, '') === '9';
 
 /** Mesmo vocabulário da tela: nada de "tabela 2" para o cliente. */
 function nomeTabelaCliente(t: string | null | undefined): string | null {

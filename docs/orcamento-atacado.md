@@ -78,6 +78,11 @@ próprio piso** (saldo retido = lucro a mais). A resposta traz `volume` (média,
 próximo degrau e quanto falta). Modo `fixo` (**em uso desde 08/09/2026, piso 1,538**): `ORCAMENTO_BOLSA_PISO`; a linha do prêmio é o próprio
 piso (prêmio = 25% de todo o saldo retido) — `ORCAMENTO_LINHA_4PCT` só se quiser uma marca separada. Demais: `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`.
 
+**Serviço (subtipo fiscal 09)** (22/09/2026): produto de serviço não tem preço de tabela nem saldo.
+Entra no orçamento com quantidade 1 (travada) e o preço que o vendedor digita no unitário; sem
+preço não sai ("Informe o preço"). Fica fora de toda conferência de saldo (grade, decisão ao
+fechar, `conferir`, aviso do PDF) — `servico` no produto, lido de `PRODUTOS.SUBTIPO`.
+
 **Promoção: a empresa absorve metade** (22/09/2026). Item em promoção sai pelo preço da campanha, quase
 sempre abaixo de custo × piso; dessa falta só **metade** sai da bolsa do vendedor
 (`absorcaoPromocao()` em regua.ts). Vale na projeção do orçamento (`absorvido` na rota da bolsa /
@@ -257,7 +262,9 @@ importado no Celta" (cabeçalho do editor e lista) abre a mesma pergunta depois.
   `desfecho_ref` (se vazio). Já importado → devolve o nº guardado sem chamar a API.
 - Só FECHADO importa; sem vendedor ou sem itens = 400; API fora = 503; recusa do
   Celta = 502 com a mensagem da API.
-- **Observação no Celta = justificativa da alçada** (`justificativaAlcada()` em `celta.ts`), para o
+- **Observação no Celta = justificativa da alçada** (`justificativaAlcada()` em `celta.ts`; orçamento
+  que se compensou sozinho sai como "N itens abaixo do limite, compensado no próprio orçamento", e o
+  item como "compensado" — `compensacaoOrcamento()`, com o piso vigente em `piso_bolsa`), para o
   gerente liberar sem abrir a intranet: vendedor, se está dentro do limite ou abaixo do mínimo
   (com quem aprovou e quando), desconto total, desconto do mês antes/depois e, item a item,
   desconto dado × máximo da faixa (ok / usa a bolsa / abaixo do mínimo). Sem custo nem R$,

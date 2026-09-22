@@ -24,6 +24,8 @@ export interface ProdutoErp {
   REFERENCIA: string | null;
   UNIDADE: string | null;
   APLICACOES: string | null;
+  /** subtipo fiscal do cadastro; '09' = serviço (sem estoque, sem preço de tabela) */
+  SUBTIPO: string | null;
   SUBGRP_CODIGO: number | null;
   MAR_CODIGO: number | null;
   ESTOQUE_DISPONIVEL: number;
@@ -52,7 +54,7 @@ export interface ProdutoErp {
 /** Marca, subgrupo e grupo chegam por JOIN (catálogo: `marca`, `subgrupo`, `grupo` via subgrupo). */
 const CAMPOS_PRODUTO: Array<string | { campo: string; como: string }> = [
   'PRO_CODIGO', 'PRO_DESCRICAO', 'REFERENCIA', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'UNIDADE', 'APLICACOES',
-  'SUBGRP_CODIGO', 'MAR_CODIGO', 'NCM', 'LOCALIZACAO', 'CODIGO_BARRAS', 'COMERCIALIZAVEL',
+  'SUBGRP_CODIGO', 'MAR_CODIGO', 'NCM', 'LOCALIZACAO', 'CODIGO_BARRAS', 'COMERCIALIZAVEL', 'SUBTIPO',
   'ESTOQUE_DISPONIVEL', 'ESTOQUE_RESERVADO', 'ESTOQUE_FORA_ESTABELECIMENTO', 'ESTOQUE_EM_TERCEIROS',
   'PRECO_VENDA', 'PRECO1', 'PRECO2', 'PRECO3', 'PRECO4', 'PRECO5',
   'PRECO6', 'PRECO7', 'PRECO8', 'PRECO9', 'PRECO10',
@@ -253,7 +255,7 @@ export class OrcamentoErpRepository {
     p.INATIVO = (r.INATIVO ?? '').toString().trim() || null;
     p.COMERCIALIZAVEL = (r.COMERCIALIZAVEL ?? '').toString().trim() || null;
     p.PRO_DESCRICAO = (r.PRO_DESCRICAO ?? '').toString().trim();
-    for (const k of ['MARCA', 'SUBGRUPO', 'GRUPO', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'CODIGO_BARRAS', 'NCM', 'LOCALIZACAO', 'REFERENCIA', 'UNIDADE']) {
+    for (const k of ['MARCA', 'SUBGRUPO', 'GRUPO', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'CODIGO_BARRAS', 'NCM', 'LOCALIZACAO', 'REFERENCIA', 'UNIDADE', 'SUBTIPO']) {
       p[k] = (r[k] ?? '').toString().trim() || null;
     }
     return p as ProdutoErp;

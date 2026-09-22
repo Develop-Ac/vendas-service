@@ -18,6 +18,11 @@ export interface ItemParaCelta {
   acima_alcada?: boolean;
   faixa?: string | null;
   classe?: string | null;
+  /** limite que valeu na linha (preço mínimo em vigor) e custo de referência — para dizer o que foi compensado */
+  preco_minimo?: number | null;
+  custo_ref?: number | null;
+  promocao_codigo?: number | null;
+  fora_promocao?: boolean;
 }
 
 export interface OrcamentoParaCelta {
@@ -36,7 +41,36 @@ export interface OrcamentoParaCelta {
   aprovado_por?: string | null;
   aprovado_em?: Date | string | null;
   itens?: ItemParaCelta[];
+  /** piso da bolsa (custo × piso) vigente — para a conta da compensação na observação */
+  piso_bolsa?: number | null;
 }
+
+/**
+ * Compensação do orçamento: linhas que ficaram abaixo do limite em vigor SEM pedir aprovação
+ * (o orçamento inteiro fechou ≥ 0 contra custo × piso, a metade da promoção que a empresa
+ * absorve incluída) e o resultado dessa conta — o valor fica fora da observação (pode sair
+ * impressa para o cliente); só o fato vai. Sem piso, não há como contar.
+ */
+export function compensacaoOrcamento(o: OrcamentoParaCelta): { itens: number[]; resultado: number } | null {
+  const piso = o.piso_bolsa ?? 0;
+  if (!(piso > 0)) return null;
+  const itens = (o.itens ?? []).filter((i) => !i.acima_alcada && (i.preco_minimo ?? 0) > 0 && unitarioDe(i) < (i.preco_minimo as number) - 0.005).map((i) => i.pro_codigo);
+  if (!itens.length) return null;
+  let resultado = 0;
+  for (const i of o.itens ?? []) {
+    const custo = Number(i.custo_ref ?? 0);
+    if (!(custo > 0)) continue; // sem custo é neutro
+    const preco = unitarioDe(i);
+    const qtd = Number(i.quantidade);
+    let linha = (preco - custo * piso) * qtd;
+    if (i.promocao_codigo != null && !i.fora_promocao && linha < 0) linha /= 2; // metade da promoção é da empresa
+    resultado += linha;
+  }
+  return { itens, resultado: Math.round(resultado * 100) / 100 };
+}
+
+/** preço cobrado na linha: unitário fechado, senão tabela menos o desconto */
+const unitarioDe = (i: ItemParaCelta) => (Number(i.preco_unit ?? 0) > 0 ? Number(i.preco_unit) : Number(i.preco_tabela) * (1 - Number(i.desc_pct)));
 
 const pct = (v: number | null | undefined) => (v == null ? '—' : `${(v * 100).toFixed(1).replace('.', ',')}%`);
 const dataBr = (d: Date | string | null | undefined) => {
@@ -56,9 +90,12 @@ export function justificativaAlcada(o: OrcamentoParaCelta): string {
   const vend = [o.rep_codigo, o.rep_nome].filter(Boolean).join(' ');
   linhas.push(`Intranet ORC-${String(o.numero).padStart(6, '0')}${vend ? ` · vendedor ${vend}` : ''}`);
   const aprov = o.aprovado_por ? `aprovado por ${o.aprovado_por}${dataBr(o.aprovado_em) ? ` em ${dataBr(o.aprovado_em)}` : ''}` : '';
+  const comp = compensacaoOrcamento(o);
   const alcada = o.acima_alcada
     ? `Alçada: abaixo do mínimo da régua${aprov ? `, ${aprov}` : ' — SEM aprovação registrada'}.`
-    : `Alçada: dentro do limite do vendedor${aprov ? ` (${aprov})` : ''}.`;
+    : comp
+      ? `Alçada: ${comp.itens.length === 1 ? '1 item abaixo do limite' : `${comp.itens.length} itens abaixo do limite`}, compensado no próprio orçamento (o conjunto fecha no piso ou acima), sem aprovação.`
+      : `Alçada: dentro do limite do vendedor${aprov ? ` (${aprov})` : ''}.`;
   const mes = o.bolsa_pct_antes != null && o.bolsa_pct_depois != null ? ` Desconto do mês: ${pct(o.bolsa_pct_antes)} -> ${pct(o.bolsa_pct_depois)}.` : '';
   linhas.push(`${alcada} Desconto total ${pct(o.desc_pct ?? 0)}.${mes}`);
   const comDesc = (o.itens ?? []).filter((i) => Number(i.desc_pct) > 0);
@@ -66,7 +103,7 @@ export function justificativaAlcada(o: OrcamentoParaCelta): string {
     const partes = comDesc.map((i) => {
       const max = i.desc_max_pct;
       const faixa = [i.faixa, i.classe].filter(Boolean).join(' ');
-      const situacao = i.acima_alcada ? 'abaixo do mínimo' : max != null && Number(i.desc_pct) > Number(max) + 1e-9 ? 'usa a bolsa' : 'ok';
+      const situacao = i.acima_alcada ? 'abaixo do mínimo' : comp?.itens.includes(i.pro_codigo) ? 'compensado' : max != null && Number(i.desc_pct) > Number(max) + 1e-9 ? 'usa a bolsa' : 'ok';
       return `${i.pro_codigo} ${pct(Number(i.desc_pct))} (máx ${pct(max)}${faixa ? `, ${faixa}` : ''}, ${situacao})`;
     });
     linhas.push(`Itens com desconto: ${partes.join('; ')}`);

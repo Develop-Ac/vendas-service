@@ -1,4 +1,4 @@
-import { chaveIdempotencia, corpoParaCelta, justificativaAlcada } from './celta';
+import { chaveIdempotencia, compensacaoOrcamento, corpoParaCelta, justificativaAlcada } from './celta';
 
 const base = {
   id: 'ckx1',
@@ -78,6 +78,27 @@ describe('justificativaAlcada', () => {
         'Itens com desconto: 1 5,0% (máx 7,0%, 2B GERAL, ok); 2 9,0% (máx 7,0%, 2B GERAL, usa a bolsa); 3 12,0% (máx 7,0%, abaixo do mínimo)',
     );
     expect(t).not.toMatch(/R\$/);
+  });
+
+  it('orçamento compensado: diz quantos itens ficaram abaixo do limite e o resultado contra o piso', () => {
+    const t = justificativaAlcada({
+      ...base,
+      acima_alcada: false,
+      piso_bolsa: 1.5,
+      itens: [
+        // abaixo do limite (mínimo 140) sem aprovação: compensado; custo 100 → −5 contra o piso
+        { pro_codigo: 1, quantidade: 1, preco_tabela: 160, preco_unit: 145, desc_pct: 0.09375, desc_max_pct: 0.05, preco_minimo: 152, custo_ref: 100 },
+        // paga a conta: custo 100, vendido a 200 → +50
+        { pro_codigo: 2, quantidade: 1, preco_tabela: 200, preco_unit: 200, desc_pct: 0, desc_max_pct: 0.05, preco_minimo: 190, custo_ref: 100 },
+      ],
+    });
+    expect(t).toContain('Alçada: 1 item abaixo do limite, compensado no próprio orçamento (o conjunto fecha no piso ou acima), sem aprovação.');
+    expect(compensacaoOrcamento({ ...base, piso_bolsa: 1.5, itens: [
+      { pro_codigo: 1, quantidade: 1, preco_tabela: 160, preco_unit: 145, desc_pct: 0.09375, preco_minimo: 152, custo_ref: 100 },
+      { pro_codigo: 2, quantidade: 1, preco_tabela: 200, preco_unit: 200, desc_pct: 0, preco_minimo: 190, custo_ref: 100 },
+    ] })).toEqual({ itens: [1], resultado: 45 });
+    expect(t).not.toMatch(/R\$/);
+    expect(t).toContain('1 9,4% (máx 5,0%, compensado)');
   });
 
   it('avisa quando está abaixo do mínimo sem aprovação', () => {
