@@ -320,7 +320,7 @@ export class OrcamentoController {
   @ApiOperation({
     summary: 'Trava de orçamento NOVO do vendedor.',
     description:
-      'travado = orcamentoBloqueado no cadastro E ao menos um orçamento divergente (comparado = false) sem liberadogerencia. Liberado pela gerência não trava.',
+      'travado = existe orçamento do rep importado no Celta, comparado = false, com divergência detectada pelo comparativo (liberadogerencia = false) e ainda não liberado pela gerência. liberadogerencia = true nunca trava.',
   })
   trava(@Param('rep_codigo', ParseIntPipe) rep_codigo: number) {
     return this.service.trava(rep_codigo);

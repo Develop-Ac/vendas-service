@@ -441,7 +441,8 @@ export class OrcamentoPrismaRepository {
       created_at: o.created_at,
       updated_at: o.updated_at,
       comparado: o.comparado ?? null,
-      liberadogerencia: o.liberadogerencia ?? false,
+      // null = sem divergência detectada · false = divergente aguardando gerência · true = liberado
+      liberadogerencia: o.liberadogerencia ?? null,
       itens: Array.isArray(o.itens) ? o.itens.map((i: any) => this.mapItem(i)) : undefined,
     };
   }
@@ -486,22 +487,38 @@ export class OrcamentoPrismaRepository {
   }
 
   /**
-   * Trava de orçamento NOVO do vendedor: `orcamentoBloqueado` no cadastro E ao
-   * menos um orçamento divergente (importado, comparado = false) que a gerência
-   * NÃO liberou (`liberadogerencia` ≠ true). Liberado pela gerência não trava,
-   * mesmo que o comparativo continue divergindo.
+   * `liberadogerencia` do orçamento tem três estados:
+   *   null  = nenhuma divergência detectada (ou ainda sem condicional);
+   *   false = o comparativo (cron ou botão) DIVERGIU e a gerência ainda não liberou;
+   *   true  = a gerência liberou (POST /orcamentoBloqueado do sistema-service).
+   * Marca a divergência sem sobrescrever um `true`.
+   */
+  async marcarDivergente(id: string) {
+    await this.prisma.ven_orcamento.updateMany({ where: { id, liberadogerencia: null }, data: { liberadogerencia: false } });
+  }
+
+  /**
+   * Trava de orçamento NOVO do vendedor: existe orçamento do rep, importado no
+   * Celta e ainda não comparado, cuja divergência foi detectada e a gerência NÃO
+   * liberou. Vale a marca no orçamento (`liberadogerencia = false`); o flag
+   * `orcamentoBloqueado` do cadastro entra só como retaguarda para orçamentos
+   * bloqueados antes da marca existir (`liberadogerencia` ainda null).
+   * Liberado pela gerência (`true`) nunca trava, mesmo que continue divergindo.
    */
   async travaDoRep(rep_codigo: number) {
-    const [usuarios, pendentes] = await Promise.all([
+    const [usuarios, candidatos] = await Promise.all([
       this.prisma.sis_usuarios.findMany({ where: { vendas_rep_codigo: rep_codigo, trash: 0 }, select: { orcamentoBloqueado: true } }),
       this.prisma.ven_orcamento.findMany({
         where: { rep_codigo, comparado: false, celta_orcamento: { not: null }, NOT: { liberadogerencia: true } },
-        select: { id: true, numero: true, celta_orcamento: true, cli_nome: true },
+        select: { id: true, numero: true, celta_orcamento: true, cli_nome: true, liberadogerencia: true },
         orderBy: { celta_importado_em: 'asc' },
       }),
     ]);
     const bloqueado = usuarios.some((u) => u.orcamentoBloqueado === true);
-    return { rep_codigo, bloqueado, pendentes, travado: bloqueado && pendentes.length > 0 };
+    const pendentes = candidatos
+      .filter((c) => c.liberadogerencia === false || bloqueado)
+      .map(({ liberadogerencia: _l, ...c }) => c);
+    return { rep_codigo, bloqueado, pendentes, travado: pendentes.length > 0 };
   }
 
   /** Comparativo bateu em tudo: comparado = true. */
@@ -531,6 +548,10 @@ export class OrcamentoPrismaRepository {
   async gravarComparacao(id: string, comparado: boolean, rep_codigo: number | null, liberadoGerencia = false) {
     await this.prisma.$transaction(async (tx) => {
       await tx.ven_orcamento.update({ where: { id }, data: { comparado } });
+      // Divergiu sem liberação: marca no orçamento (null → false) — é isso que trava.
+      if (!comparado && !liberadoGerencia) {
+        await tx.ven_orcamento.updateMany({ where: { id, liberadogerencia: null }, data: { liberadogerencia: false } });
+      }
       if (!comparado && rep_codigo != null && !liberadoGerencia) {
         await tx.sis_usuarios.updateMany({ where: { vendas_rep_codigo: rep_codigo }, data: { orcamentoBloqueado: true } });
       }

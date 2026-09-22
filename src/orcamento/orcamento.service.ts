@@ -1427,7 +1427,10 @@ export class OrcamentoService {
           r.divergentes++;
           // Liberado pela gerência: segue na fila (vira comparado quando o Celta for
           // corrigido), mas não bloqueia o vendedor de novo.
-          if (o.rep_codigo == null || o.liberadogerencia === true) continue;
+          if (o.liberadogerencia === true) continue;
+          // A marca no orçamento é o que trava a criação até a gerência liberar.
+          await this.db.marcarDivergente(o.id);
+          if (o.rep_codigo == null) continue;
           const mudou = await this.db.bloquearRep(o.rep_codigo);
           if (mudou > 0) {
             r.bloqueios++;
