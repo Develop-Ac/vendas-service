@@ -126,6 +126,7 @@ export class OrcamentoController {
   @ApiQuery({ name: 'sem_custo', required: false, description: 'Total dos itens SEM custo no cadastro (entram neutros)' })
   @ApiQuery({ name: 'm1a', required: false, description: 'Total líquido dos itens MIX 1 faixa A (idem m1b, m1c, m1d) — projeção da comissão' })
   @ApiQuery({ name: 'm23', required: false, description: 'Total líquido dos itens MIX 2/3 (e sem faixa) — projeção da comissão' })
+  @ApiQuery({ name: 'absorvido', required: false, description: 'Promoção: o que a empresa absorve neste orçamento (metade da falta contra custo × piso nas linhas em promoção)' })
   bolsa(
     @Param('rep', ParseIntPipe) rep: number,
     @Query('total') total?: string,
@@ -137,6 +138,7 @@ export class OrcamentoController {
     @Query('m1c') m1c?: string,
     @Query('m1d') m1d?: string,
     @Query('m23') m23?: string,
+    @Query('absorvido') absorvido?: string,
   ) {
     const t = toNum(total);
     return this.service.bolsa(
@@ -145,6 +147,7 @@ export class OrcamentoController {
         ? {
             receita: t, desconto: toNum(desconto) ?? 0, custo: toNum(custo) ?? 0, sem_custo: toNum(semCusto) ?? 0,
             m1a: toNum(m1a), m1b: toNum(m1b), m1c: toNum(m1c), m1d: toNum(m1d), m23: toNum(m23),
+            absorvido: toNum(absorvido) ?? 0,
           }
         : undefined,
     );

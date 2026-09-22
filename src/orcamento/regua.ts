@@ -505,6 +505,12 @@ export interface EntradaAlcada {
   piso_bolsa: number;
   /** saldo da bolsa depois deste orçamento; null = bolsa indisponível. */
   saldo_apos: number | null;
+  /**
+   * O ORÇAMENTO se compensa sozinho: a soma de (preço − custo × piso) das linhas com custo é ≥ 0,
+   * sem contar a bolsa do mês. Um item abaixo do limite pago por outro acima não traz prejuízo,
+   * então não vai ao gestor (22/09/2026). Abaixo do custo continua não saindo (montarItens).
+   */
+  compensa?: boolean;
 }
 
 export interface Alcada {
@@ -512,8 +518,10 @@ export interface Alcada {
   bolsa_cobre: boolean;
   /** limite em vigor para o item (mínimo cheio com bolsa; por quantidade sem). */
   minimo_vigente: number;
-  /** abaixo do limite em vigor ou do piso absoluto → gestor. */
+  /** abaixo do limite em vigor ou do piso absoluto → gestor — salvo quando o orçamento se compensa. */
   precisa_aprovacao: boolean;
+  /** o orçamento inteiro fecha ≥ 0 contra custo × piso: nenhuma linha pede aprovação. */
+  compensa: boolean;
   /** abaixo do piso absoluto (custo × 1,25). */
   abaixo_piso: boolean;
   /** passou do limite por quantidade — com bolsa é ela que paga. */
@@ -530,10 +538,12 @@ export function alcadaDoItem(e: EntradaAlcada): Alcada {
   const abaixoPiso = e.piso_bolsa > 0 && e.preco < e.piso_bolsa - 0.005;
   const abaixoQtd = e.minimo_qtd > 0 && e.preco < e.minimo_qtd - 0.005;
   const abaixoVigente = minimo > 0 && e.preco < minimo - 0.005;
+  const compensa = !!e.compensa;
   return {
     bolsa_cobre: cobre,
     minimo_vigente: minimo,
-    precisa_aprovacao: abaixoPiso || abaixoVigente,
+    precisa_aprovacao: !compensa && (abaixoPiso || abaixoVigente),
+    compensa,
     abaixo_piso: abaixoPiso,
     usa_bolsa: cobre && abaixoQtd,
   };
@@ -551,9 +561,24 @@ export interface BolsaEntrada {
   desconto_orc?: number;
   custo_orc?: number;
   sem_custo_orc?: number;
+  /** Promoção: metade do que o item tira da bolsa é da empresa — no mês (orçamentos fechados) e neste orçamento. */
+  absorvido_mtd?: number;
+  absorvido_orc?: number;
   piso?: number;
   linha?: number;
   premio_pct?: number;
+}
+
+/**
+ * PROMOÇÃO — a empresa absorve METADE (22/09/2026). Item em promoção sai pelo preço da campanha,
+ * que costuma ficar abaixo de custo × piso; essa falta tirava a bolsa inteira do vendedor. Agora
+ * só metade sai da bolsa: a outra metade é da empresa. Devolve o que a empresa absorve na linha
+ * (≥ 0). Item sem custo é neutro. Vale para a bolsa e para a alçada, não para o prêmio (que é
+ * sobre o lucro real).
+ */
+export function absorcaoPromocao(preco: number, custo: number | null | undefined, piso: number, qtd = 1): number {
+  if (!custo || custo <= 0 || !(piso > 0)) return 0;
+  return round2((Math.max(0, custo * piso - preco) * qtd) / 2);
 }
 
 export interface Bolsa {
@@ -572,6 +597,11 @@ export interface Bolsa {
   /** O que sobra depois do desconto dado: receita − custo × piso. É o que ainda cabe. */
   saldo: number;
   saldo_apos: number;
+  /** Só ESTE orçamento contra custo × piso (sem custo = neutro, promoção com a metade da empresa): ≥ 0 é orçamento que se compensa sozinho. */
+  orcamento: number;
+  /** o que a empresa absorve das promoções: no mês (orçamentos fechados) e neste orçamento. */
+  absorvido_mtd: number;
+  absorvido_orc: number;
   /** Lucro acima da linha dos 4%: receita − custo × linha (negativo = abaixo da linha). */
   acima_linha: number;
   acima_linha_apos: number;
@@ -597,8 +627,11 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
   const recOrc = Math.max(0, e.receita_orc ?? 0);
   // Item sem custo no cadastro é neutro: conta como vendido exatamente no piso.
   const custoOrc = Math.max(0, e.custo_orc ?? 0) + Math.max(0, e.sem_custo_orc ?? 0) / piso;
-  const saldo = receita - custo * piso;
-  const saldoApos = saldo + (recOrc - custoOrc * piso);
+  // promoção: a metade que a empresa absorve volta para a bolsa (não para a linha do prêmio)
+  const absMtd = Math.max(0, e.absorvido_mtd ?? 0);
+  const absOrc = Math.max(0, e.absorvido_orc ?? 0);
+  const saldo = receita - custo * piso + absMtd;
+  const saldoApos = saldo + (recOrc - custoOrc * piso) + absOrc;
   const acima = receita - custo * linha;
   const acimaApos = acima + (recOrc - custoOrc * linha);
   return {
@@ -614,6 +647,9 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
     gerada: round2(receita + desc - custo * piso),
     saldo: round2(saldo),
     saldo_apos: round2(saldoApos),
+    orcamento: round2(recOrc - custoOrc * piso + absOrc),
+    absorvido_mtd: round2(absMtd),
+    absorvido_orc: round2(absOrc),
     acima_linha: round2(acima),
     acima_linha_apos: round2(acimaApos),
     premio_estimado: round2(premio * Math.max(0, acima)),

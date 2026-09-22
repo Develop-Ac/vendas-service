@@ -1,4 +1,5 @@
 import {
+  absorcaoPromocao,
   alcadaDoItem,
   avaliarItem,
   calcularBolsa,
@@ -177,6 +178,29 @@ describe('alcadaDoItem', () => {
     expect(neg.usa_bolsa).toBe(false);
     expect(alcadaDoItem({ ...base, preco: 930, saldo_apos: -10 }).precisa_aprovacao).toBe(false);
     expect(alcadaDoItem({ ...base, preco: 860, saldo_apos: null }).precisa_aprovacao).toBe(true);
+  });
+  it('orçamento que se compensa sozinho não vai ao gestor, mesmo sem bolsa ou abaixo do piso', () => {
+    const semBolsa = alcadaDoItem({ ...base, preco: 860, saldo_apos: -10, compensa: true });
+    expect(semBolsa.precisa_aprovacao).toBe(false);
+    expect(semBolsa.compensa).toBe(true);
+    expect(semBolsa.minimo_vigente).toBe(925); // o limite informado continua o da escala; só a aprovação cai
+    const piso = alcadaDoItem({ ...base, preco: 800, saldo_apos: 9999, compensa: true });
+    expect(piso.abaixo_piso).toBe(true);
+    expect(piso.precisa_aprovacao).toBe(false);
+  });
+  it('promoção: a empresa absorve metade da falta contra o piso', () => {
+    expect(absorcaoPromocao(120, 100, 1.5, 2)).toBe(30); // falta 30 por un × 2 un / 2
+    expect(absorcaoPromocao(160, 100, 1.5, 2)).toBe(0); // acima do piso: nada a absorver
+    expect(absorcaoPromocao(120, null, 1.5)).toBe(0); // sem custo: neutro
+    const b = calcularBolsa({ receita_mtd: 1000, custo_mtd: 800, desconto_mtd: 0, receita_orc: 120, custo_orc: 100, absorvido_orc: 15, absorvido_mtd: 40, piso: 1.5, linha: 1.5 } as Parameters<typeof calcularBolsa>[0]);
+    expect(b.saldo).toBe(-160); // 1000 − 1200 + 40
+    expect(b.saldo_apos).toBe(-175); // −160 + (120 − 150) + 15
+    expect(b.orcamento).toBe(-15);
+    expect(b.acima_linha).toBe(-200); // prêmio é sobre o lucro real: sem a metade da empresa
+  });
+  it('calcularBolsa expõe quanto só o orçamento rende contra o piso', () => {
+    const b = calcularBolsa({ receita_mtd: 0, custo_mtd: 0, desconto_mtd: 0, receita_orc: 1600, custo_orc: 1000, piso: 1.5 } as Parameters<typeof calcularBolsa>[0]);
+    expect(b.orcamento).toBe(100);
   });
   it('abaixo do piso absoluto é gestor mesmo com bolsa sobrando', () => {
     const a = alcadaDoItem({ ...base, preco: 800, saldo_apos: 9999 });

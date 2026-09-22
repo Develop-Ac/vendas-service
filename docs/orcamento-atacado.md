@@ -78,6 +78,13 @@ próprio piso** (saldo retido = lucro a mais). A resposta traz `volume` (média,
 próximo degrau e quanto falta). Modo `fixo` (**em uso desde 08/09/2026, piso 1,538**): `ORCAMENTO_BOLSA_PISO`; a linha do prêmio é o próprio
 piso (prêmio = 25% de todo o saldo retido) — `ORCAMENTO_LINHA_4PCT` só se quiser uma marca separada. Demais: `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`.
 
+**Promoção: a empresa absorve metade** (22/09/2026). Item em promoção sai pelo preço da campanha, quase
+sempre abaixo de custo × piso; dessa falta só **metade** sai da bolsa do vendedor
+(`absorcaoPromocao()` em regua.ts). Vale na projeção do orçamento (`absorvido` na rota da bolsa /
+`promos` de `montarItens`) e no mês, somando as linhas em promoção dos orçamentos **FECHADOS** do
+vendedor na janela comissional (`promosFechadasNoMes`). O BI não sabe o que foi promoção, então
+venda de promoção fechada direto no Celta não entra. O prêmio não muda: é sobre o lucro real.
+
 **Todo desconto subtrai da bolsa, dentro ou fora do teto da faixa.** O teto da faixa só define a
 alçada, e qual teto vale depende da bolsa (`alcadaDoItem()` em regua.ts, decidido em
 `aplicarAlcada()` depois de conhecer o saldo):
@@ -86,7 +93,11 @@ alçada, e qual teto vale depende da bolsa (`alcadaDoItem()` em regua.ts, decidi
   faixa** — a escala por quantidade não trava; o desconto é decisão do vendedor e sai da bolsa;
 - **sem bolsa** (saldo negativo ou indisponível): vale a escala por quantidade
   (`escala_volume`: 50% / 75% / 100% do máximo);
-- abaixo do limite em vigor, ou abaixo de `preco_piso_bolsa` (custo × 1,25), só com o gestor.
+- abaixo do limite em vigor, ou abaixo de `preco_piso_bolsa` (custo × 1,25), só com o gestor —
+  **salvo quando o orçamento se compensa sozinho** (22/09/2026): se a soma de (preço − custo ×
+  piso) das linhas com custo deste orçamento é ≥ 0, sem contar a bolsa do mês, nenhuma linha vai
+  ao gestor (`compensa` em `alcadaDoItem()`, vindo de `calcularBolsa().orcamento`); a tela mostra
+  "Compensa no orçamento" na linha. Abaixo do custo continua não saindo.
 
 A linha gravada guarda o limite que valeu (`desc_max_pct`, `preco_minimo`) e `acima_alcada`
 por item; `acima_alcada` do cabeçalho = alguma linha abaixo do limite em vigor ou do piso.

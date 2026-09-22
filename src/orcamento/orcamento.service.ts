@@ -21,7 +21,7 @@ import {
   degrauMix1,
   FAIXAS,
   FaixaVolume,
-  ehTabelaAtacado, precoDaTabela,
+  absorcaoPromocao, ehTabelaAtacado, precoDaTabela,
   RegraFaixa,
   round2,
 } from './regua';
@@ -382,11 +382,15 @@ export class OrcamentoService {
    */
   async bolsa(
     rep: number,
-    orc?: { receita: number; desconto: number; custo: number; sem_custo: number; m1a?: number; m1b?: number; m1c?: number; m1d?: number; m23?: number },
+    orc?: {
+      receita: number; desconto: number; custo: number; sem_custo: number; m1a?: number; m1b?: number; m1c?: number; m1d?: number; m23?: number;
+      /** promoção: o que a empresa absorve neste orçamento — já somado pela tela, ou as linhas para somar aqui com o piso */
+      absorvido?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>;
+    },
   ) {
     const p = this.parametros();
     const periodo = mesComissional();
-    const [v, clientes, { piso, linha, pisoDre, degrau, vol }, celulas, cfgComissao] = await Promise.all([
+    const [v, clientes, { piso, linha, pisoDre, degrau, vol }, celulas, cfgComissao, promosMes] = await Promise.all([
       this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
@@ -401,7 +405,14 @@ export class OrcamentoService {
         this.logger.warn(`Parâmetros da comissão indisponíveis: ${(e as Error).message}`);
         return null;
       }),
+      this.db.promosFechadasNoMes(rep, periodo.inicio, periodo.fim).catch((e) => {
+        this.logger.warn(`Promoções fechadas no mês indisponíveis (rep ${rep}): ${(e as Error).message}`);
+        return [] as Array<{ preco: number; custo: number | null; qtd: number }>;
+      }),
     ]);
+    // promoção: metade do que o item tira da bolsa é da empresa — mês (orçamentos FECHADOS) e este orçamento
+    const somaAbsorvido = (l: Array<{ preco: number; custo: number | null; qtd: number }>) => l.reduce((s, x) => s + absorcaoPromocao(x.preco, x.custo, piso, x.qtd), 0);
+    const absorvidoOrc = orc?.absorvido ?? (orc?.promos ? somaAbsorvido(orc.promos) : 0);
     // Comissão do mês como está e como fica com o orçamento (mesma regra do fechamento;
     // sem abatimentos manuais e média de férias — é estimativa para decidir na hora).
     const comissao = celulas && cfgComissao ? comissaoComOrcamento(celulas, celulasDoOrcamento(orc ?? {}), cfgComissao) : null;
@@ -413,6 +424,8 @@ export class OrcamentoService {
       desconto_orc: orc?.desconto ?? 0,
       custo_orc: orc?.custo ?? 0,
       sem_custo_orc: orc?.sem_custo ?? 0,
+      absorvido_mtd: somaAbsorvido(promosMes),
+      absorvido_orc: absorvidoOrc,
       piso,
       linha,
       premio_pct: p.premio_pct,
@@ -939,6 +952,8 @@ export class OrcamentoService {
     // Insumos da alçada de cada linha; a decisão fica para depois de conhecer a bolsa (aplicarAlcada).
     const alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> = [];
     let subtotal = 0, total = 0, custoOrc = 0, semCusto = 0;
+    // linhas em promoção (preço fechado da campanha): a bolsa absorve só metade da falta contra o piso
+    const promos: Array<{ preco: number; custo: number | null; qtd: number }> = [];
 
     itens.forEach((i, idx) => {
       const p = porCodigo.get(i.pro_codigo);
@@ -988,6 +1003,7 @@ export class OrcamentoService {
       const linhaTotal = round2(preco * qtd);
       if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
       else semCusto += linhaTotal;
+      if (!fora && p.promocao) promos.push({ preco, custo: p.custo, qtd });
       // linha com acréscimo entra no subtotal pelo próprio preço: o acréscimo não abate o desconto das outras
       subtotal += round2(Math.max(tabela, preco) * qtd);
       total += linhaTotal;
@@ -1036,6 +1052,7 @@ export class OrcamentoService {
       alcadas,
       custo: round2(custoOrc),
       sem_custo: round2(semCusto),
+      promos,
       produtos,
     };
   }
@@ -1061,18 +1078,20 @@ export class OrcamentoService {
    * Fotografia da bolsa ao salvar: % de desconto do mês antes/depois (colunas
    * bolsa_pct_*) e o saldo depois deste orçamento — quem decide a alçada.
    */
-  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number }) {
+  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }> }) {
     try {
-      const b = await this.bolsa(rep, { receita: m.total, desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo });
+      const b = await this.bolsa(rep, { receita: m.total, desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos });
       const brutoDepois = b.bolsa.bruto_mtd + m.subtotal;
       return {
         antes: b.bolsa.pct_desconto,
         depois: brutoDepois > 0 ? Math.round(((b.bolsa.desconto_mtd + m.desconto_total) / brutoDepois) * 10000) / 10000 : 0,
         saldo_apos: b.bolsa.saldo_apos as number | null,
+        // o orçamento sozinho fecha ≥ 0 contra custo × piso: se compensa, ninguém vai ao gestor
+        compensa: b.bolsa.orcamento >= -0.005,
       };
     } catch (e) {
       this.logger.warn(`Bolsa indisponível ao salvar (rep ${rep}): ${(e as Error).message}`);
-      return { antes: null, depois: null, saldo_apos: null };
+      return { antes: null, depois: null, saldo_apos: null, compensa: false };
     }
   }
 
@@ -1081,17 +1100,19 @@ export class OrcamentoService {
    * este orçamento) ≥ 0 vale o máximo inteiro da faixa; sem saldo vale a escala
    * por quantidade. Grava na linha o limite que valeu (desc_max_pct / preco_minimo)
    * e devolve se o orçamento precisa do gestor (alguma linha abaixo do limite em
-   * vigor ou do piso absoluto).
+   * vigor ou do piso absoluto). Orçamento que se compensa sozinho (`compensa`) não
+   * precisa: o que um item perde outro paga, e o resultado contra o piso é ≥ 0.
    */
   private aplicarAlcada(
     m: { linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[]; alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> },
     saldoApos: number | null,
+    compensa = false,
   ) {
     let precisa = false;
     m.linhas.forEach((l, i) => {
       const e = m.alcadas[i];
       if (!e) return;
-      const a = alcadaDoItem({ preco: e.preco, minimo_qtd: e.minimo_qtd, minimo_cheio: e.minimo_cheio, piso_bolsa: e.piso_bolsa, saldo_apos: saldoApos });
+      const a = alcadaDoItem({ preco: e.preco, minimo_qtd: e.minimo_qtd, minimo_cheio: e.minimo_cheio, piso_bolsa: e.piso_bolsa, saldo_apos: saldoApos, compensa });
       l.acima_alcada = a.precisa_aprovacao;
       l.preco_minimo = a.minimo_vigente;
       l.desc_max_pct = a.bolsa_cobre ? e.desc_max_cheio : e.desc_max_qtd;
@@ -1127,7 +1148,7 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos),
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         usuario_id: dto.usuario_id ?? null,
@@ -1172,7 +1193,7 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos),
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         aprovado_por: mesmosItens ? atual.aprovado_por : null,
