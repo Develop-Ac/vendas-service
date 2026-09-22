@@ -278,6 +278,8 @@ export class OrcamentoService {
     const dias = dataUlt ? Math.floor((Date.now() - new Date(dataUlt).getTime()) / 86_400_000) : null;
     return {
       ...base,
+      // vendedor da carteira: a tela avisa quando o orçamento é de outro vendedor
+      rep_nome: await this.erp.nomeRepresentante(base.rep_codigo),
       conceito: base.con_codigo != null ? CONCEITO[base.con_codigo] ?? `Conceito ${base.con_codigo}` : null,
       crediario_liberado: liberado,
       valor_em_aberto: emAberto,
