@@ -40,6 +40,7 @@ model avi_avisos {
   updated_at           DateTime               @default(now()) @db.Timestamp(6)
   acao_url             String?
   acao_rotulo          String?                @db.VarChar(40)
+  acao_permite_nao     Boolean                @default(true)
   avi_aviso_alvo       avi_aviso_alvo[]
   avi_regra            avi_regra?             @relation(fields: [regra_id], references: [id], onUpdate: NoAction)
   avi_entrega_whatsapp avi_entrega_whatsapp[]
@@ -94,6 +95,7 @@ model avi_regra {
   updated_at        DateTime     @default(now()) @db.Timestamp(6)
   acao_url_template String?
   acao_rotulo       String?      @db.VarChar(40)
+  acao_permite_nao  Boolean      @default(true)
   avi_avisos        avi_avisos[]
 }
 
@@ -358,6 +360,8 @@ model com_fifo_completo {
   custo_cogs_12m             Decimal?  @db.Decimal(15, 4)
   custo_fonte                String?   @db.VarChar(20)
   margem_unitaria_realizada  Decimal?  @db.Decimal(15, 4)
+  qtd_varejo_12m             Decimal?  @db.Decimal(15, 4)
+  qtd_atacado_12m            Decimal?  @db.Decimal(15, 4)
 
   @@index([teve_alteracao_analise], map: "idx_com_fifo_alteracao")
   @@index([categoria_estocagem], map: "idx_com_fifo_categoria_estocagem")
@@ -549,6 +553,7 @@ model com_nfe_conciliacao {
   auditoria_fiscal_em      DateTime?                  @db.Timestamptz(6)
   auditoria_fiscal_status  String?                    @db.VarChar(20)
   auditoria_alerta_em      DateTime?                  @db.Timestamptz(6)
+  dt_entrada_estoque       DateTime?                  @db.Timestamp(6)
   com_nfe_conciliacao_item com_nfe_conciliacao_item[]
   com_nfe_st_fluxo         com_nfe_st_fluxo?
 }
@@ -2145,6 +2150,7 @@ model ven_orcamento {
   fp_descricao       String?
   celta_importado_em DateTime?            @db.Timestamptz(6)
   comparado          Boolean              @default(false)
+  liberadogerencia   Boolean?
   itens              ven_orcamento_item[]
   ven_venda_perdida  ven_venda_perdida[]
 
@@ -2206,6 +2212,7 @@ model ven_orcamento_item {
   promocao_fim       DateTime?     @db.Date
   qtd_encomenda      Decimal       @default(0) @db.Decimal(15, 3)
   fora_promocao      Boolean       @default(false)
+  acrescimo          Decimal       @default(0) @db.Decimal(15, 2)
   ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([orcamento_id], map: "idx_ven_orcamento_item_orc")

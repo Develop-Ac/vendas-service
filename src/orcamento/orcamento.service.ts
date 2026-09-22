@@ -981,6 +981,12 @@ export class OrcamentoService {
   }
 
   async criar(dto: SalvarOrcamentoDto) {
+    // Mesma trava da tela, garantida aqui: bloqueado no cadastro E com divergência
+    // que a gerência não liberou. Os orçamentos existentes seguem editáveis.
+    const trava = await this.db.travaDoRep(dto.rep_codigo);
+    if (trava.travado) {
+      throw new BadRequestException('Criação de orçamento bloqueada para este vendedor: há comparativo divergente com o Celta ainda não liberado pela gerência.');
+    }
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
     const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
@@ -1243,12 +1249,21 @@ export class OrcamentoService {
     // Sem condicional vinculado não há o que comparar: não marca nem bloqueia ninguém.
     if (veredito === 'SEM_CONDICIONAL') return lista;
     const bateu = veredito === 'OK';
-    await this.db.gravarComparacao(id, bateu, o.rep_codigo);
-    if (!bateu) {
+    const liberado = o.liberadogerencia === true;
+    await this.db.gravarComparacao(id, bateu, o.rep_codigo, liberado);
+    if (!bateu && !liberado) {
       this.logger.warn(`Orçamento ${o.numero} (Celta ${o.celta_orcamento}) divergiu no comparativo; vendedor ${o.rep_codigo ?? '-'} bloqueado.`);
       this.avisos.orcamentoBloqueado(o);
     }
     return lista;
+  }
+
+  /**
+   * Trava de orçamento NOVO para a tela: `orcamentoBloqueado` do cadastro é só o
+   * gatilho; quem decide é `liberadogerencia` dos orçamentos divergentes do rep.
+   */
+  trava(rep_codigo: number) {
+    return this.db.travaDoRep(rep_codigo);
   }
  
   /**
@@ -1294,7 +1309,9 @@ export class OrcamentoService {
           this.logger.log(`Comparativo: orçamento ${o.numero} (Celta ${o.celta_orcamento}) bateu — comparado = true.`);
         } else {
           r.divergentes++;
-          if (o.rep_codigo == null) continue;
+          // Liberado pela gerência: segue na fila (vira comparado quando o Celta for
+          // corrigido), mas não bloqueia o vendedor de novo.
+          if (o.rep_codigo == null || o.liberadogerencia === true) continue;
           const mudou = await this.db.bloquearRep(o.rep_codigo);
           if (mudou > 0) {
             r.bloqueios++;

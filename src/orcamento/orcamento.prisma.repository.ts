@@ -341,6 +341,7 @@ export class OrcamentoPrismaRepository {
       created_at: o.created_at,
       updated_at: o.updated_at,
       comparado: o.comparado ?? null,
+      liberadogerencia: o.liberadogerencia ?? false,
       itens: Array.isArray(o.itens) ? o.itens.map((i: any) => this.mapItem(i)) : undefined,
     };
   }
@@ -379,9 +380,28 @@ export class OrcamentoPrismaRepository {
   pendentesComparacao() {
     return this.prisma.ven_orcamento.findMany({
       where: { celta_orcamento: { not: null }, comparado: false },
-      select: { id: true, numero: true, empresa: true, cli_codigo: true, cli_nome: true, rep_codigo: true, rep_nome: true, celta_orcamento: true },
+      select: { id: true, numero: true, empresa: true, cli_codigo: true, cli_nome: true, rep_codigo: true, rep_nome: true, celta_orcamento: true, liberadogerencia: true },
       orderBy: { celta_importado_em: 'asc' },
     });
+  }
+
+  /**
+   * Trava de orçamento NOVO do vendedor: `orcamentoBloqueado` no cadastro E ao
+   * menos um orçamento divergente (importado, comparado = false) que a gerência
+   * NÃO liberou (`liberadogerencia` ≠ true). Liberado pela gerência não trava,
+   * mesmo que o comparativo continue divergindo.
+   */
+  async travaDoRep(rep_codigo: number) {
+    const [usuarios, pendentes] = await Promise.all([
+      this.prisma.sis_usuarios.findMany({ where: { vendas_rep_codigo: rep_codigo, trash: 0 }, select: { orcamentoBloqueado: true } }),
+      this.prisma.ven_orcamento.findMany({
+        where: { rep_codigo, comparado: false, celta_orcamento: { not: null }, NOT: { liberadogerencia: true } },
+        select: { id: true, numero: true, celta_orcamento: true, cli_nome: true },
+        orderBy: { celta_importado_em: 'asc' },
+      }),
+    ]);
+    const bloqueado = usuarios.some((u) => u.orcamentoBloqueado === true);
+    return { rep_codigo, bloqueado, pendentes, travado: bloqueado && pendentes.length > 0 };
   }
 
   /** Comparativo bateu em tudo: comparado = true. */
@@ -403,11 +423,15 @@ export class OrcamentoPrismaRepository {
     return count;
   }
 
-  /** Grava o resultado do comparativo; divergência bloqueia o vendedor (sis_usuarios.vendas_rep_codigo = rep_codigo). */
-  async gravarComparacao(id: string, comparado: boolean, rep_codigo: number | null) {
+  /**
+   * Grava o resultado do comparativo; divergência bloqueia o vendedor
+   * (sis_usuarios.vendas_rep_codigo = rep_codigo), salvo se a gerência já liberou
+   * este orçamento (`liberadoGerencia`).
+   */
+  async gravarComparacao(id: string, comparado: boolean, rep_codigo: number | null, liberadoGerencia = false) {
     await this.prisma.$transaction(async (tx) => {
       await tx.ven_orcamento.update({ where: { id }, data: { comparado } });
-      if (!comparado && rep_codigo != null) {
+      if (!comparado && rep_codigo != null && !liberadoGerencia) {
         await tx.sis_usuarios.updateMany({ where: { vendas_rep_codigo: rep_codigo }, data: { orcamentoBloqueado: true } });
       }
     });
