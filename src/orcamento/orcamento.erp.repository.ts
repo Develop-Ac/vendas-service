@@ -615,6 +615,24 @@ export class OrcamentoErpRepository {
     return mapa;
   }
 
+  /**
+   * Códigos dos produtos de SERVIÇO (subtipo fiscal 09) da empresa 3, em cache por 10 minutos:
+   * ficam fora da bolsa do mês (o BI não traz o subtipo real do cadastro).
+   */
+  async codigosDeServico(): Promise<number[]> {
+    if (this.servicoCache && Date.now() - this.servicoCache.em < 10 * 60_000) return this.servicoCache.codigos;
+    const r = await this.erp.consultar<Record<string, any>>('produtos', {
+      empresa: EMPRESA,
+      campos: ['PRO_CODIGO'],
+      filtros: [{ campo: 'SUBTIPO', op: 'em', valor: ['09', '9'] }],
+      limite: 5000,
+    });
+    const codigos = r.map((x) => Number(x.PRO_CODIGO)).filter((c) => Number.isFinite(c));
+    this.servicoCache = { em: Date.now(), codigos };
+    return codigos;
+  }
+  private servicoCache: { em: number; codigos: number[] } | null = null;
+
   /** Nome do representante, ou null se o código não existe ou o ERP não respondeu. */
   async nomeRepresentante(rep: number | null | undefined): Promise<string | null> {
     if (rep == null) return null;

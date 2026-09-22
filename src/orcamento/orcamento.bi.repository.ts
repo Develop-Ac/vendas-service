@@ -19,6 +19,8 @@ export interface BolsaVendedorRow {
   desconto: number;
   custo: number;
   mix1_liquido: number;
+  /** promoção: metade da falta contra custo × piso, absorvida pela empresa */
+  absorvido: number;
 }
 
 export interface BolsaClienteRow {
@@ -106,22 +108,32 @@ export class OrcamentoBiRepository {
    * `total_desconto` vem NEGATIVO na view, por isso o sinal trocado; o custo
    * (`custo_produto`) já vem negativo na devolução.
    */
-  async bolsaVendedor(rep: number, ano: number, mes: number): Promise<BolsaVendedorRow> {
+  /**
+   * `piso` entra na conta da PROMOÇÃO (flag PROMOCAO da venda): a empresa absorve metade da
+   * falta de cada linha em promoção contra custo × piso (`absorvido`). `servicos` = códigos de
+   * produto de serviço (subtipo 09 no ERP), que ficam fora da bolsa — o Stage_Produtos do BI
+   * não traz o subtipo real, por isso a lista vem do ERP.
+   */
+  async bolsaVendedor(rep: number, ano: number, mes: number, piso = 0, servicos: number[] = []): Promise<BolsaVendedorRow> {
+    const semServico = servicos.length ? `AND v.PRO_CODIGO NOT IN (${servicos.map((c) => Math.trunc(c)).join(',')})` : '';
     const rows = await this.mssql.query<BolsaVendedorRow>(
       `
       SELECT COUNT(DISTINCT CONCAT(v.EMPRESA,'-',v.SERIE,'-',v.NFS)) AS notas,
              COALESCE(SUM(v.liquido_produto), 0)                     AS venda_liquida,
              COALESCE(-SUM(v.total_desconto), 0)                     AS desconto,
              COALESCE(SUM(v.custo_produto), 0)                       AS custo,
-             COALESCE(SUM(CASE WHEN v.MIX_CUSTO = 1 THEN v.liquido_produto END), 0) AS mix1_liquido
+             COALESCE(SUM(CASE WHEN v.MIX_CUSTO = 1 THEN v.liquido_produto END), 0) AS mix1_liquido,
+             COALESCE(SUM(CASE WHEN v.PROMOCAO = 'S' AND v.custo_produto > 0 AND v.custo_produto * @piso > v.liquido_produto
+                                THEN (v.custo_produto * @piso - v.liquido_produto) / 2 END), 0) AS absorvido
       FROM dbo.vw_analise_vendas v
       WHERE v.vendedor_venda = @rep
         AND v.mes_comissional = @mes
         AND v.ano_comissional = @ano
         AND v.local_venda = 'ATACADO'
         AND v.DT_CANCELAMENTO IS NULL
+        ${semServico}
       `,
-      { rep, mes, ano },
+      { rep, mes, ano, piso },
     );
     const r = rows[0] ?? { notas: 0, venda_liquida: 0, desconto: 0, custo: 0, mix1_liquido: 0 };
     return {
@@ -130,6 +142,7 @@ export class OrcamentoBiRepository {
       desconto: Number(r.desconto ?? 0),
       custo: Number(r.custo ?? 0),
       mix1_liquido: Number(r.mix1_liquido ?? 0),
+      absorvido: Number(r.absorvido ?? 0),
     };
   }
 

@@ -254,27 +254,6 @@ export class OrcamentoPrismaRepository {
    * a conferência do recebimento termina. Quem decide se já foi é o ERP (ver o serviço).
    * Janela de 45 dias pela entrada: nota mais velha que isso sem ir para a 3 é caso de cadastro.
    */
-  /**
-   * Linhas em promoção dos orçamentos FECHADOS do vendedor na janela do mês comissional
-   * (desfecho_em): é o que a bolsa do mês precisa para devolver a metade que a empresa
-   * absorve. Só o que passou pela intranet — venda de promoção fechada direto no Celta não
-   * entra (a bolsa do mês vem do BI, que não sabe o que foi promoção).
-   */
-  async promosFechadasNoMes(rep: number, inicio: string, fim: string): Promise<Array<{ preco: number; custo: number | null; qtd: number }>> {
-    const rows = await this.prisma.$queryRaw<Array<{ preco: unknown; custo: unknown; qtd: unknown }>>`
-      SELECT i.preco_unit AS preco, i.custo_ref AS custo, i.quantidade AS qtd
-      FROM ven_orcamento_item i
-      JOIN ven_orcamento o ON o.id = i.orcamento_id
-      WHERE o.rep_codigo = ${rep}
-        AND o.status = 'FECHADO'
-        AND o.desfecho_em >= ${inicio}::date
-        AND o.desfecho_em < ${fim}::date + 1
-        AND i.promocao_codigo IS NOT NULL
-        AND NOT i.fora_promocao
-        AND COALESCE(i.custo_ref, 0) > 0`;
-    return rows.map((r) => ({ preco: Number(r.preco), custo: Number(r.custo), qtd: Number(r.qtd) }));
-  }
-
   async itensDeNfLancada(codigos: number[]): Promise<Array<{ pro_codigo: number; chave_nfe: string; pedido: number; quantidade: number; dt_entrada: string | null }>> {
     if (!codigos.length) return [];
     const rows = await this.prisma.$queryRaw<Array<{ pro_codigo: number; chave_nfe: string; pedido: number; quantidade: unknown; dt_entrada: string | null }>>`

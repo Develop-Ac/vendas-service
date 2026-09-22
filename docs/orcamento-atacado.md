@@ -81,14 +81,17 @@ piso (prêmio = 25% de todo o saldo retido) — `ORCAMENTO_LINHA_4PCT` só se qu
 **Serviço (subtipo fiscal 09)** (22/09/2026): produto de serviço não tem preço de tabela nem saldo.
 Entra no orçamento com quantidade 1 (travada) e o preço que o vendedor digita no unitário; sem
 preço não sai ("Informe o preço"). Fica fora de toda conferência de saldo (grade, decisão ao
-fechar, `conferir`, aviso do PDF) — `servico` no produto, lido de `PRODUTOS.SUBTIPO`.
+fechar, `conferir`, aviso do PDF) e **fora da bolsa** — nem receita, nem custo, nem neutro, no
+orçamento em edição e no mês — `servico` no produto, lido de `PRODUTOS.SUBTIPO`.
 
 **Promoção: a empresa absorve metade** (22/09/2026). Item em promoção sai pelo preço da campanha, quase
 sempre abaixo de custo × piso; dessa falta só **metade** sai da bolsa do vendedor
 (`absorcaoPromocao()` em regua.ts). Vale na projeção do orçamento (`absorvido` na rota da bolsa /
-`promos` de `montarItens`) e no mês, somando as linhas em promoção dos orçamentos **FECHADOS** do
-vendedor na janela comissional (`promosFechadasNoMes`). O BI não sabe o que foi promoção, então
-venda de promoção fechada direto no Celta não entra. O prêmio não muda: é sobre o lucro real.
+`promos` de `montarItens`) e no mês, direto na leitura do BI: a venda tem o flag `PROMOCAO`
+(`vw_analise_vendas`), e `bolsaVendedor` devolve `absorvido` = Σ (custo × piso − líquido) / 2 das
+linhas em promoção com falta. Vale para toda venda do canal, passe ou não pela intranet. O prêmio
+não muda: é sobre o lucro real. **Serviço fica fora da bolsa do mês** (`codigosDeServico()` do ERP
+entra como `NOT IN` na leitura; o `Stage_Produtos` do BI não traz o subtipo real).
 
 **Todo desconto subtrai da bolsa, dentro ou fora do teto da faixa.** O teto da faixa só define a
 alçada, e qual teto vale depende da bolsa (`alcadaDoItem()` em regua.ts, decidido em

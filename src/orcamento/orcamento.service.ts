@@ -21,7 +21,7 @@ import {
   degrauMix1,
   FAIXAS,
   FaixaVolume,
-  absorcaoPromocao, ehTabelaAtacado, precoDaTabela,
+  absorcaoPromocao, colunaTabela, ehTabelaAtacado, precoDaTabela,
   RegraFaixa,
   round2,
 } from './regua';
@@ -393,13 +393,20 @@ export class OrcamentoService {
   ) {
     const p = this.parametros();
     const periodo = mesComissional();
-    const [v, clientes, { piso, linha, pisoDre, degrau, vol }, celulas, cfgComissao, promosMes] = await Promise.all([
-      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes),
+    // o piso entra na leitura do mês (metade da promoção) — por isso vem antes; serviços ficam fora da bolsa
+    const [{ piso, linha, pisoDre, degrau, vol }, servicos] = await Promise.all([
+      this.pisoVigente(periodo),
+      this.erp.codigosDeServico().catch((e) => {
+        this.logger.warn(`Serviços do ERP indisponíveis (ficam na bolsa): ${(e as Error).message}`);
+        return [] as number[];
+      }),
+    ]);
+    const [v, clientes, celulas, cfgComissao] = await Promise.all([
+      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
         return [];
       }),
-      this.pisoVigente(periodo),
       this.bi.celulasComissao(rep, periodo.ano, periodo.mes).catch((e) => {
         this.logger.warn(`Células da comissão indisponíveis (rep ${rep}): ${(e as Error).message}`);
         return null;
@@ -408,14 +415,9 @@ export class OrcamentoService {
         this.logger.warn(`Parâmetros da comissão indisponíveis: ${(e as Error).message}`);
         return null;
       }),
-      this.db.promosFechadasNoMes(rep, periodo.inicio, periodo.fim).catch((e) => {
-        this.logger.warn(`Promoções fechadas no mês indisponíveis (rep ${rep}): ${(e as Error).message}`);
-        return [] as Array<{ preco: number; custo: number | null; qtd: number }>;
-      }),
     ]);
-    // promoção: metade do que o item tira da bolsa é da empresa — mês (orçamentos FECHADOS) e este orçamento
-    const somaAbsorvido = (l: Array<{ preco: number; custo: number | null; qtd: number }>) => l.reduce((s, x) => s + absorcaoPromocao(x.preco, x.custo, piso, x.qtd), 0);
-    const absorvidoOrc = orc?.absorvido ?? (orc?.promos ? somaAbsorvido(orc.promos) : 0);
+    // promoção: metade do que o item tira da bolsa é da empresa — no mês vem do BI (flag PROMOCAO da venda); aqui, o orçamento em edição
+    const absorvidoOrc = orc?.absorvido ?? (orc?.promos ? orc.promos.reduce((s, x) => s + absorcaoPromocao(x.preco, x.custo, piso, x.qtd), 0) : 0);
     // Comissão do mês como está e como fica com o orçamento (mesma regra do fechamento;
     // sem abatimentos manuais e média de férias — é estimativa para decidir na hora).
     const comissao = celulas && cfgComissao ? comissaoComOrcamento(celulas, celulasDoOrcamento(orc ?? {}), cfgComissao) : null;
@@ -427,7 +429,7 @@ export class OrcamentoService {
       desconto_orc: orc?.desconto ?? 0,
       custo_orc: orc?.custo ?? 0,
       sem_custo_orc: orc?.sem_custo ?? 0,
-      absorvido_mtd: somaAbsorvido(promosMes),
+      absorvido_mtd: v.absorvido,
       absorvido_orc: absorvidoOrc,
       piso,
       linha,
@@ -583,7 +585,8 @@ export class OrcamentoService {
     temEquivalente: boolean,
     promo: PromocaoItem | null,
   ): ProdutoOrcamento {
-    const tabela = precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
+    // Serviço (subtipo 09) não traz preço de tabela: o vendedor informa o valor no orçamento.
+    const tabela = ehServico(p.SUBTIPO) ? { coluna: colunaTabela(tabelaPreco), preco: 0, fallback: false } : precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
     // Item em promoção vigente na tabela do cliente: o preço É o promocional e
     // não há desconto por cima dele — o mínimo é o próprio preço. Cliente fora do
     // atacado é varejo: sem preço na tabela dele, a promoção do balcão VALE.
@@ -955,7 +958,7 @@ export class OrcamentoService {
     const linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[] = [];
     // Insumos da alçada de cada linha; a decisão fica para depois de conhecer a bolsa (aplicarAlcada).
     const alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> = [];
-    let subtotal = 0, total = 0, custoOrc = 0, semCusto = 0;
+    let subtotal = 0, total = 0, custoOrc = 0, semCusto = 0, servicos = 0;
     // linhas em promoção (preço fechado da campanha): a bolsa absorve só metade da falta contra o piso
     const promos: Array<{ preco: number; custo: number | null; qtd: number }> = [];
 
@@ -1005,7 +1008,9 @@ export class OrcamentoService {
         desc_max_cheio: cheio?.desc_max_efetivo_pct ?? av.desc_max_efetivo_pct,
       });
       const linhaTotal = round2(preco * qtd);
-      if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
+      // serviço não conta para a bolsa (nem como neutro): a bolsa é de mercadoria
+      if (p.servico) servicos += linhaTotal; // fora da bolsa (nem como neutro): a bolsa é de mercadoria
+      else if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
       else semCusto += linhaTotal;
       if (!fora && p.promocao) promos.push({ preco, custo: p.custo, qtd });
       // linha com acréscimo entra no subtotal pelo próprio preço: o acréscimo não abate o desconto das outras
@@ -1056,6 +1061,7 @@ export class OrcamentoService {
       alcadas,
       custo: round2(custoOrc),
       sem_custo: round2(semCusto),
+      servicos: round2(servicos),
       promos,
       produtos,
     };
@@ -1082,9 +1088,9 @@ export class OrcamentoService {
    * Fotografia da bolsa ao salvar: % de desconto do mês antes/depois (colunas
    * bolsa_pct_*) e o saldo depois deste orçamento — quem decide a alçada.
    */
-  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }> }) {
+  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }> }) {
     try {
-      const b = await this.bolsa(rep, { receita: m.total, desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos });
+      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos });
       const brutoDepois = b.bolsa.bruto_mtd + m.subtotal;
       return {
         antes: b.bolsa.pct_desconto,
