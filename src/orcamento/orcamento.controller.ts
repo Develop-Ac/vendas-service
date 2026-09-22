@@ -316,6 +316,16 @@ export class OrcamentoController {
     return this.service.criar(dto);
   }
 
+  @Get('trava/:rep_codigo')
+  @ApiOperation({
+    summary: 'Trava de orçamento NOVO do vendedor.',
+    description:
+      'travado = existe orçamento do rep importado no Celta, comparado = false, com divergência detectada pelo comparativo (liberadogerencia = false) e ainda não liberado pela gerência. liberadogerencia = true nunca trava.',
+  })
+  trava(@Param('rep_codigo', ParseIntPipe) rep_codigo: number) {
+    return this.service.trava(rep_codigo);
+  }
+
   @Post('comparar/:id')
   @ApiOperation({
     summary: 'Compara orçamento × condicional × intranet no Celta (api-vendas-service) e devolve o comparativo.',
