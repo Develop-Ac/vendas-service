@@ -1,4 +1,4 @@
-import { chaveIdempotencia, compensacaoOrcamento, corpoParaCelta, justificativaAlcada } from './celta';
+import { chaveIdempotencia, compensacaoOrcamento, corpoParaCelta, diferencasComparativo, justificativaAlcada } from './celta';
 
 const base = {
   id: 'ckx1',
@@ -103,5 +103,34 @@ describe('justificativaAlcada', () => {
 
   it('avisa quando está abaixo do mínimo sem aprovação', () => {
     expect(justificativaAlcada({ ...base, acima_alcada: true, itens: [] })).toContain('SEM aprovação registrada');
+  });
+});
+
+describe('diferencasComparativo', () => {
+  const item = (o: Partial<import('./celta').ItemComparativo>) => ({
+    pro_codigo: 1, pro_descricao: 'X', quantidade_orcamento: 2, quantidade_condicional: 2, quantidade_intranet: 2,
+    total_orcamento: 100, total_condicional: 100, total_intranet: 100, quantidade_ok: true, valor_ok: true, ausente_em: [], situacao: 'OK', ...o,
+  });
+  it('mostra só o que difere, item a item, e o total', () => {
+    const txt = diferencasComparativo({
+      total_orcamento: 300, total_condicional: 250, total_intranet: 300,
+      itens: [
+        item({ pro_codigo: 10, pro_descricao: 'PALHETA 18', quantidade_condicional: 3, quantidade_ok: false, situacao: 'DIFERENTE' }),
+        item({ pro_codigo: 20, pro_descricao: 'COLA PU', total_condicional: 50, valor_ok: false, situacao: 'DIFERENTE' }),
+        item({ pro_codigo: 30, pro_descricao: 'PARABRISA', quantidade_condicional: null, total_condicional: null, ausente_em: ['condicional'], situacao: 'FALTANDO' }),
+        item({ pro_codigo: 40 }),
+      ],
+    });
+    expect(txt).toBe(
+      'Total: orçamento Celta R$ 300,00 · condicional R$ 250,00 · intranet R$ 300,00\n' +
+        '• 10 PALHETA 18 — quantidade: orçamento Celta 2 · condicional 3 · intranet 2\n' +
+        '• 20 COLA PU — valor: orçamento Celta R$ 100,00 · condicional R$ 50,00 · intranet R$ 100,00\n' +
+        '• 30 PARABRISA — falta no condicional (tem: orçamento Celta 2 un · intranet 2 un)',
+    );
+  });
+  it('corta a lista e, sem item divergente, usa as mensagens da API', () => {
+    const muitos = Array.from({ length: 4 }, (_, k) => item({ pro_codigo: k, quantidade_ok: false, situacao: 'DIFERENTE' }));
+    expect(diferencasComparativo({ itens: muitos }, 2).split('\n').pop()).toBe('… e mais 2 item(ns) diferente(s)');
+    expect(diferencasComparativo({ itens: [item({})], mensagens: ['Orçamento 5 não encontrado na intranet para a empresa 3.'] })).toBe('Orçamento 5 não encontrado na intranet para a empresa 3.');
   });
 });

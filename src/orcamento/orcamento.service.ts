@@ -27,8 +27,8 @@ import {
 } from './regua';
 import { DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, SalvarOrcamentoDto } from './dto/orcamento.dto';
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
-import { OrcamentoCeltaRepository } from './orcamento.celta.repository';
-import { chaveIdempotencia, corpoParaCelta } from './celta';
+import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
+import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, type LinhaComparativo } from './celta';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
@@ -1411,7 +1411,7 @@ export class OrcamentoService {
     await this.db.gravarComparacao(id, bateu, o.rep_codigo, liberado);
     if (!bateu && !liberado) {
       this.logger.warn(`Orçamento ${o.numero} (Celta ${o.celta_orcamento}) divergiu no comparativo; vendedor ${o.rep_codigo ?? '-'} bloqueado.`);
-      this.avisos.orcamentoBloqueado(o);
+      this.avisos.orcamentoBloqueado(o, this.diferencas(lista, o.empresa));
     }
     return lista;
   }
@@ -1430,12 +1430,22 @@ export class OrcamentoService {
    *  - quantidade_sku, quantidade_unitaria, valor e ok todos true → OK;
    *  - qualquer um false → DIVERGENTE.
    */
-  private vereditoComparativo(lista: Array<{ empresa: number; condicional?: number | null; quantidade_sku: boolean; quantidade_unitaria: boolean; valor: boolean; ok: boolean }>, empresa: number): 'SEM_CONDICIONAL' | 'OK' | 'DIVERGENTE' {
-    const daEmpresa = lista.filter((c) => c.empresa === empresa);
-    const alvo = (daEmpresa.length ? daEmpresa : lista).filter((c) => c.condicional != null);
+  private vereditoComparativo(lista: ComparativoCelta[], empresa: number): 'SEM_CONDICIONAL' | 'OK' | 'DIVERGENTE' {
+    const alvo = this.comparadas(lista, empresa);
     if (!alvo.length) return 'SEM_CONDICIONAL';
     const bateu = alvo.every((c) => c.quantidade_sku === true && c.quantidade_unitaria === true && c.valor === true && c.ok === true);
     return bateu ? 'OK' : 'DIVERGENTE';
+  }
+
+  /** Linhas do comparativo que valem para o orçamento: a da empresa dele, com condicional. */
+  private comparadas(lista: ComparativoCelta[], empresa: number) {
+    const daEmpresa = lista.filter((c) => c.empresa === empresa);
+    return (daEmpresa.length ? daEmpresa : lista).filter((c) => c.condicional != null);
+  }
+
+  /** O que não bateu, em texto, para o aviso da gerência não ter de abrir o comparativo. */
+  private diferencas(lista: ComparativoCelta[], empresa: number): string {
+    return this.comparadas(lista, empresa).map((c) => diferencasComparativo(c as LinhaComparativo)).join('\n');
   }
 
   /**
@@ -1477,7 +1487,7 @@ export class OrcamentoService {
           if (mudou > 0) {
             r.bloqueios++;
             this.logger.warn(`Comparativo: orçamento ${o.numero} (Celta ${o.celta_orcamento}) divergiu; vendedor ${o.rep_codigo} bloqueado.`);
-            this.avisos.orcamentoBloqueado(o);
+            this.avisos.orcamentoBloqueado(o, this.diferencas(lista, o.empresa));
           }
         }
       } catch (e) {

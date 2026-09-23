@@ -42,7 +42,7 @@ export const CATALOGO_VENDAS: Catalogo = {
   'orcamento.bloqueado': {
     descricao: 'Comparativo do Celta divergiu: o vendedor ficou com orcamentoBloqueado.',
     titulo: 'Orçamento {numero} divergente — {vendedor} bloqueado',
-    corpo: 'Celta {celta} · {cliente} · confira o que não bateu e libere o vendedor',
+    corpo: 'Celta {celta} · {cliente}\n{diferencas}',
     canais: ['modal'],
     prioridade: 'alta',
     alvo: { tipo: 'setor', valor: 'Gerência' },

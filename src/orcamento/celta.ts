@@ -157,3 +157,62 @@ export function corpoParaCelta(o: OrcamentoParaCelta): CorpoCelta {
 
 /** Uma chave por orçamento da intranet: repetir a importação devolve o mesmo nº do Celta. */
 export const chaveIdempotencia = (o: { id: string }) => `intranet-orc-${o.id}`;
+
+/** Item do comparativo da api-vendas-service (as três fontes lado a lado). */
+export interface ItemComparativo {
+  pro_codigo: number;
+  pro_descricao?: string;
+  quantidade_orcamento: number | null;
+  quantidade_condicional: number | null;
+  quantidade_intranet: number | null;
+  total_orcamento: number | null;
+  total_condicional: number | null;
+  total_intranet: number | null;
+  quantidade_ok: boolean;
+  valor_ok: boolean;
+  ausente_em: string[];
+  situacao: string;
+}
+
+export interface LinhaComparativo {
+  total_orcamento?: number | null;
+  total_condicional?: number | null;
+  total_intranet?: number | null;
+  itens?: ItemComparativo[];
+  mensagens?: string[];
+}
+
+const FONTE_ROTULO: Record<string, string> = { orcamento: 'orçamento Celta', condicional: 'condicional', intranet: 'intranet' };
+const FONTES = ['orcamento', 'condicional', 'intranet'] as const;
+const reais = (v: number) => `R$ ${v.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const qtd = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 4 });
+
+/**
+ * O que NÃO bateu no comparativo orçamento Celta × condicional × intranet, em texto
+ * para o aviso da gerência (uma linha por item divergente, só o que difere).
+ * Mostra no máximo `limite` itens e resume o resto. Sem item divergente, devolve as
+ * mensagens da API (ex.: documento que não existe numa das fontes).
+ */
+export function diferencasComparativo(c: LinhaComparativo, limite = 8): string {
+  const linhas: string[] = [];
+  const totais = FONTES.map((f) => ({ f, v: c[`total_${f}` as const] })).filter((t) => t.v != null) as Array<{ f: string; v: number }>;
+  if (totais.length > 1 && totais.some((t) => Math.abs(t.v - totais[0].v) >= 0.005)) {
+    linhas.push(`Total: ${totais.map((t) => `${FONTE_ROTULO[t.f]} ${reais(t.v)}`).join(' · ')}`);
+  }
+  const divergentes = (c.itens ?? []).filter((i) => i.situacao !== 'OK');
+  for (const i of divergentes.slice(0, limite)) {
+    const nome = `${i.pro_codigo}${i.pro_descricao ? ` ${i.pro_descricao.trim()}` : ''}`;
+    const onde = (campo: 'quantidade' | 'total', fmt: (v: number) => string) =>
+      FONTES.filter((f) => i[`${campo}_${f}`] != null).map((f) => `${FONTE_ROTULO[f]} ${fmt(i[`${campo}_${f}`] as number)}`).join(' · ');
+    const partes: string[] = [];
+    if (i.ausente_em?.length) partes.push(`falta no ${i.ausente_em.map((f) => FONTE_ROTULO[f] ?? f).join(' e no ')} (tem: ${onde('quantidade', (v) => `${qtd(v)} un`)})`);
+    else {
+      if (!i.quantidade_ok) partes.push(`quantidade: ${onde('quantidade', qtd)}`);
+      if (!i.valor_ok) partes.push(`valor: ${onde('total', reais)}`);
+    }
+    linhas.push(`• ${nome} — ${partes.join('; ')}`);
+  }
+  if (divergentes.length > limite) linhas.push(`… e mais ${divergentes.length - limite} item(ns) diferente(s)`);
+  if (!divergentes.length) linhas.push(...(c.mensagens ?? []));
+  return linhas.join('\n') || 'Divergência sem detalhe no comparativo.';
+}

@@ -142,8 +142,11 @@ export class AvisosVendasService {
    * Comparativo do Celta divergiu e o vendedor ficou bloqueado: modal para a
    * gestão. Um alvo por emissão, então vai uma por setor (modal nunca agrupa).
    * O OK do modal dá POST em .../orcamentoBloqueado/{rep}, que libera o vendedor.
+   * `diferencas` = o que não bateu, item a item (texto de `diferencasComparativo`): vai no
+   * corpo para a gerência decidir sem abrir o comparativo. O corpo segue por override
+   * porque a regra já gravada no avisos-service não é sobrescrita pelo catálogo.
    */
-  orcamentoBloqueado(o: { id: string; numero: number; cli_codigo: number; cli_nome: string | null; rep_codigo: number | null; rep_nome: string | null; celta_orcamento: number | null }) {
+  orcamentoBloqueado(o: { id: string; numero: number; cli_codigo: number; cli_nome: string | null; rep_codigo: number | null; rep_nome: string | null; celta_orcamento: number | null }, diferencas?: string) {
     if (o.rep_codigo == null) return;
     const vars = {
       numero: o.numero,
@@ -151,9 +154,11 @@ export class AvisosVendasService {
       cliente: o.cli_nome ?? `Cliente ${o.cli_codigo}`,
       vendedor: o.rep_nome ?? `Rep ${o.rep_codigo}`,
       rep: o.rep_codigo,
+      diferencas: diferencas ?? '',
     };
+    const corpo = diferencas ? `Celta ${vars.celta} · ${vars.cliente}\n${diferencas}` : undefined;
     for (const setor of SETORES_GESTAO) {
-      this.avisos.emitir('orcamento.bloqueado', { ref: o.id, vars, setor });
+      this.avisos.emitir('orcamento.bloqueado', { ref: o.id, vars, setor, corpo });
     }
   }
 }
