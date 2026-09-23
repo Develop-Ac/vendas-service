@@ -1,6 +1,9 @@
 /**
- * avisos-client v1.2.0 — cliente de EMISSÃO para o avisos-service da intranet.
+ * avisos-client v1.3.0 — cliente de EMISSÃO para o avisos-service da intranet.
  *
+ * 1.3.0: `resolver(evento, ref)` — o fato deixou de valer (ex.: orçamento aprovado) e o
+ * aviso some da caixa de todos os alvos. Exige regra com agrupar=true (é o que dá a
+ * chave `<evento>:<ref>` que o serviço procura). Precisa do avisos-service ≥ 1.1.65.
  * 1.2.0: `acao_permite_nao` (catálogo e `emitir()`): false = diálogo do canal `modal` sem
  * botão "Não" — a pessoa confirma ou só fecha (o aviso continua pendente). Padrão true.
  * 1.1.0: canal `modal` (diálogo OK/Não na intranet). `emitir()` aceita `acao_url` e
@@ -151,6 +154,20 @@ export class AvisosClient {
     }
     if (!this.base) return;
     void this.enviar('/avisos/sistema', payload, 1).catch((e) => this.log('warn', `${chave}: ${(e as Error).message}`));
+  }
+
+  /**
+   * O fato que gerou o aviso `evento`/`ref` deixou de valer: some da caixa de todos.
+   * Fire-and-forget como `emitir()`; nada a resolver não é erro.
+   */
+  resolver(evento: string, ref: string | number): void {
+    const chave = this.chave(evento);
+    if (this.cfg.dryRun) {
+      this.log('log', `DRY-RUN resolver ${chave}:${ref}`);
+      return;
+    }
+    if (!this.base) return;
+    void this.enviar('/avisos/sistema/resolver', { chave, ref: String(ref) }, 1).catch((e) => this.log('warn', `resolver ${chave}: ${(e as Error).message}`));
   }
 
   /**

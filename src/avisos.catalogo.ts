@@ -51,6 +51,17 @@ export const CATALOGO_VENDAS: Catalogo = {
     // Não existe "não liberar": ou libera agora, ou fecha o diálogo e o aviso fica pendente.
     acao_permite_nao: false,
   },
+  'orcamento.aprovacao': {
+    descricao: 'Vendedor mandou orçamento acima do desconto máximo para aprovação da gerência.',
+    titulo: 'Orçamento {numero} aguardando aprovação',
+    corpo: '{vendedor} · {cliente} · {total}',
+    link: '/vendas/orcamento/{id}',
+    canais: ['badge', 'mural', 'desktop'],
+    prioridade: 'alta',
+    alvo: { tipo: 'usuario' },
+    // agrupar = aviso com chave por orçamento: é o que permite tirá-lo de todos quando alguém aprova
+    agrupar: true,
+  },
   'orcamento.vencendo': {
     descricao: 'Orçamento enviado vence amanhã sem venda nem desfecho.',
     titulo: 'Orçamento {numero} vence amanhã sem resposta',

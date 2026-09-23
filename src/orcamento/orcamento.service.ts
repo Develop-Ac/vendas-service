@@ -1186,6 +1186,7 @@ export class OrcamentoService {
     const antes = (atual.itens ?? []).map(chave).sort().join(';');
     const depois = m.linhas.map(chave).sort().join(';');
     const mesmosItens = atual.cli_codigo === dto.cli_codigo && antes === depois;
+    if (atual.status === 'APROVACAO' && !mesmosItens) this.avisos.aprovacaoEncerrada(id);
     return this.db.atualizar(
       id,
       {
@@ -1226,12 +1227,15 @@ export class OrcamentoService {
     // Item sem saldo NÃO trava o envio: a proposta vai ao cliente com o aviso na linha
     // ("sem estoque" / "aguardando liberação"); a decisão de saldo é só no FECHOU (tela).
     const precisaAprovar = o.acima_alcada && !o.aprovado_em;
-    return this.db.atualizar(id, {
+    const r = await this.db.atualizar(id, {
       status: precisaAprovar ? 'APROVACAO' : 'ENVIADO',
       enviado_em: precisaAprovar ? null : new Date(),
       usuario_id: usuario?.usuario_id ?? o.usuario_id,
       usuario_nome: usuario?.usuario_nome ?? o.usuario_nome,
     });
+    // Aviso à gerência só na entrada em APROVAÇÃO (reenviar o que já está lá não repete).
+    if (precisaAprovar && o.status !== 'APROVACAO') void this.avisos.orcamentoAprovacao(o);
+    return r;
   }
 
   /** O cliente RECEBEU a proposta (mensagem + PDF pelo WhatsApp da Estação). */
@@ -1335,12 +1339,14 @@ export class OrcamentoService {
   async aprovar(id: string, usuario?: { usuario_id?: string; usuario_nome?: string }) {
     const o = await this.obter(id);
     if (o.status !== 'APROVACAO') throw new BadRequestException('Só orçamento em APROVAÇÃO pode ser aprovado.');
-    return this.db.atualizar(id, {
+    const r = await this.db.atualizar(id, {
       status: 'ENVIADO',
       aprovado_por: usuario?.usuario_nome ?? usuario?.usuario_id ?? 'supervisor',
       aprovado_em: new Date(),
       enviado_em: new Date(),
     });
+    this.avisos.aprovacaoEncerrada(id);
+    return r;
   }
 
   async desfecho(id: string, dto: DesfechoOrcamentoDto) {
@@ -1349,6 +1355,7 @@ export class OrcamentoService {
       throw new BadRequestException(`Orçamento já está ${o.status}.`);
     }
     if (dto.resultado === 'PERDIDO' && !dto.motivo) throw new BadRequestException('Informe o motivo da perda.');
+    if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
     return this.db.atualizar(id, {
       status: dto.resultado,
       desfecho_em: new Date(),
@@ -1497,6 +1504,7 @@ export class OrcamentoService {
   async cancelar(id: string) {
     const o = await this.obter(id);
     if (['FECHADO', 'PERDIDO'].includes(o.status)) throw new BadRequestException(`Orçamento ${o.status} não pode ser cancelado.`);
+    if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
     return this.db.atualizar(id, { status: 'CANCELADO' });
   }
 
