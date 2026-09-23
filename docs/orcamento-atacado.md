@@ -256,7 +256,9 @@ fechamento; o orçamento fica FECHADO **sem** `celta_orcamento` e a etiqueta "n�
 importado no Celta" (cabeçalho do editor e lista) abre a mesma pergunta depois.
 
 - `importarCelta(id)` monta o corpo com `corpoParaCelta()` (`celta.ts`, puro, +spec):
-  `unitario` = preço de tabela bruto, `perc_descto` = `desc_pct` × 100, uma forma de
+  `unitario` = preço de tabela bruto, `valor_descto` = bruto − total da linha na intranet
+  (em R$; desde 23/09/2026 — em percentual de 2 casas o Celta recalculava e errava 1 centavo:
+  209,90 com 4,72% dava 199,99 contra 200,00), uma forma de
   pagamento para entrada e demais parcelas, observação prefixada com "Intranet ORC-n";
   quantidade inteira (encomenda incluída).
 - Chama a **api-vendas-service** (`OrcamentoCeltaRepository`): `POST /orcamentos/:empresa`

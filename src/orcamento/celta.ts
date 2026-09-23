@@ -3,16 +3,22 @@
  * da api-vendas-service (a API que grava ORCAMENTOS/ORCAMENTOS_ITENS no Celta).
  *
  * Regras do contrato da API: `unitario` é o preço BRUTO (tabela) e o desconto vai
- * em `perc_descto` (0–99,99, percentual); aqui `desc_pct` é fração (0–1). Uma forma
- * de pagamento só vale para entrada e demais parcelas. A quantidade vai inteira
- * (o que ficou sob encomenda continua no orçamento do Celta).
+ * em `valor_descto` (R$ da linha) — a API deriva o percentual. Em percentual (2 casas)
+ * o Celta recalcula o desconto e arredonda de novo: 209,90 com 4,72% dá 9,91 e o item
+ * sai 199,99 contra 200,00 na intranet. Uma forma de pagamento só vale para entrada e
+ * demais parcelas. A quantidade vai inteira (o que ficou sob encomenda continua no
+ * orçamento do Celta).
  */
+import { round2 } from './regua';
+
 export interface ItemParaCelta {
   pro_codigo: number;
   quantidade: number;
   preco_tabela: number;
   /** unitário cobrado; acima da tabela = acréscimo */
   preco_unit?: number;
+  /** total da linha na intranet (unitário cobrado × quantidade) — o que o Celta tem de reproduzir */
+  total?: number;
   desc_pct: number;
   desc_max_pct?: number | null;
   acima_alcada?: boolean;
@@ -118,7 +124,7 @@ export interface CorpoCelta {
   fp_entrada?: string;
   fp_demais_parcelas?: string;
   observacao?: string;
-  itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; perc_descto: number }>;
+  itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; valor_descto: number }>;
 }
 
 const OBSERVACAO_MAX = 2000;
@@ -132,13 +138,17 @@ export const soAscii = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u00b7\u2014\u2013]/g, '-').replace(/[^\x20-\x7e\n]/g, '');
 
 export function corpoParaCelta(o: OrcamentoParaCelta): CorpoCelta {
-  const itens = (o.itens ?? []).map((i) => ({
-    pro_codigo: i.pro_codigo,
-    quantidade: Number(i.quantidade),
-    // item com acréscimo vai pelo unitário cobrado (desconto zero); os demais, tabela + % de desconto
-    unitario: Math.round(Math.max(Number(i.preco_tabela), Number(i.preco_unit ?? 0)) * 100) / 100,
-    perc_descto: Math.min(99.99, Math.max(0, Math.round(Number(i.desc_pct) * 10000) / 100)),
-  }));
+  const itens = (o.itens ?? []).map((i) => {
+    const quantidade = Number(i.quantidade);
+    const cobrado = Number(i.preco_unit ?? 0) > 0 ? Number(i.preco_unit) : round2(Number(i.preco_tabela) * (1 - Number(i.desc_pct)));
+    // item com acréscimo vai pelo unitário cobrado (desconto zero); os demais, pela tabela
+    const unitario = round2(Math.max(Number(i.preco_tabela), cobrado));
+    const bruto = round2(unitario * quantidade);
+    const total = i.total != null && Number(i.total) > 0 ? Number(i.total) : round2(cobrado * quantidade);
+    // desconto = o que falta do bruto até o total da intranet; o Celta não aceita item zerado
+    const valor_descto = Math.min(round2(bruto - 0.01), Math.max(0, round2(bruto - total)));
+    return { pro_codigo: i.pro_codigo, quantidade, unitario, valor_descto };
+  });
   if (!itens.length) throw new Error('Orçamento sem itens não vai ao Celta.');
   // Justificativa da alçada primeiro (cabe sempre); a observação do vendedor vem depois
   // e é o que se corta quando o total passa do limite do ERP.

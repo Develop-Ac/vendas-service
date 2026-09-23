@@ -15,11 +15,12 @@ const base = {
 };
 
 describe('corpoParaCelta', () => {
-  it('traduz fração de desconto em percentual e preço bruto arredondado', () => {
+  it('desconto vai em valor: bruto menos o total da linha na intranet', () => {
     const c = corpoParaCelta(base);
     expect(c.itens).toEqual([
-      { pro_codigo: 40381, quantidade: 2, unitario: 167.1, perc_descto: 5 },
-      { pro_codigo: 500, quantidade: 1.5, unitario: 10, perc_descto: 0 },
+      // 167,10 × 0,95 = 158,745 → 158,75 por unidade (como na intranet) → 317,50; bruto 334,20
+      { pro_codigo: 40381, quantidade: 2, unitario: 167.1, valor_descto: 16.7 },
+      { pro_codigo: 500, quantidade: 1.5, unitario: 10, valor_descto: 0 },
     ]);
     expect(c.cp_codigo).toBe(7);
     expect(c.fp_entrada).toBe('12');
@@ -33,19 +34,19 @@ describe('corpoParaCelta', () => {
     );
   });
 
-  it('omite pagamento vazio e trava o desconto em 99,99', () => {
+  it('omite pagamento vazio e nunca zera o item', () => {
     const c = corpoParaCelta({ ...base, cp_codigo: null, fp_codigo: ' ', observacao: null, itens: [{ ...base.itens[0], desc_pct: 1 }] });
     expect(c).not.toHaveProperty('cp_codigo');
     expect(c).not.toHaveProperty('fp_entrada');
     expect(c.observacao).toMatch(/^Intranet ORC-000042 - vendedor 349\nAlcada/);
     expect(c.observacao).not.toMatch(/\n$/);
-    expect(c.itens[0].perc_descto).toBe(99.99);
+    expect(c.itens[0].valor_descto).toBe(334.19); // nunca zera o item
   });
 
   it('item com acréscimo vai pelo unitário cobrado, com desconto zero', () => {
     const tabela = base.itens[0].preco_tabela;
     const c = corpoParaCelta({ ...base, itens: [{ ...base.itens[0], preco_unit: tabela + 10, desc_pct: 0 }] });
-    expect(c.itens[0]).toMatchObject({ unitario: tabela + 10, perc_descto: 0 });
+    expect(c.itens[0]).toMatchObject({ unitario: tabela + 10, valor_descto: 0 });
   });
 
   it('recusa orçamento sem itens e gera chave estável', () => {
@@ -103,6 +104,14 @@ describe('justificativaAlcada', () => {
 
   it('avisa quando está abaixo do mínimo sem aprovação', () => {
     expect(justificativaAlcada({ ...base, acima_alcada: true, itens: [] })).toContain('SEM aprovação registrada');
+  });
+});
+
+describe('desconto em valor para o Celta', () => {
+  it('total digitado na intranet chega igual ao Celta (orçamento Celta 407007)', () => {
+    const c = corpoParaCelta({ ...base, itens: [{ pro_codigo: 44501, quantidade: 1, preco_tabela: 209.9, desc_pct: 0.0472, preco_unit: 200, total: 200 }] });
+    // em percentual iam 4,72% → 9,91 de desconto → 199,99; em valor vai 9,90 → 200,00
+    expect(c.itens[0]).toEqual({ pro_codigo: 44501, quantidade: 1, unitario: 209.9, valor_descto: 9.9 });
   });
 });
 
