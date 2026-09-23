@@ -1247,6 +1247,74 @@ export class OrcamentoService {
     return this.db.atualizar(id, { entregue_canal: canal, entregue_em: new Date() });
   }
 
+  /**
+   * PROPOSTA SEM SALVAR — mesma precificação, alçada e papel do orçamento, mas
+   * nada vai ao banco. Serve a quem monta a proposta fora da tela (assistente do
+   * WhatsApp) e a encaminha a um vendedor, que a registra e segue com a venda.
+   * Devolve o texto do WhatsApp, o PDF em base64 e o que exigiria aprovação.
+   */
+  async proposta(dto: SalvarOrcamentoDto) {
+    const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
+    if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
+    const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
+    const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
+    const acimaAlcada = this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa);
+    const [pag, cli, repNome] = await Promise.all([
+      this.pagamentoDe(dto),
+      this.erp.clienteParaPdf(dto.cli_codigo).catch(() => null),
+      dto.rep_nome ? Promise.resolve(dto.rep_nome) : this.erp.nomeRepresentante(dto.rep_codigo),
+    ]);
+    const porCodigo = new Map(m.produtos.map((p) => [p.pro_codigo, p]));
+    const n = (v: unknown) => Number(v ?? 0);
+    const itens: PdfItem[] = m.linhas.map((l) => {
+      const p = porCodigo.get(Number(l.pro_codigo));
+      const promoFim = dmy(l.promocao_fim as Date | null);
+      const qtd = n(l.quantidade);
+      const enc = n(l.qtd_encomenda);
+      return {
+        pro_codigo: Number(l.pro_codigo),
+        descricao: String(l.descricao ?? ''),
+        marca: p?.marca ?? null,
+        unidade: String(l.unidade ?? 'UN'),
+        quantidade: qtd,
+        preco_tabela: n(l.preco_tabela),
+        desc_pct: n(l.desc_pct),
+        preco_unit: n(l.preco_unit),
+        total: n(l.total),
+        promocao_fim: promoFim,
+        preco_original: promoFim && p && p.preco_original > n(l.preco_tabela) ? p.preco_original : null,
+        qtd_encomenda: enc,
+        ...faltaSaldo(qtd - enc, p?.servico ? Number.POSITIVE_INFINITY : p?.estoque_disponivel, 0),
+      };
+    });
+    const dados: PdfOrcamento = {
+      numero: 'PRÉVIA',
+      emissao: dmy(hojeYmd()) ?? '',
+      validade: dmy(this.validade(m.linhas)),
+      vendedor: `${repNome} (${dto.rep_codigo})`,
+      cliente: this.clientePdf(cli, dto.cli_codigo, cliente.CLI_NOME, cliente.TABELA_PRECO),
+      itens,
+      subtotal: m.subtotal,
+      desconto: m.desconto_total,
+      desc_pct: m.desc_pct,
+      total: m.total,
+      observacao: dto.observacao ?? null,
+      pagamento: [pag.cp_descricao, pag.fp_descricao].filter(Boolean).join(' · ') || null,
+    };
+    const pdf = await gerarPdfOrcamento(dados);
+    return {
+      texto: mensagemWhatsapp(dados),
+      acima_alcada: acimaAlcada,
+      itens_acima_alcada: m.linhas.filter((l) => l.acima_alcada).map((l) => ({ pro_codigo: l.pro_codigo, descricao: l.descricao, preco_unit: l.preco_unit, preco_minimo: l.preco_minimo })),
+      bolsa: { pct_antes: bolsa.antes, pct_depois: bolsa.depois, saldo_apos: bolsa.saldo_apos },
+      subtotal: m.subtotal,
+      desconto: m.desconto_total,
+      total: m.total,
+      validade: dados.validade,
+      arquivo: { nome: `proposta-${dto.cli_codigo}-${hojeYmd()}.pdf`, mime: 'application/pdf', base64: pdf.toString('base64') },
+    };
+  }
+
   /** Texto da mensagem + PDF em base64 — o que a Estação manda no chat ativo. */
   async mensagem(id: string) {
     const dados = await this.dadosImpressao(id);
@@ -1279,12 +1347,6 @@ export class OrcamentoService {
     ]);
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
     const { aguardando } = produtos.length ? await this.saldoComLiberacao(produtos.map((p) => p.pro_codigo), produtos) : { aguardando: () => 0 };
-    const dmy = (v: Date | string | null | undefined) => {
-      if (!v) return null;
-      const s = v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
-      const [a, m, d] = s.split('-');
-      return a && m && d ? `${d}/${m}/${a}` : null;
-    };
     const n = (v: unknown) => Number(v ?? 0);
     const linhas = itens.map((i: any) => {
       const p = porCodigo.get(Number(i.pro_codigo));
@@ -1306,25 +1368,12 @@ export class OrcamentoService {
       };
     });
     const numero = String(o.numero).padStart(6, '0');
-    const endereco = cli ? [cli.ENDERECO, cli.NUMERO].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(', ') : null;
     return {
       numero,
       emissao: dmy(o.created_at) ?? '',
       validade: dmy(o.validade),
       vendedor: o.rep_nome ? `${o.rep_nome}${o.rep_codigo != null ? ` (${o.rep_codigo})` : ''}` : o.rep_codigo != null ? String(o.rep_codigo) : '—',
-      cliente: {
-        codigo: o.cli_codigo,
-        nome: String(o.cli_nome ?? cli?.CLI_NOME ?? ''),
-        cpf_cnpj: cli?.CPF_CNPJ ?? null,
-        rg_ie: cli?.RG_IE ? String(cli.RG_IE).trim() || null : null,
-        fone: [cli?.FONE, cli?.CELULAR].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(' ') || null,
-        endereco: endereco || null,
-        bairro: cli?.BAIRRO ? String(cli.BAIRRO).trim() : null,
-        cep: cli?.CEP ? String(cli.CEP).trim() : null,
-        cidade: cli?.CIDADE ?? null,
-        uf: cli?.UF ?? null,
-        tabela_nome: nomeTabelaCliente(o.tabela_preco),
-      },
+      cliente: this.clientePdf(cli, o.cli_codigo, o.cli_nome, o.tabela_preco),
       itens: linhas,
       subtotal: n(o.subtotal),
       desconto: n(o.desconto_total),
@@ -1332,6 +1381,24 @@ export class OrcamentoService {
       total: n(o.total),
       observacao: o.observacao ?? null,
       pagamento: [o.cp_descricao, o.fp_descricao].filter(Boolean).join(' · ') || null,
+    };
+  }
+
+  /** Bloco do cliente no papel: cadastro do ERP (pode faltar) + nome/tabela do orçamento. */
+  private clientePdf(cli: Awaited<ReturnType<OrcamentoErpRepository['clienteParaPdf']>> | null, codigo: number, nome: unknown, tabela: string | null | undefined): PdfOrcamento['cliente'] {
+    const endereco = cli ? [cli.ENDERECO, cli.NUMERO].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(', ') : null;
+    return {
+      codigo,
+      nome: String(nome ?? cli?.CLI_NOME ?? ''),
+      cpf_cnpj: cli?.CPF_CNPJ ?? null,
+      rg_ie: cli?.RG_IE ? String(cli.RG_IE).trim() || null : null,
+      fone: [cli?.FONE, cli?.CELULAR].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(' ') || null,
+      endereco: endereco || null,
+      bairro: cli?.BAIRRO ? String(cli.BAIRRO).trim() : null,
+      cep: cli?.CEP ? String(cli.CEP).trim() : null,
+      cidade: cli?.CIDADE ?? null,
+      uf: cli?.UF ?? null,
+      tabela_nome: nomeTabelaCliente(tabela),
     };
   }
 
@@ -1614,6 +1681,14 @@ function faltaSaldo(aEntregar: number, disponivel: number | undefined, aguardand
   const falta = Math.max(0, aEntregar - Math.max(0, disponivel ?? 0));
   if (falta <= 0) return { falta_saldo: 0, saldo_situacao: null };
   return { falta_saldo: falta, saldo_situacao: aguardando >= falta ? 'AGUARDANDO' : 'INDISPONIVEL' };
+}
+
+/** Data em dd/mm/aaaa a partir de Date ou 'aaaa-mm-dd…'; null quando vazia. */
+function dmy(v: Date | string | null | undefined): string | null {
+  if (!v) return null;
+  const s = v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
+  const [a, m, d] = s.split('-');
+  return a && m && d ? `${d}/${m}/${a}` : null;
 }
 
 /** Subtipo fiscal '09' = serviço (o ERP grava com zero à esquerda; '9' também vale). */

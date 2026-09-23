@@ -319,6 +319,15 @@ export class OrcamentoController {
     return this.service.criar(dto);
   }
 
+  @Post('proposta')
+  @ApiOperation({
+    summary: 'Proposta SEM salvar: mesmo corpo do POST /orcamento; devolve texto do WhatsApp, PDF (base64) e alçada.',
+    description: 'Para quem monta a proposta fora da tela e a encaminha a um vendedor. Nada é gravado.',
+  })
+  proposta(@Body() dto: SalvarOrcamentoDto) {
+    return this.service.proposta(dto);
+  }
+
   @Get('trava/:rep_codigo')
   @ApiOperation({
     summary: 'Trava de orçamento NOVO do vendedor.',
