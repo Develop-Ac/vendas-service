@@ -115,6 +115,16 @@ describe('WhatsappService', () => {
     expect(gravadas[0].cli_codigo).toBeNull();
   });
 
+  it('sessão da lista WA_SESSOES_IGNORADAS (padrão: assistente) não é gravada', async () => {
+    const r = await service.processarWebhook({
+      event: 'message',
+      session: 'assistente',
+      payload: { id: 'a1', from: '556588887777@c.us', fromMe: false },
+    });
+    expect(r).toMatchObject({ ignorado: 'sessão fora do sensor' });
+    expect(gravadas).toHaveLength(0);
+  });
+
   it('sessão fora da convenção rep-<codigo> registra sem vendedor', async () => {
     await service.processarWebhook({
       event: 'message',

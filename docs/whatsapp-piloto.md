@@ -48,6 +48,8 @@ do WAHA; para isso, defina no **vendas-service**:
 
 - `WA_API_URL=http://<projeto>_waha:3000` (o mesmo endereço interno do WAHA)
 - `WA_API_KEY=<a API key do WAHA, se configurada>`
+- `WA_SESSOES_IGNORADAS=assistente` (opcional; sessões do mesmo WAHA que não são de
+  vendedor e ficam fora do sensor — padrão já é `assistente`)
 
 Sem `WA_API_URL`, mensagens de contatos com LID caem inteiras na fila de
 vínculo manual (nada se perde, mas nada casa sozinho).

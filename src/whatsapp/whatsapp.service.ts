@@ -20,6 +20,21 @@ import { WhatsappRepository, MensagemRow } from './whatsapp.repository';
 /** Os grupos e listas de transmissão ficam FORA do sensor (decisão do plano). */
 const CHATS_IGNORADOS = ['@g.us', '@broadcast', '@newsletter'];
 
+/**
+ * Sessões do mesmo WAHA que NÃO são de vendedor e não devem entrar no sensor
+ * (ex.: `assistente`, o assistente da gestão no WhatsApp). O WAHA manda o webhook
+ * global para todas as sessões; o filtro fica aqui. Lista por env
+ * WA_SESSOES_IGNORADAS (separada por vírgula); padrão = assistente.
+ */
+function sessoesIgnoradas(): Set<string> {
+  return new Set(
+    (process.env.WA_SESSOES_IGNORADAS ?? 'assistente')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+  );
+}
+
 const TABELAS_ATACADO = ['2', '5'];
 const EMPRESA = 3;
 
@@ -114,6 +129,7 @@ export class WhatsappService {
     const p = body.payload ?? {};
 
     if (!sessao || !p.id) return { ok: true, ignorado: 'sem sessão ou id' };
+    if (sessoesIgnoradas().has(sessao)) return { ok: true, ignorado: 'sessão fora do sensor' };
 
     if (evento === 'message.ack') {
       const r = await this.repo.atualizarAck(sessao, String(p.id), Number(p.ack ?? 0));
