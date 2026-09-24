@@ -26,7 +26,10 @@ export function mensagemWhatsapp(o: PdfOrcamento): string {
   linhas.push('');
   linhas.push(`Subtotal: ${brl(o.subtotal)}`);
   if (o.desconto > 0) linhas.push(`Desconto: − ${brl(o.desconto)}`);
-  linhas.push(`*Total: ${brl(o.total)}*`);
+  // revenda de outro estado: o ST vai na nota, então vai na proposta
+  const st = o.icms_st ?? 0;
+  if (st > 0) linhas.push(`ICMS-ST${o.uf_st ? ` (${o.uf_st})` : ''}: + ${brl(st)}`);
+  linhas.push(`*Total: ${brl(o.total + st)}*`);
   if (o.pagamento) linhas.push(`Pagamento: ${o.pagamento}`);
   linhas.push('');
   linhas.push(`Válido até ${o.validade ?? '—'} · detalhes no PDF`);

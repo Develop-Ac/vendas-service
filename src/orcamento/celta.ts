@@ -29,6 +29,9 @@ export interface ItemParaCelta {
   custo_ref?: number | null;
   promocao_codigo?: number | null;
   fora_promocao?: boolean;
+  /** imposto fora do estado da linha (cliente do Pará): ST somado ao total ou DIFAL como custo da AC */
+  icms_st?: number | null;
+  difal?: number | null;
 }
 
 export interface OrcamentoParaCelta {
@@ -49,6 +52,8 @@ export interface OrcamentoParaCelta {
   itens?: ItemParaCelta[];
   /** piso da bolsa (custo × piso) vigente — para a conta da compensação na observação */
   piso_bolsa?: number | null;
+  /** regime do imposto fora do estado aplicado no orçamento (NENHUM | ST | DIFAL | PRESENCIAL | FORA_ESCOPO) */
+  tributacao?: string | null;
 }
 
 /**
@@ -124,7 +129,13 @@ export interface CorpoCelta {
   fp_entrada?: string;
   fp_demais_parcelas?: string;
   observacao?: string;
-  itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; valor_descto: number }>;
+  /**
+   * Imposto fora do estado (plano v3 da api-vendas-service, seção 11): a API refaz a conta com os
+   * parâmetros do ERP, exige igualdade e grava nas colunas de tributação de ORCAMENTOS/ITENS.
+   * Ausente = nada gravado (cliente de MT ou venda presencial).
+   */
+  tributacao?: { regime: 'difal' | 'st' };
+  itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; valor_descto: number; difal?: number; icms_st?: number }>;
 }
 
 const OBSERVACAO_MAX = 2000;
@@ -137,7 +148,12 @@ const OBSERVACAO_MAX = 2000;
 export const soAscii = (s: string) =>
   s.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[\u00b7\u2014\u2013]/g, '-').replace(/[^\x20-\x7e\n]/g, '');
 
-export function corpoParaCelta(o: OrcamentoParaCelta): CorpoCelta {
+/**
+ * `comTributacao`: manda regime e valores de DIFAL/ST à API. Fica desligado até a versão da
+ * api-vendas-service que os aceita estar no ar — a versão atual recusa campo desconhecido.
+ */
+export function corpoParaCelta(o: OrcamentoParaCelta, comTributacao = false): CorpoCelta {
+  const regime = comTributacao && o.tributacao === 'ST' ? 'st' : comTributacao && o.tributacao === 'DIFAL' ? 'difal' : null;
   const itens = (o.itens ?? []).map((i) => {
     const quantidade = Number(i.quantidade);
     const cobrado = Number(i.preco_unit ?? 0) > 0 ? Number(i.preco_unit) : round2(Number(i.preco_tabela) * (1 - Number(i.desc_pct)));
@@ -147,7 +163,11 @@ export function corpoParaCelta(o: OrcamentoParaCelta): CorpoCelta {
     const total = i.total != null && Number(i.total) > 0 ? Number(i.total) : round2(cobrado * quantidade);
     // desconto = o que falta do bruto até o total da intranet; o Celta não aceita item zerado
     const valor_descto = Math.min(round2(bruto - 0.01), Math.max(0, round2(bruto - total)));
-    return { pro_codigo: i.pro_codigo, quantidade, unitario, valor_descto };
+    return {
+      pro_codigo: i.pro_codigo, quantidade, unitario, valor_descto,
+      ...(regime === 'difal' ? { difal: round2(Number(i.difal ?? 0)) } : {}),
+      ...(regime === 'st' ? { icms_st: round2(Number(i.icms_st ?? 0)) } : {}),
+    };
   });
   if (!itens.length) throw new Error('Orçamento sem itens não vai ao Celta.');
   // Justificativa da alçada primeiro (cabe sempre); a observação do vendedor vem depois
@@ -161,6 +181,7 @@ export function corpoParaCelta(o: OrcamentoParaCelta): CorpoCelta {
     ...(o.cp_codigo ? { cp_codigo: o.cp_codigo } : {}),
     ...(fp ? { fp_entrada: fp, fp_demais_parcelas: fp } : {}),
     observacao: soAscii(obs).slice(0, OBSERVACAO_MAX),
+    ...(regime ? { tributacao: { regime } } : {}),
     itens,
   };
 }

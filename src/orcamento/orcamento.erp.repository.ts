@@ -17,6 +17,8 @@ import { colunaTabela } from './regua';
 export const EMPRESA = 3;
 /** Tabelas de preço que definem o universo do atacado (CLIENTES.TABELA_PRECO). */
 export const TABELAS_ATACADO = ['2', '5'];
+/** Empresa que EMITE a nota de venda: os parâmetros fiscais (ST, DIFAL) são lidos dela. */
+export const EMPRESA_FISCAL = 1;
 
 export interface ProdutoErp {
   PRO_CODIGO: number;
@@ -131,12 +133,14 @@ export interface ClienteErp {
   BLOQUEAR_VENDA_CREDIARIO: string | null;
   CON_CODIGO: number | null;
   DATA_ULT_COMPRA: string | null;
+  /** Indicador da IE na NF-e: 1 contribuinte, 2 isento, 9 não contribuinte — decide ST × DIFAL fora do estado. */
+  INDICADOR_IE_DESTINATARIO: number | null;
 }
 
 const CAMPOS_CLIENTE = [
   'CLI_CODIGO', 'CLI_NOME', 'CPF_CNPJ', 'UF', 'CIDADE', 'FONE', 'CELULAR', 'CONTATO',
   'REP_CODIGO', 'TABELA_PRECO', 'INATIVO', 'LIMITE_CREDITO', 'BLOQUEAR_VENDA_CREDIARIO',
-  'CON_CODIGO', 'DATA_ULT_COMPRA', 'CP_CODIGO', 'FP_ENTRADA', 'FP_DEMAIS_PARCELAS',
+  'CON_CODIGO', 'DATA_ULT_COMPRA', 'CP_CODIGO', 'FP_ENTRADA', 'FP_DEMAIS_PARCELAS', 'INDICADOR_IE_DESTINATARIO',
 ];
 
 /** Condição de pagamento de VENDA do Celta (CONDICOES_PAGTO), já sem inativas e sem as do contas a pagar. */
@@ -714,7 +718,49 @@ export class OrcamentoErpRepository {
       CP_CODIGO: r.CP_CODIGO == null ? null : Number(r.CP_CODIGO),
       FP_ENTRADA: (r.FP_ENTRADA ?? '').toString().trim() || null,
       FP_DEMAIS_PARCELAS: (r.FP_DEMAIS_PARCELAS ?? '').toString().trim() || null,
+      INDICADOR_IE_DESTINATARIO: r.INDICADOR_IE_DESTINATARIO == null ? null : Number(r.INDICADOR_IE_DESTINATARIO),
     };
+  }
+
+  /* ------------------------------------------ tributação fora do estado */
+
+  /**
+   * Situação tributária do ICMS-ST (a 010 = revenda PA): MVA, alíquota interna do
+   * destino e alíquota interestadual, em FRAÇÃO. Lida da empresa que emite a nota
+   * (1), com o cache curto da API — a MVA muda no Celta e o próximo orçamento acompanha.
+   */
+  async situacaoTributariaSt(codigo: string): Promise<{ mva: number; aliq_interna: number; aliq_interestadual: number; descricao: string } | null> {
+    const r = await this.erp.consultar<Record<string, any>>('situacao-tributaria', {
+      empresa: EMPRESA_FISCAL,
+      campos: ['ST_CODIGO', 'ST_DESCRICAO', 'ALIQ_FORA', 'ICMS_MARGEM_ST_FORA', 'ICMS_ALIQ_ST_FORA', 'INATIVO'],
+      filtros: [{ campo: 'ST_CODIGO', op: 'igual', valor: codigo }],
+      limite: 1 + FOLGA,
+    });
+    const st = r[0];
+    if (!st || String(st.INATIVO ?? '').trim() === 'S') return null;
+    return {
+      mva: Number(st.ICMS_MARGEM_ST_FORA ?? 0) / 100,
+      aliq_interna: Number(st.ICMS_ALIQ_ST_FORA ?? 0) / 100,
+      aliq_interestadual: Number(st.ALIQ_FORA ?? 0) / 100,
+      descricao: String(st.ST_DESCRICAO ?? '').trim(),
+    };
+  }
+
+  /** Percentual do DIFAL (fração) por produto para a UF, empresa que emite a nota. Produto sem linha fica fora do mapa. */
+  async aliquotasDifal(codigos: number[], uf: string): Promise<Map<number, number>> {
+    const out = new Map<number, number>();
+    const unicos = [...new Set(codigos)];
+    for (let i = 0; i < unicos.length; i += 500) {
+      const lote = unicos.slice(i, i + 500);
+      const r = await this.erp.consultar<Record<string, any>>('aliquotas-icms-uf-destino', {
+        empresa: EMPRESA_FISCAL,
+        campos: ['PRO_CODIGO', 'ALIQUOTA'],
+        filtros: [{ campo: 'UF', op: 'igual', valor: uf }, { campo: 'PRO_CODIGO', op: 'em', valor: lote }],
+        limite: lote.length + FOLGA,
+      });
+      for (const x of r) out.set(Number(x.PRO_CODIGO), Number(x.ALIQUOTA ?? 0) / 100);
+    }
+    return out;
   }
 
   /**

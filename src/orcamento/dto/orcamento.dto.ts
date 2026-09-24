@@ -100,6 +100,11 @@ export class SalvarOrcamentoDto {
   @Type(() => ItemOrcamentoDto)
   itens: ItemOrcamentoDto[];
 
+  @ApiProperty({ description: 'Venda presencial (cliente retira na loja). Só muda o imposto de cliente não contribuinte/isento de outro estado: presencial não gera DIFAL. Padrão: não presencial.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  presencial?: boolean;
+
   @ApiProperty({ required: false })
   @IsOptional()
   @IsString()
@@ -109,6 +114,41 @@ export class SalvarOrcamentoDto {
   @IsOptional()
   @IsString()
   usuario_nome?: string;
+}
+
+export class ItemTributacaoDto {
+  @ApiProperty({ example: 49464 })
+  @IsInt()
+  pro_codigo: number;
+
+  @ApiProperty({ description: 'Total líquido da linha (preço negociado × quantidade).' })
+  @IsNumber()
+  @Min(0)
+  total: number;
+
+  @ApiProperty({ description: 'Serviço (subtipo 09): fora do ICMS.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  servico?: boolean;
+}
+
+/** Prévia do imposto interestadual do orçamento em edição — a tela pergunta, o serviço calcula. */
+export class TributacaoDto {
+  @ApiProperty({ example: 1462 })
+  @IsInt()
+  cli_codigo: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  presencial?: boolean;
+
+  @ApiProperty({ type: [ItemTributacaoDto] })
+  @IsArray()
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => ItemTributacaoDto)
+  itens: ItemTributacaoDto[];
 }
 
 export class EntregueOrcamentoDto {

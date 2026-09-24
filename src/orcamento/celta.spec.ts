@@ -49,6 +49,22 @@ describe('corpoParaCelta', () => {
     expect(c.itens[0]).toMatchObject({ unitario: tabela + 10, valor_descto: 0 });
   });
 
+  it('imposto fora do estado: regime no cabeçalho e valor por item só com a chave ligada', () => {
+    const st = { ...base, tributacao: 'ST', itens: [{ ...base.itens[0], icms_st: 65.53 }] };
+    // desligado (API atual recusa campo desconhecido): nada de tributação no corpo
+    const semChave = corpoParaCelta(st);
+    expect(semChave.tributacao).toBeUndefined();
+    expect('icms_st' in semChave.itens[0]).toBe(false);
+    const c = corpoParaCelta(st, true);
+    expect(c.tributacao).toEqual({ regime: 'st' });
+    expect(c.itens[0].icms_st).toBe(65.53);
+    expect(c.itens[0].difal).toBeUndefined();
+    const d = corpoParaCelta({ ...base, tributacao: 'DIFAL', itens: [{ ...base.itens[0], difal: 23.9 }] }, true);
+    expect(d.tributacao).toEqual({ regime: 'difal' });
+    expect(d.itens[0]).toMatchObject({ difal: 23.9 });
+    // presencial ou fora do escopo: nada vai, mesmo com a chave ligada
+    expect(corpoParaCelta({ ...base, tributacao: 'PRESENCIAL' }, true).tributacao).toBeUndefined();
+  });
   it('recusa orçamento sem itens e gera chave estável', () => {
     expect(() => corpoParaCelta({ ...base, itens: [] })).toThrow();
     expect(chaveIdempotencia(base)).toBe('intranet-orc-ckx1');

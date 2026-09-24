@@ -23,6 +23,7 @@ import {
   DesfechoOrcamentoDto,
   ExcecaoReguaDto,
   SalvarOrcamentoDto,
+  TributacaoDto,
 } from './dto/orcamento.dto';
 
 const toNum = (v?: string) => (v == null || v === '' ? undefined : Number(v));
@@ -127,6 +128,7 @@ export class OrcamentoController {
   @ApiQuery({ name: 'm1a', required: false, description: 'Total líquido dos itens MIX 1 faixa A (idem m1b, m1c, m1d) — projeção da comissão' })
   @ApiQuery({ name: 'm23', required: false, description: 'Total líquido dos itens MIX 2/3 (e sem faixa) — projeção da comissão' })
   @ApiQuery({ name: 'absorvido', required: false, description: 'Promoção: o que a empresa absorve neste orçamento (metade da falta contra custo × piso nas linhas em promoção)' })
+  @ApiQuery({ name: 'difal', required: false, description: 'DIFAL do orçamento (cliente não contribuinte de outro estado, venda não presencial): custo da AC, sai da receita' })
   bolsa(
     @Param('rep', ParseIntPipe) rep: number,
     @Query('total') total?: string,
@@ -139,6 +141,7 @@ export class OrcamentoController {
     @Query('m1d') m1d?: string,
     @Query('m23') m23?: string,
     @Query('absorvido') absorvido?: string,
+    @Query('difal') difal?: string,
   ) {
     const t = toNum(total);
     return this.service.bolsa(
@@ -148,6 +151,7 @@ export class OrcamentoController {
             receita: t, desconto: toNum(desconto) ?? 0, custo: toNum(custo) ?? 0, sem_custo: toNum(semCusto) ?? 0,
             m1a: toNum(m1a), m1b: toNum(m1b), m1c: toNum(m1c), m1d: toNum(m1d), m23: toNum(m23),
             absorvido: toNum(absorvido) ?? 0,
+            difal: toNum(difal) ?? 0,
           }
         : undefined,
     );
@@ -326,6 +330,15 @@ export class OrcamentoController {
   })
   proposta(@Body() dto: SalvarOrcamentoDto) {
     return this.service.proposta(dto);
+  }
+
+  @Post('tributacao')
+  @ApiOperation({
+    summary: 'Imposto interestadual do orçamento em edição (prévia): ICMS-ST por item somado ao total, ou DIFAL por item como custo da AC.',
+    description: 'Regime pela UF e pelo indicador de IE do cliente no Celta e pela presença da venda; MVA, alíquotas e percentual do DIFAL lidos do ERP na hora. Nada é gravado — ao salvar, o serviço recalcula.',
+  })
+  tributacao(@Body() dto: TributacaoDto) {
+    return this.service.tributacaoPrevia(dto);
   }
 
   @Get('trava/:rep_codigo')

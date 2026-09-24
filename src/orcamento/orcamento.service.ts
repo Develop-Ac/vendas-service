@@ -25,7 +25,8 @@ import {
   RegraFaixa,
   round2,
 } from './regua';
-import { DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, SalvarOrcamentoDto } from './dto/orcamento.dto';
+import { DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, SalvarOrcamentoDto, TributacaoDto } from './dto/orcamento.dto';
+import { calcularDifal, calcularSt, descricaoIndicadorIe, regimeInterestadual, seloTributacao, type ParametrosSt, type RegimeInterestadual } from './tributacao';
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
 import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, type LinhaComparativo } from './celta';
@@ -123,6 +124,19 @@ export interface ClienteOrcamento {
   fp_entrada: string | null;
   /** Venda líquida dos últimos 12 meses (BI) — só na busca; ausente se o BI não respondeu. */
   compras_12m?: number;
+  /** Indicador da IE na NF-e (1 contribuinte, 2 isento, 9 não contribuinte) — decide ST × DIFAL fora do estado. */
+  indicador_ie: number | null;
+}
+
+/** Como o imposto interestadual se aplica a este cliente/orçamento. */
+export interface ResumoTributacao {
+  regime: RegimeInterestadual;
+  uf: string | null;
+  indicador_ie: number | null;
+  indicador_ie_descricao: string | null;
+  presencial: boolean;
+  /** Texto curto para o selo do cliente; nulo quando nada muda (mesmo estado). */
+  selo: string | null;
 }
 
 /** Quantos candidatos a busca de cliente pede ao ERP antes de ordenar por canal/compras e cortar. */
@@ -166,6 +180,13 @@ export class OrcamentoService {
       premio_pct: num('ORCAMENTO_PREMIO_PCT', PREMIO_PADRAO),
       piso_item: num('ORCAMENTO_ITEM_PISO', PISO_ITEM_PADRAO),
       validade_dias: num('ORCAMENTO_VALIDADE_DIAS', 7),
+      // ICMS fora do estado: UFs liberadas (a situação 010 é do Pará; outro estado entra quando o
+      // fiscal cadastrar a situação dele) e a situação tributária do ST no Celta.
+      tributacao_ufs: (process.env.ORCAMENTO_TRIBUTACAO_UFS ?? 'PA').split(',').map((u) => u.trim().toUpperCase()).filter(Boolean),
+      st_situacao: (process.env.ORCAMENTO_ST_SITUACAO ?? '010').trim(),
+      // Mandar regime e DIFAL/ST por item na importação ao Celta: só quando a api-vendas-service
+      // que os aceita (plano v3, seção 11) estiver no ar — a atual recusa campo desconhecido.
+      celta_tributacao: ['1', 'true', 'sim'].includes((process.env.ORCAMENTO_CELTA_TRIBUTACAO ?? '').trim().toLowerCase()),
     };
   }
 
@@ -207,6 +228,20 @@ export class OrcamentoService {
       data_ult_compra: c.DATA_ULT_COMPRA,
       cp_codigo: c.CP_CODIGO == null ? null : Number(c.CP_CODIGO),
       fp_entrada: c.FP_ENTRADA ? String(c.FP_ENTRADA).trim() || null : null,
+      indicador_ie: c.INDICADOR_IE_DESTINATARIO,
+    };
+  }
+
+  /** Regime do imposto interestadual do cliente para a presença informada (padrão: não presencial). */
+  resumoTributacao(c: { UF: string | null; INDICADOR_IE_DESTINATARIO: number | null }, presencial = false): ResumoTributacao {
+    const regime = regimeInterestadual({ uf: c.UF, indicador_ie: c.INDICADOR_IE_DESTINATARIO }, presencial, this.parametros().tributacao_ufs);
+    return {
+      regime,
+      uf: c.UF ? String(c.UF).trim().toUpperCase() : null,
+      indicador_ie: c.INDICADOR_IE_DESTINATARIO,
+      indicador_ie_descricao: descricaoIndicadorIe(c.INDICADOR_IE_DESTINATARIO),
+      presencial,
+      selo: seloTributacao(regime, c.UF),
     };
   }
 
@@ -293,6 +328,8 @@ export class OrcamentoService {
       dias_sem_compra: dias,
       desconto_padrao_erp: resumo?.desconto_padrao ?? null,
       bi_disponivel: resumo != null,
+      // imposto fora do estado, na presença padrão (não presencial); a tela reavalia ao marcar presencial
+      tributacao: this.resumoTributacao(c),
     };
   }
 
@@ -389,6 +426,8 @@ export class OrcamentoService {
       receita: number; desconto: number; custo: number; sem_custo: number; m1a?: number; m1b?: number; m1c?: number; m1d?: number; m23?: number;
       /** promoção: o que a empresa absorve neste orçamento — já somado pela tela, ou as linhas para somar aqui com o piso */
       absorvido?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>;
+      /** DIFAL do orçamento (cliente não contribuinte de outro estado): custo da AC, sai da receita */
+      difal?: number;
     },
   ) {
     const p = this.parametros();
@@ -425,7 +464,7 @@ export class OrcamentoService {
       receita_mtd: v.venda_liquida,
       custo_mtd: v.custo,
       desconto_mtd: v.desconto,
-      receita_orc: orc?.receita ?? 0,
+      receita_orc: Math.max(0, (orc?.receita ?? 0) - (orc?.difal ?? 0)),
       desconto_orc: orc?.desconto ?? 0,
       custo_orc: orc?.custo ?? 0,
       sem_custo_orc: orc?.sem_custo ?? 0,
@@ -441,7 +480,8 @@ export class OrcamentoService {
     let saldoAbertos = 0;
     for (const o of abertos) {
       for (const i of o.itens ?? []) {
-        const total = Number(i.total), custo = i.custo_ref != null ? Number(i.custo_ref) : null;
+        // DIFAL da linha é custo da AC: sai da receita antes de comparar com custo × piso
+        const total = Number(i.total) - Number(i.difal ?? 0), custo = i.custo_ref != null ? Number(i.custo_ref) : null;
         saldoAbertos += custo != null && custo > 0 ? total - custo * Number(i.quantidade) * piso : 0;
       }
     }
@@ -950,8 +990,9 @@ export class OrcamentoService {
    * na hora de salvar — o que a tela mostrou pode ter mudado. O preço negociado
    * é do vendedor; o resto é fotografia.
    */
-  private async montarItens(itens: ItemOrcamentoDto[], tabelaPreco: string | null, cli: number) {
+  private async montarItens(itens: ItemOrcamentoDto[], cliente: ClienteErp, presencial = false) {
     if (!itens.length) throw new BadRequestException('Orçamento sem itens.');
+    const tabelaPreco = cliente.TABELA_PRECO, cli = cliente.CLI_CODIGO;
     const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), tabelaPreco, cli);
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
     const erros: string[] = [];
@@ -1047,11 +1088,21 @@ export class OrcamentoService {
         // parte sem saldo que o cliente aceitou receber depois (decidida ao concluir)
         qtd_encomenda: Math.min(qtd, Math.max(0, Number(i.qtd_encomenda ?? 0))),
         fora_promocao: fora,
+        icms_st: 0,
+        difal: 0,
+        difal_pct: null,
       });
     });
     if (erros.length) throw new BadRequestException(erros);
     subtotal = round2(subtotal); total = round2(total);
     const desconto = round2(subtotal - total);
+    // imposto da venda para fora do estado, por linha (serviço fica fora do ICMS)
+    const trib = await this.tributar(
+      linhas.map((l) => ({ pro_codigo: Number(l.pro_codigo), total: Number(l.total), servico: !!porCodigo.get(Number(l.pro_codigo))?.servico })),
+      cliente,
+      presencial,
+    );
+    linhas.forEach((l, i) => { l.icms_st = trib.itens[i].icms_st; l.difal = trib.itens[i].difal; l.difal_pct = trib.itens[i].difal_pct; });
     return {
       linhas,
       subtotal,
@@ -1064,6 +1115,55 @@ export class OrcamentoService {
       servicos: round2(servicos),
       promos,
       produtos,
+      tributacao: trib.resumo,
+      icms_st: trib.icms_st,
+      difal: trib.difal,
+      sem_aliquota: trib.sem_aliquota,
+    };
+  }
+
+  /**
+   * ICMS da venda para fora do estado, linha a linha, como a nota vai sair:
+   * ST somado ao total (contribuinte) ou DIFAL como custo da AC (não contribuinte/
+   * isento, venda não presencial). MVA, alíquotas e percentual do DIFAL por produto
+   * vêm do Celta na hora; produto sem alíquota de DIFAL cadastrada fica com zero e
+   * `difal_pct` nulo — a lista `sem_aliquota` é o aviso para o fiscal cadastrar.
+   */
+  private async tributar(itens: Array<{ pro_codigo: number; total: number; servico: boolean }>, cliente: { UF: string | null; INDICADOR_IE_DESTINATARIO: number | null }, presencial: boolean) {
+    const resumo = this.resumoTributacao(cliente, presencial);
+    const zero = itens.map(() => ({ icms_st: 0, difal: 0, difal_pct: null as number | null }));
+    const base = { resumo, itens: zero, icms_st: 0, difal: 0, sem_aliquota: [] as number[] };
+    if (resumo.regime === 'ST') {
+      const st: ParametrosSt | null = await this.erp.situacaoTributariaSt(this.parametros().st_situacao);
+      if (!st) throw new BadRequestException(`Situação tributária ${this.parametros().st_situacao} do ICMS-ST não encontrada (ou inativa) no Celta.`);
+      const linhas = itens.map((i) => ({ icms_st: i.servico ? 0 : calcularSt(i.total, st), difal: 0, difal_pct: null }));
+      return { ...base, itens: linhas, icms_st: round2(linhas.reduce((s, l) => s + l.icms_st, 0)) };
+    }
+    if (resumo.regime === 'DIFAL') {
+      const aliq = await this.erp.aliquotasDifal(itens.filter((i) => !i.servico).map((i) => i.pro_codigo), resumo.uf as string);
+      const semAliquota: number[] = [];
+      const linhas = itens.map((i) => {
+        if (i.servico) return { icms_st: 0, difal: 0, difal_pct: null };
+        const a = aliq.get(i.pro_codigo);
+        if (a == null) { semAliquota.push(i.pro_codigo); return { icms_st: 0, difal: 0, difal_pct: null }; }
+        return { icms_st: 0, difal: calcularDifal(i.total, a), difal_pct: a };
+      });
+      return { ...base, itens: linhas, difal: round2(linhas.reduce((s, l) => s + l.difal, 0)), sem_aliquota: [...new Set(semAliquota)] };
+    }
+    return base;
+  }
+
+  /** Prévia para a tela: o mesmo cálculo de `montarItens`, sem régua, sem bolsa e sem gravar. */
+  async tributacaoPrevia(dto: TributacaoDto) {
+    const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
+    if (!cliente) throw new NotFoundException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
+    const t = await this.tributar(dto.itens.map((i) => ({ pro_codigo: i.pro_codigo, total: Number(i.total), servico: !!i.servico })), cliente, !!dto.presencial);
+    return {
+      ...t.resumo,
+      icms_st: t.icms_st,
+      difal: t.difal,
+      sem_aliquota: t.sem_aliquota,
+      itens: dto.itens.map((i, k) => ({ pro_codigo: i.pro_codigo, ...t.itens[k] })),
     };
   }
 
@@ -1088,9 +1188,9 @@ export class OrcamentoService {
    * Fotografia da bolsa ao salvar: % de desconto do mês antes/depois (colunas
    * bolsa_pct_*) e o saldo depois deste orçamento — quem decide a alçada.
    */
-  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }> }) {
+  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>; difal?: number }) {
     try {
-      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos });
+      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos, difal: m.difal });
       const brutoDepois = b.bolsa.bruto_mtd + m.subtotal;
       return {
         antes: b.bolsa.pct_desconto,
@@ -1140,7 +1240,7 @@ export class OrcamentoService {
     }
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const pag = await this.pagamentoDe(dto);
     return this.db.criar(
@@ -1161,6 +1261,10 @@ export class OrcamentoService {
         acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
+        presencial: !!dto.presencial,
+        tributacao: m.tributacao.regime,
+        icms_st: m.icms_st,
+        difal: m.difal,
         usuario_id: dto.usuario_id ?? null,
         usuario_nome: dto.usuario_nome ?? null,
       },
@@ -1175,7 +1279,7 @@ export class OrcamentoService {
     }
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const pag = await this.pagamentoDe(dto);
     // Editar os ITENS de um orçamento já enviado o devolve ao rascunho e derruba a aprovação:
@@ -1207,6 +1311,10 @@ export class OrcamentoService {
         acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
+        presencial: !!dto.presencial,
+        tributacao: m.tributacao.regime,
+        icms_st: m.icms_st,
+        difal: m.difal,
         aprovado_por: mesmosItens ? atual.aprovado_por : null,
         aprovado_em: mesmosItens ? atual.aprovado_em : null,
         enviado_em: mesmosItens ? atual.enviado_em : null,
@@ -1256,7 +1364,7 @@ export class OrcamentoService {
   async proposta(dto: SalvarOrcamentoDto) {
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const acimaAlcada = this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa);
     const [pag, cli, repNome] = await Promise.all([
@@ -1298,12 +1406,15 @@ export class OrcamentoService {
       desconto: m.desconto_total,
       desc_pct: m.desc_pct,
       total: m.total,
+      icms_st: m.icms_st,
+      uf_st: m.tributacao.regime === 'ST' ? m.tributacao.uf : null,
       observacao: dto.observacao ?? null,
       pagamento: [pag.cp_descricao, pag.fp_descricao].filter(Boolean).join(' · ') || null,
     };
     const pdf = await gerarPdfOrcamento(dados);
     return {
       texto: mensagemWhatsapp(dados),
+      tributacao: { ...m.tributacao, icms_st: m.icms_st, difal: m.difal, sem_aliquota: m.sem_aliquota },
       acima_alcada: acimaAlcada,
       itens_acima_alcada: m.linhas.filter((l) => l.acima_alcada).map((l) => ({ pro_codigo: l.pro_codigo, descricao: l.descricao, preco_unit: l.preco_unit, preco_minimo: l.preco_minimo })),
       bolsa: { pct_antes: bolsa.antes, pct_depois: bolsa.depois, saldo_apos: bolsa.saldo_apos },
@@ -1379,6 +1490,8 @@ export class OrcamentoService {
       desconto: n(o.desconto_total),
       desc_pct: n(o.desc_pct),
       total: n(o.total),
+      icms_st: n(o.icms_st),
+      uf_st: o.tributacao === 'ST' ? cli?.UF ?? null : null,
       observacao: o.observacao ?? null,
       pagamento: [o.cp_descricao, o.fp_descricao].filter(Boolean).join(' · ') || null,
     };
@@ -1446,7 +1559,7 @@ export class OrcamentoService {
     const piso = await this.pisoVigente(mesComissional()).then((x) => x.piso).catch(() => this.parametros().bolsa_piso);
     let corpo;
     try {
-      corpo = corpoParaCelta({ ...o, piso_bolsa: piso });
+      corpo = corpoParaCelta({ ...o, piso_bolsa: piso }, this.parametros().celta_tributacao);
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     }

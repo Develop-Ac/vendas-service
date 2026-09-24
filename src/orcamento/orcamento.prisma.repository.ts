@@ -387,6 +387,9 @@ export class OrcamentoPrismaRepository {
       desc_pct: n(i.desc_pct),
       total: n(i.total),
       custo_ref: nn(i.custo_ref),
+      icms_st: n(i.icms_st),
+      difal: n(i.difal),
+      difal_pct: nn(i.difal_pct),
       classe: i.classe,
       mix: i.mix,
       faixa: i.faixa,
@@ -425,6 +428,12 @@ export class OrcamentoPrismaRepository {
       desconto_total: n(o.desconto_total),
       total: n(o.total),
       desc_pct: n(o.desc_pct),
+      // imposto fora do estado: ST vai ao cliente (total_cliente), DIFAL é custo da AC
+      presencial: !!o.presencial,
+      tributacao: o.tributacao ?? null,
+      icms_st: n(o.icms_st),
+      difal: n(o.difal),
+      total_cliente: n(o.total) + n(o.icms_st),
       acima_alcada: !!o.acima_alcada,
       bolsa_pct_antes: nn(o.bolsa_pct_antes),
       bolsa_pct_depois: nn(o.bolsa_pct_depois),
@@ -622,7 +631,7 @@ export class OrcamentoPrismaRepository {
       where: { rep_codigo: rep, status: { in: ['ENVIADO', 'APROVACAO'] } },
       select: {
         id: true, numero: true, cli_nome: true, total: true, desconto_total: true, subtotal: true,
-        itens: { select: { quantidade: true, custo_ref: true, total: true } },
+        itens: { select: { quantidade: true, custo_ref: true, total: true, difal: true } },
       },
     });
   }

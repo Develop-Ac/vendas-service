@@ -229,3 +229,19 @@ ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS celta_importado_em TIMESTAMPT
 --     da linha fica zero e a diferença (preço cobrado − tabela) × quantidade, em R$, é
 --     gravada aqui. Campo só de banco/relatório: nenhuma tela, PDF ou o Celta o exibe.
 ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS acrescimo NUMERIC(15,2) NOT NULL DEFAULT 0;
+
+-- 12) ICMS na venda para fora do estado (24/09/2026): o orçamento mostra o imposto como a
+--     nota vai sair. Cliente contribuinte de outro estado (indicador de IE 1): ICMS-ST por
+--     item, somado ao total apresentado ao cliente (`total` continua sendo só a mercadoria;
+--     total ao cliente = total + icms_st). Cliente não contribuinte/isento (9/2), venda não
+--     presencial: DIFAL por item, custo da AC — não vai ao cliente, entra na bolsa e na margem.
+--     `tributacao` guarda o regime aplicado (NENHUM | ST | DIFAL | PRESENCIAL | FORA_ESCOPO);
+--     `presencial` é o mesmo indicador de presença da NF-e (padrão não presencial no atacado).
+--     `difal_pct` NULL num item com regime DIFAL = produto sem alíquota cadastrada no Celta.
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS presencial BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS tributacao TEXT;
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS icms_st    NUMERIC(15,2) NOT NULL DEFAULT 0;
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS difal      NUMERIC(15,2) NOT NULL DEFAULT 0;
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS icms_st   NUMERIC(15,2) NOT NULL DEFAULT 0;
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS difal     NUMERIC(15,2) NOT NULL DEFAULT 0;
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS difal_pct NUMERIC(6,4);
