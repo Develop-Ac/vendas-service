@@ -240,7 +240,7 @@ export class OrcamentoController {
       inativos: on(inativos, false),
       comercializavel: on(comercializavel, true),
       equivalentes: on(equivalentes, true),
-      limite: Math.min(200, toNum(limite) ?? 60),
+      limite: Math.min(1000, toNum(limite) ?? 60), // a tela pagina de 200 em 200 ("Mostrar mais")
     });
   }
 
