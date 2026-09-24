@@ -406,6 +406,9 @@ export class OrcamentoController {
     res.header('Content-Type', 'application/pdf');
     res.header('Content-Disposition', `inline; filename="${nome}"`);
     res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+    // A URL é a mesma a cada abertura e o conteúdo muda (itens, imposto, modo do desconto): sem
+    // isto o navegador reabre o PDF antigo do cache em vez de pedir o atual.
+    res.header('Cache-Control', 'no-store');
     return res.send(dados);
   }
 

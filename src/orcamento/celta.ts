@@ -54,6 +54,8 @@ export interface OrcamentoParaCelta {
   piso_bolsa?: number | null;
   /** regime do imposto fora do estado aplicado no orçamento (NENHUM | ST | DIFAL | PRESENCIAL | FORA_ESCOPO) */
   tributacao?: string | null;
+  /** meia nota: imposto estimado sobre metade do valor; vai inteiro em despesas acessórias, sem regime */
+  meia_nota?: boolean;
 }
 
 /**
@@ -135,7 +137,7 @@ export interface CorpoCelta {
    * Ausente = nada gravado (cliente de MT ou venda presencial).
    */
   tributacao?: { regime: 'difal' | 'st' };
-  /** DIFAL cobrado do cliente: vai para "Desp. Acessórias" do orçamento no Celta (soma dos itens) e entra no TOTAL. */
+  /** Imposto cobrado do cliente que vai para "Desp. Acessórias" do orçamento no Celta e entra no TOTAL: o DIFAL (soma dos itens) e, na meia nota, também o ST. */
   desp_acessorias?: number;
   itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; valor_descto: number; difal?: number; icms_st?: number }>;
 }
@@ -155,7 +157,10 @@ export const soAscii = (s: string) =>
  * api-vendas-service que os aceita estar no ar — a versão atual recusa campo desconhecido.
  */
 export function corpoParaCelta(o: OrcamentoParaCelta, comTributacao = false): CorpoCelta {
-  const regime = comTributacao && o.tributacao === 'ST' ? 'st' : comTributacao && o.tributacao === 'DIFAL' ? 'difal' : null;
+  // meia nota: o imposto foi estimado sobre metade do valor, então não vai como regime (a API
+  // refaria a conta sobre o valor cheio e recusaria) — vai só o valor, em despesas acessórias
+  const meia = comTributacao && !!o.meia_nota && (o.tributacao === 'ST' || o.tributacao === 'DIFAL');
+  const regime = meia ? null : comTributacao && o.tributacao === 'ST' ? 'st' : comTributacao && o.tributacao === 'DIFAL' ? 'difal' : null;
   const itens = (o.itens ?? []).map((i) => {
     const quantidade = Number(i.quantidade);
     const cobrado = Number(i.preco_unit ?? 0) > 0 ? Number(i.preco_unit) : round2(Number(i.preco_tabela) * (1 - Number(i.desc_pct)));
@@ -185,6 +190,7 @@ export function corpoParaCelta(o: OrcamentoParaCelta, comTributacao = false): Co
     observacao: soAscii(obs).slice(0, OBSERVACAO_MAX),
     ...(regime ? { tributacao: { regime } } : {}),
     ...(regime === 'difal' ? { desp_acessorias: round2(itens.reduce((t, i) => t + (i.difal ?? 0), 0)) } : {}),
+    ...(meia ? { desp_acessorias: round2((o.itens ?? []).reduce((t, i) => t + Number(i.icms_st ?? 0) + Number(i.difal ?? 0), 0)) } : {}),
     itens,
   };
 }

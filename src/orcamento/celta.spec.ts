@@ -67,6 +67,11 @@ describe('corpoParaCelta', () => {
     expect(c.desp_acessorias).toBeUndefined();
     // presencial ou fora do escopo: nada vai, mesmo com a chave ligada
     expect(corpoParaCelta({ ...base, tributacao: 'PRESENCIAL' }, true).tributacao).toBeUndefined();
+    // meia nota: sem regime (o imposto foi estimado sobre metade), o valor vai em despesas acessórias
+    const m = corpoParaCelta({ ...base, tributacao: 'ST', meia_nota: true, itens: [{ ...base.itens[0], icms_st: 32.77 }] }, true);
+    expect(m.tributacao).toBeUndefined();
+    expect(m.desp_acessorias).toBe(32.77);
+    expect('icms_st' in m.itens[0]).toBe(false);
   });
   it('recusa orçamento sem itens e gera chave estável', () => {
     expect(() => corpoParaCelta({ ...base, itens: [] })).toThrow();

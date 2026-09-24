@@ -987,7 +987,7 @@ export class OrcamentoService {
    * na hora de salvar — o que a tela mostrou pode ter mudado. O preço negociado
    * é do vendedor; o resto é fotografia.
    */
-  private async montarItens(itens: ItemOrcamentoDto[], cliente: ClienteErp, presencial = false) {
+  private async montarItens(itens: ItemOrcamentoDto[], cliente: ClienteErp, presencial = false, meiaNota = false) {
     if (!itens.length) throw new BadRequestException('Orçamento sem itens.');
     const tabelaPreco = cliente.TABELA_PRECO, cli = cliente.CLI_CODIGO;
     const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), tabelaPreco, cli);
@@ -1098,6 +1098,7 @@ export class OrcamentoService {
       linhas.map((l) => ({ pro_codigo: Number(l.pro_codigo), total: Number(l.total), servico: !!porCodigo.get(Number(l.pro_codigo))?.servico })),
       cliente,
       presencial,
+      meiaNota,
     );
     linhas.forEach((l, i) => { l.icms_st = trib.itens[i].icms_st; l.difal = trib.itens[i].difal; l.difal_pct = trib.itens[i].difal_pct; });
     return {
@@ -1127,14 +1128,16 @@ export class OrcamentoService {
    * vêm do Celta na hora; produto sem alíquota de DIFAL cadastrada fica com zero e
    * `difal_pct` nulo — a lista `sem_aliquota` é o aviso para o fiscal cadastrar.
    */
-  private async tributar(itens: Array<{ pro_codigo: number; total: number; servico: boolean }>, cliente: { UF: string | null; INDICADOR_IE_DESTINATARIO: number | null }, presencial: boolean) {
+  private async tributar(itens: Array<{ pro_codigo: number; total: number; servico: boolean }>, cliente: { UF: string | null; INDICADOR_IE_DESTINATARIO: number | null }, presencial: boolean, meiaNota = false) {
     const resumo = this.resumoTributacao(cliente, presencial);
+    // meia nota: metade do valor sai em serviço, então o imposto é estimado sobre a outra metade
+    const baseDe = (i: { total: number }) => (meiaNota ? round2(i.total / 2) : i.total);
     const zero = itens.map(() => ({ icms_st: 0, difal: 0, difal_pct: null as number | null }));
     const base = { resumo, itens: zero, icms_st: 0, difal: 0, sem_aliquota: [] as number[] };
     if (resumo.regime === 'ST') {
       const st: ParametrosSt | null = await this.erp.situacaoTributariaSt(this.parametros().st_situacao);
       if (!st) throw new BadRequestException(`Situação tributária ${this.parametros().st_situacao} do ICMS-ST não encontrada (ou inativa) no Celta.`);
-      const linhas = itens.map((i) => ({ icms_st: i.servico ? 0 : calcularSt(i.total, st), difal: 0, difal_pct: null }));
+      const linhas = itens.map((i) => ({ icms_st: i.servico ? 0 : calcularSt(baseDe(i), st), difal: 0, difal_pct: null }));
       return { ...base, itens: linhas, icms_st: round2(linhas.reduce((s, l) => s + l.icms_st, 0)) };
     }
     if (resumo.regime === 'DIFAL') {
@@ -1144,7 +1147,7 @@ export class OrcamentoService {
         if (i.servico) return { icms_st: 0, difal: 0, difal_pct: null };
         const a = aliq.get(i.pro_codigo);
         if (a == null) { semAliquota.push(i.pro_codigo); return { icms_st: 0, difal: 0, difal_pct: null }; }
-        return { icms_st: 0, difal: calcularDifal(i.total, a), difal_pct: a };
+        return { icms_st: 0, difal: calcularDifal(baseDe(i), a), difal_pct: a };
       });
       return { ...base, itens: linhas, difal: round2(linhas.reduce((s, l) => s + l.difal, 0)), sem_aliquota: [...new Set(semAliquota)] };
     }
@@ -1155,7 +1158,7 @@ export class OrcamentoService {
   async tributacaoPrevia(dto: TributacaoDto) {
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new NotFoundException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const t = await this.tributar(dto.itens.map((i) => ({ pro_codigo: i.pro_codigo, total: Number(i.total), servico: !!i.servico })), cliente, !!dto.presencial);
+    const t = await this.tributar(dto.itens.map((i) => ({ pro_codigo: i.pro_codigo, total: Number(i.total), servico: !!i.servico })), cliente, !!dto.presencial, !!dto.meia_nota);
     return {
       ...t.resumo,
       icms_st: t.icms_st,
@@ -1238,7 +1241,7 @@ export class OrcamentoService {
     }
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const pag = await this.pagamentoDe(dto);
     return this.db.criar(
@@ -1260,6 +1263,7 @@ export class OrcamentoService {
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         presencial: !!dto.presencial,
+        meia_nota: !!dto.meia_nota,
         tributacao: m.tributacao.regime,
         icms_st: m.icms_st,
         difal: m.difal,
@@ -1277,7 +1281,7 @@ export class OrcamentoService {
     }
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const pag = await this.pagamentoDe(dto);
     // Editar os ITENS de um orçamento já enviado o devolve ao rascunho e derruba a aprovação:
@@ -1310,6 +1314,7 @@ export class OrcamentoService {
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         presencial: !!dto.presencial,
+        meia_nota: !!dto.meia_nota,
         tributacao: m.tributacao.regime,
         icms_st: m.icms_st,
         difal: m.difal,
@@ -1362,7 +1367,7 @@ export class OrcamentoService {
   async proposta(dto: SalvarOrcamentoDto) {
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const acimaAlcada = this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa);
     const [pag, cli, repNome] = await Promise.all([

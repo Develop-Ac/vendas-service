@@ -431,6 +431,7 @@ export class OrcamentoPrismaRepository {
       desc_pct: n(o.desc_pct),
       // imposto fora do estado: ST e DIFAL (despesa acessória) vão ao cliente — total_cliente soma os dois
       presencial: !!o.presencial,
+      meia_nota: !!o.meia_nota,
       tributacao: o.tributacao ?? null,
       icms_st: n(o.icms_st),
       difal: n(o.difal),

@@ -2152,6 +2152,7 @@ model ven_orcamento {
   comparado          Boolean              @default(false)
   liberadogerencia   Boolean?
   presencial         Boolean              @default(false)
+  meia_nota          Boolean              @default(false)
   tributacao         String?
   icms_st            Decimal              @default(0) @db.Decimal(15, 2)
   difal              Decimal              @default(0) @db.Decimal(15, 2)

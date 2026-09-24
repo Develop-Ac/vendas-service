@@ -246,3 +246,9 @@ ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS difal      NUMERIC(15,2) NOT 
 ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS icms_st   NUMERIC(15,2) NOT NULL DEFAULT 0;
 ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS difal     NUMERIC(15,2) NOT NULL DEFAULT 0;
 ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS difal_pct NUMERIC(6,4);
+
+-- 13) Meia nota (24/09/2026): venda que sai metade em produto e metade em serviço. Só muda a
+--     estimativa do imposto interestadual no orçamento: ST e DIFAL calculados sobre metade do
+--     valor de cada item, e na importação ao Celta o valor vai em "Desp. Acessórias" em vez das
+--     colunas de tributação. Estimativa comercial do que o cliente paga; a nota é do Celta.
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS meia_nota BOOLEAN NOT NULL DEFAULT FALSE;

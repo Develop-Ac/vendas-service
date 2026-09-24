@@ -105,6 +105,11 @@ export class SalvarOrcamentoDto {
   @IsBoolean()
   presencial?: boolean;
 
+  @ApiProperty({ description: 'Meia nota: metade do valor sai em produto e metade em serviço. ST e DIFAL estimados sobre metade de cada item; na importação ao Celta o imposto vai em Desp. Acessórias.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  meia_nota?: boolean;
+
   @ApiProperty({ required: false })
   @IsOptional()
   @IsString()
@@ -142,6 +147,11 @@ export class TributacaoDto {
   @IsOptional()
   @IsBoolean()
   presencial?: boolean;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  meia_nota?: boolean;
 
   @ApiProperty({ type: [ItemTributacaoDto] })
   @IsArray()
