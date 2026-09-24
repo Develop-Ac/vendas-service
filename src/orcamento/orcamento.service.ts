@@ -1,6 +1,6 @@
 import { gerarPdfOrcamento, ModoDesconto, PdfItem, PdfOrcamento } from './orcamento.pdf';
 import { mensagemWhatsapp } from './orcamento.mensagem';
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta, ordenarBuscaClientes } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional, mesesAnteriores } from './orcamento.bi.repository';
@@ -29,7 +29,14 @@ import { DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDt
 import { calcularDifal, calcularSt, descricaoIndicadorIe, regimeInterestadual, seloTributacao, type ParametrosSt, type RegimeInterestadual } from './tributacao';
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
-import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, type LinhaComparativo } from './celta';
+import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, justificativaAlcada, soAscii, type LinhaComparativo } from './celta';
+import { assinarComprovante } from './comprovante';
+
+/**
+ * As duas permissões (sis_permissoes.tela, com editar ou criar) que o Celta exige de quem libera
+ * desconto acima do máximo: sem as duas o serviço recusa a aprovação e a tela não mostra o botão.
+ */
+export const PERMISSOES_APROVACAO = ['/vendas/orcamento/liberar-bloqueio', '/vendas/orcamento/desconto-excedido'] as const;
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
@@ -187,6 +194,8 @@ export class OrcamentoService {
       // Mandar regime e DIFAL/ST por item na importação ao Celta: só quando a api-vendas-service
       // que os aceita (plano v3, seção 11) estiver no ar — a atual recusa campo desconhecido.
       celta_tributacao: ['1', 'true', 'sim'].includes((process.env.ORCAMENTO_CELTA_TRIBUTACAO ?? '').trim().toLowerCase()),
+      /** chave privada (PEM Ed25519) que assina o comprovante de aprovação enviado ao Celta */
+      aprovacao_chave_privada: (process.env.ORCAMENTO_APROVACAO_CHAVE_PRIVADA ?? '').trim() || null,
     };
   }
 
@@ -1337,9 +1346,14 @@ export class OrcamentoService {
     if (o.cp_codigo == null) throw new BadRequestException('Informe a condição de pagamento antes de enviar.');
     // Item sem saldo NÃO trava o envio: a proposta vai ao cliente com o aviso na linha
     // ("sem estoque" / "aguardando liberação"); a decisão de saldo é só no FECHOU (tela).
-    const precisaAprovar = o.acima_alcada && !o.aprovado_em;
+    // Acima da alçada da intranet OU acima do desconto máximo do Celta (prévia da API): os dois
+    // pedem a gerência antes de a proposta ir ao cliente — no segundo caso a importação exigiria o
+    // comprovante e travaria o vendedor no fechamento.
+    let precisaAprovar = o.acima_alcada && !o.aprovado_em;
+    if (!precisaAprovar && !o.aprovado_em && (await this.itensAcimaDoTetoCelta(o)).length > 0) precisaAprovar = true;
     const r = await this.db.atualizar(id, {
       status: precisaAprovar ? 'APROVACAO' : 'ENVIADO',
+      acima_alcada: precisaAprovar || o.acima_alcada,
       enviado_em: precisaAprovar ? null : new Date(),
       usuario_id: usuario?.usuario_id ?? o.usuario_id,
       usuario_nome: usuario?.usuario_nome ?? o.usuario_nome,
@@ -1521,17 +1535,82 @@ export class OrcamentoService {
   }
 
   /** Supervisor libera o que está abaixo do mínimo; o orçamento segue como ENVIADO. */
+  /**
+   * Gestor libera o desconto. Vale para o orçamento em APROVAÇÃO e também para o FECHADO que o
+   * Celta recusou na importação por item acima do teto do ERP (a aprovação fica registrada e o
+   * vendedor importa de novo). Quem aprova precisa das duas permissões que o Celta exige; o código
+   * ERP do aprovador vai no bloqueio gravado lá (USU_LIBEROU).
+   */
   async aprovar(id: string, usuario?: { usuario_id?: string; usuario_nome?: string }) {
     const o = await this.obter(id);
-    if (o.status !== 'APROVACAO') throw new BadRequestException('Só orçamento em APROVAÇÃO pode ser aprovado.');
+    const fechadoSemCelta = o.status === 'FECHADO' && !o.celta_orcamento && o.acima_alcada && !o.aprovado_em;
+    if (o.status !== 'APROVACAO' && !fechadoSemCelta) throw new BadRequestException('Só orçamento em APROVAÇÃO pode ser aprovado.');
+
+    const u = await this.db.usuarioPorRef(usuario?.usuario_id);
+    if (!u) throw new ForbiddenException('Aprovador não identificado: entre de novo na intranet e tente outra vez.');
+    const telas = new Set(u.sis_permissoes.filter((p) => p.editar || p.criar).map((p) => p.tela));
+    const faltam = PERMISSOES_APROVACAO.filter((t) => !telas.has(t));
+    if (faltam.length) throw new ForbiddenException(`Aprovar exige as permissões "liberar bloqueio de orçamento" e "desconto excedido" (faltam: ${faltam.join(', ')}).`);
+    const codigo = Number(u.codigo);
+
     const r = await this.db.atualizar(id, {
-      status: 'ENVIADO',
-      aprovado_por: usuario?.usuario_nome ?? usuario?.usuario_id ?? 'supervisor',
+      ...(o.status === 'APROVACAO' ? { status: 'ENVIADO', enviado_em: new Date() } : {}),
+      aprovado_por: usuario?.usuario_nome ?? u.nome,
       aprovado_em: new Date(),
-      enviado_em: new Date(),
+      aprovado_codigo: Number.isFinite(codigo) ? codigo : null,
     });
-    this.avisos.aprovacaoEncerrada(id);
+    if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
     return r;
+  }
+
+  /**
+   * Itens do orçamento acima do desconto máximo do Celta, pela prévia da api-vendas-service
+   * (o mesmo cálculo que a importação vai exigir). Sem integração configurada, ou com a API fora
+   * do ar, devolve vazio: a importação refaz a conferência de qualquer jeito.
+   */
+  private async itensAcimaDoTetoCelta(o: Awaited<ReturnType<OrcamentoService['obter']>>) {
+    if (!this.celta.configurado() || !o.itens?.length || !o.rep_codigo) return [];
+    try {
+      const corpo = corpoParaCelta(o, this.parametros().celta_tributacao);
+      return (await this.celta.excedentes(o.empresa, corpo)).itens;
+    } catch (e) {
+      this.logger.warn(`Prévia do teto do Celta indisponível para o orçamento ${o.numero}: ${(e as Error).message}`);
+      return [];
+    }
+  }
+
+  /**
+   * Comprovante de aprovação para a importação: o conjunto exato de itens acima do teto (prévia
+   * da API), assinado com a chave privada da intranet, com quem aprovou e quem pediu em código
+   * ERP. Sem item acima do teto não há comprovante. Sem aprovação registrada, a importação para
+   * aqui — e o orçamento fica marcado para a gerência aprovar.
+   */
+  private async comprovanteParaCelta(id: string, o: Awaited<ReturnType<OrcamentoService['obter']>>, corpo: ReturnType<typeof corpoParaCelta>) {
+    const previa = await this.celta.excedentes(o.empresa, corpo);
+    if (!previa.itens.length) return undefined;
+    if (!o.aprovado_em) {
+      await this.db.atualizar(id, { acima_alcada: true });
+      const lista = previa.itens.map((i) => `${i.pro_codigo} ${i.efetivo}% (máx ${i.permitido}%)`).join('; ');
+      throw new BadRequestException(`Item acima do desconto máximo do Celta: ${lista}. Peça a aprovação da gerência e importe de novo.`);
+    }
+    const aprovador = o.aprovado_codigo ?? Number((await this.db.usuarioPorNome(o.aprovado_por))?.codigo);
+    if (!Number.isFinite(aprovador) || !(aprovador > 0)) {
+      throw new BadRequestException('A aprovação deste orçamento é anterior à liberação por comprovante: peça nova aprovação da gerência.');
+    }
+    const quemPediu = (await this.db.usuarioPorRef(o.usuario_id))?.codigo ?? (await this.db.usuarioDoRep(o.rep_codigo))?.codigo;
+    const solicitante = Number(quemPediu);
+    return assinarComprovante(
+      {
+        empresa: o.empresa,
+        cli_codigo: o.cli_codigo,
+        aprovador,
+        solicitante: Number.isFinite(solicitante) && solicitante > 0 ? solicitante : aprovador,
+        justificativa: soAscii(justificativaAlcada(o)).slice(0, 500),
+        valor_descto: previa.valor_descto,
+        itens: previa.itens,
+      },
+      this.parametros().aprovacao_chave_privada ?? undefined,
+    );
   }
 
   async desfecho(id: string, dto: DesfechoOrcamentoDto) {
@@ -1568,6 +1647,8 @@ export class OrcamentoService {
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     }
+    const comprovante = await this.comprovanteParaCelta(id, o, corpo);
+    if (comprovante) corpo = { ...corpo, comprovante };
     const r = await this.celta.criar(o.empresa, corpo, chaveIdempotencia(o));
     const salvo = await this.db.atualizar(id, {
       celta_orcamento: r.orcamento,

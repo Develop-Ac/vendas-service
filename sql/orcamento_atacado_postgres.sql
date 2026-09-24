@@ -252,3 +252,20 @@ ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS difal_pct NUMERIC(6,4);
 --     valor de cada item, e na importação ao Celta o valor vai em "Desp. Acessórias" em vez das
 --     colunas de tributação. Estimativa comercial do que o cliente paga; a nota é do Celta.
 ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS meia_nota BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- 14) Liberação de desconto no Celta (24/09/2026): a importação de orçamento com item acima do
+--     desconto máximo do ERP leva um comprovante assinado pela intranet, e a API do Celta grava o
+--     bloqueio já autorizado. `aprovado_codigo` = USUARIOS.USU_CODIGO do Celta de quem aprovou
+--     (sis_usuarios.codigo), gravado na aprovação; vai no bloqueio como USU_LIBEROU.
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS aprovado_codigo INT;
+
+--     As duas permissões que a aprovação exige (o botão Aprovar só aparece com as duas e o
+--     serviço confere as duas). Modelo: dá as duas a quem hoje aprova (hub GERENCIA ou setor
+--     ADMIN/ADMINISTRADOR/DIRETORIA); ajuste a lista de usuários antes de rodar.
+INSERT INTO sis_permissoes (usuario_id, modulo, tela, visualizar, editar, criar, deletar)
+SELECT u.id, 'Vendas', t.tela, true, true, false, false
+  FROM sis_usuarios u
+ CROSS JOIN (VALUES ('/vendas/orcamento/liberar-bloqueio'), ('/vendas/orcamento/desconto-excedido')) AS t(tela)
+ WHERE u.trash = 0
+   AND (upper(coalesce(u.vendas_hub_inicial, '')) = 'GERENCIA' OR upper(coalesce(u.setor, '')) IN ('ADMIN', 'ADMINISTRADOR', 'DIRETORIA'))
+   AND NOT EXISTS (SELECT 1 FROM sis_permissoes p WHERE p.usuario_id = u.id AND p.tela = t.tela);

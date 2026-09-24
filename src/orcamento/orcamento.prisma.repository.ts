@@ -441,6 +441,7 @@ export class OrcamentoPrismaRepository {
       bolsa_pct_depois: nn(o.bolsa_pct_depois),
       aprovado_por: o.aprovado_por,
       aprovado_em: o.aprovado_em,
+      aprovado_codigo: o.aprovado_codigo ?? null,
       enviado_em: o.enviado_em,
       desfecho_em: o.desfecho_em,
       desfecho_motivo: o.desfecho_motivo,
@@ -475,6 +476,31 @@ export class OrcamentoPrismaRepository {
       }),
     ]);
     return { total, page, pageSize, itens: rows.map((r) => this.mapOrcamento(r)) };
+  }
+
+  /* ----------------------------------------------- usuários (aprovação no Celta) */
+
+  /** Usuário da intranet por id (cuid) ou código (o mesmo USU_CODIGO do Celta), com as permissões. */
+  usuarioPorRef(ref: string | null | undefined) {
+    const r = (ref ?? '').trim();
+    if (!r) return Promise.resolve(null);
+    return this.prisma.sis_usuarios.findFirst({
+      where: { trash: 0, OR: [{ id: r }, { codigo: r }] },
+      select: { id: true, codigo: true, nome: true, sis_permissoes: { select: { tela: true, editar: true, criar: true } } },
+    });
+  }
+
+  /** Usuário da intranet dono da carteira do representante. */
+  usuarioDoRep(rep: number | null | undefined) {
+    if (rep == null) return Promise.resolve(null);
+    return this.prisma.sis_usuarios.findFirst({ where: { trash: 0, vendas_rep_codigo: rep }, select: { codigo: true } });
+  }
+
+  /** Usuário da intranet pelo nome gravado em aprovado_por (orçamentos aprovados antes do código). */
+  usuarioPorNome(nome: string | null | undefined) {
+    const n = (nome ?? '').trim();
+    if (!n) return Promise.resolve(null);
+    return this.prisma.sis_usuarios.findFirst({ where: { trash: 0, nome: { equals: n, mode: 'insensitive' } }, select: { codigo: true } });
   }
 
   async obter(id: string) {

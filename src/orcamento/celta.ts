@@ -49,6 +49,10 @@ export interface OrcamentoParaCelta {
   bolsa_pct_depois?: number | null;
   aprovado_por?: string | null;
   aprovado_em?: Date | string | null;
+  /** USUARIOS.USU_CODIGO do Celta de quem aprovou (sis_usuarios.codigo) */
+  aprovado_codigo?: number | null;
+  /** quem mandou o orçamento (sis_usuarios.id ou codigo) — o solicitante do bloqueio no Celta */
+  usuario_id?: string | null;
   itens?: ItemParaCelta[];
   /** piso da bolsa (custo × piso) vigente — para a conta da compensação na observação */
   piso_bolsa?: number | null;
@@ -139,6 +143,8 @@ export interface CorpoCelta {
   tributacao?: { regime: 'difal' | 'st' };
   /** Imposto cobrado do cliente que vai para "Desp. Acessórias" do orçamento no Celta e entra no TOTAL: o DIFAL (soma dos itens) e, na meia nota, também o ST. */
   desp_acessorias?: number;
+  /** comprovante de aprovação de desconto (JWT EdDSA assinado pela intranet) — só quando algum item passa do teto do ERP */
+  comprovante?: string;
   itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; valor_descto: number; difal?: number; icms_st?: number }>;
 }
 
