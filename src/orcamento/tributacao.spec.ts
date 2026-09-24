@@ -48,7 +48,7 @@ describe('regimeInterestadual', () => {
     expect(regimeInterestadual({ uf: 'GO', indicador_ie: 1 }, false, ['PA', 'GO'])).toBe('ST');
   });
   it('selo por regime', () => {
-    expect(seloTributacao('DIFAL', 'PA')).toBe('PA · não contribuinte: DIFAL por conta da AC');
+    expect(seloTributacao('DIFAL', 'PA')).toBe('PA · não contribuinte: DIFAL somado ao total');
     expect(seloTributacao('NENHUM', 'MT')).toBeNull();
   });
 });

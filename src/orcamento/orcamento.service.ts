@@ -426,8 +426,6 @@ export class OrcamentoService {
       receita: number; desconto: number; custo: number; sem_custo: number; m1a?: number; m1b?: number; m1c?: number; m1d?: number; m23?: number;
       /** promoção: o que a empresa absorve neste orçamento — já somado pela tela, ou as linhas para somar aqui com o piso */
       absorvido?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>;
-      /** DIFAL do orçamento (cliente não contribuinte de outro estado): custo da AC, sai da receita */
-      difal?: number;
     },
   ) {
     const p = this.parametros();
@@ -464,7 +462,7 @@ export class OrcamentoService {
       receita_mtd: v.venda_liquida,
       custo_mtd: v.custo,
       desconto_mtd: v.desconto,
-      receita_orc: Math.max(0, (orc?.receita ?? 0) - (orc?.difal ?? 0)),
+      receita_orc: orc?.receita ?? 0,
       desconto_orc: orc?.desconto ?? 0,
       custo_orc: orc?.custo ?? 0,
       sem_custo_orc: orc?.sem_custo ?? 0,
@@ -480,8 +478,7 @@ export class OrcamentoService {
     let saldoAbertos = 0;
     for (const o of abertos) {
       for (const i of o.itens ?? []) {
-        // DIFAL da linha é custo da AC: sai da receita antes de comparar com custo × piso
-        const total = Number(i.total) - Number(i.difal ?? 0), custo = i.custo_ref != null ? Number(i.custo_ref) : null;
+        const total = Number(i.total), custo = i.custo_ref != null ? Number(i.custo_ref) : null;
         saldoAbertos += custo != null && custo > 0 ? total - custo * Number(i.quantidade) * piso : 0;
       }
     }
@@ -1124,8 +1121,9 @@ export class OrcamentoService {
 
   /**
    * ICMS da venda para fora do estado, linha a linha, como a nota vai sair:
-   * ST somado ao total (contribuinte) ou DIFAL como custo da AC (não contribuinte/
-   * isento, venda não presencial). MVA, alíquotas e percentual do DIFAL por produto
+   * ST (contribuinte) ou DIFAL (não contribuinte/isento, venda não presencial), os
+   * dois somados ao total ao cliente — o DIFAL vai como despesa acessória, por acordo
+   * com os clientes do atacado. MVA, alíquotas e percentual do DIFAL por produto
    * vêm do Celta na hora; produto sem alíquota de DIFAL cadastrada fica com zero e
    * `difal_pct` nulo — a lista `sem_aliquota` é o aviso para o fiscal cadastrar.
    */
@@ -1188,9 +1186,9 @@ export class OrcamentoService {
    * Fotografia da bolsa ao salvar: % de desconto do mês antes/depois (colunas
    * bolsa_pct_*) e o saldo depois deste orçamento — quem decide a alçada.
    */
-  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>; difal?: number }) {
+  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }> }) {
     try {
-      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos, difal: m.difal });
+      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos });
       const brutoDepois = b.bolsa.bruto_mtd + m.subtotal;
       return {
         antes: b.bolsa.pct_desconto,
@@ -1407,7 +1405,8 @@ export class OrcamentoService {
       desc_pct: m.desc_pct,
       total: m.total,
       icms_st: m.icms_st,
-      uf_st: m.tributacao.regime === 'ST' ? m.tributacao.uf : null,
+      difal: m.difal,
+      uf_trib: m.icms_st > 0 || m.difal > 0 ? m.tributacao.uf : null,
       observacao: dto.observacao ?? null,
       pagamento: [pag.cp_descricao, pag.fp_descricao].filter(Boolean).join(' · ') || null,
     };
@@ -1491,7 +1490,8 @@ export class OrcamentoService {
       desc_pct: n(o.desc_pct),
       total: n(o.total),
       icms_st: n(o.icms_st),
-      uf_st: o.tributacao === 'ST' ? cli?.UF ?? null : null,
+      difal: n(o.difal),
+      uf_trib: n(o.icms_st) > 0 || n(o.difal) > 0 ? cli?.UF ?? null : null,
       observacao: o.observacao ?? null,
       pagamento: [o.cp_descricao, o.fp_descricao].filter(Boolean).join(' · ') || null,
     };

@@ -232,9 +232,10 @@ ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS acrescimo NUMERIC(15,2) 
 
 -- 12) ICMS na venda para fora do estado (24/09/2026): o orçamento mostra o imposto como a
 --     nota vai sair. Cliente contribuinte de outro estado (indicador de IE 1): ICMS-ST por
---     item, somado ao total apresentado ao cliente (`total` continua sendo só a mercadoria;
---     total ao cliente = total + icms_st). Cliente não contribuinte/isento (9/2), venda não
---     presencial: DIFAL por item, custo da AC — não vai ao cliente, entra na bolsa e na margem.
+--     item. Cliente não contribuinte/isento (9/2), venda não presencial: DIFAL por item, cobrado do
+--     cliente como despesa acessória (acordo com os clientes do atacado). Os dois somam ao total
+--     apresentado ao cliente (`total` continua sendo só a mercadoria; total ao cliente = total +
+--     icms_st + difal); bolsa e margem não mudam (repasse).
 --     `tributacao` guarda o regime aplicado (NENHUM | ST | DIFAL | PRESENCIAL | FORA_ESCOPO);
 --     `presencial` é o mesmo indicador de presença da NF-e (padrão não presencial no atacado).
 --     `difal_pct` NULL num item com regime DIFAL = produto sem alíquota cadastrada no Celta.

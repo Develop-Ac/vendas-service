@@ -8,9 +8,12 @@ import { round2 } from './regua';
 
      cliente contribuinte (indicador 1)          -> ICMS-ST, somado ao total da
         operação 165, CFOP 6.403, situação 010     nota: o cliente paga.
-     cliente não contribuinte (9) ou isento (2)  -> DIFAL, fora do total da nota:
-        operação 158, CFOP 6.108, situação 158     a AC recolhe por GNRE. É custo
-                                                   da venda (margem, bolsa, prêmio).
+     cliente não contribuinte (9) ou isento (2)  -> DIFAL: a AC recolhe por GNRE e,
+        operação 158, CFOP 6.108, situação 158     por acordo com os clientes do
+                                                   atacado, cobra dele como despesa
+                                                   acessória — somado ao total do
+                                                   orçamento e da nota. Repasse, não
+                                                   custo: bolsa e margem não mudam.
         Só quando a venda NÃO é presencial: cliente que retira na loja sai em
         operação interna, sem DIFAL — o mesmo indicador de presença da NF-e.
 
@@ -31,7 +34,7 @@ export type RegimeInterestadual =
   | 'NENHUM'
   /** contribuinte fora do estado: ICMS-ST somado ao total */
   | 'ST'
-  /** não contribuinte/isento fora do estado, venda não presencial: DIFAL como custo */
+  /** não contribuinte/isento fora do estado, venda não presencial: DIFAL somado ao total (despesa acessória) */
   | 'DIFAL'
   /** não contribuinte/isento fora do estado, venda presencial: operação interna */
   | 'PRESENCIAL'
@@ -81,7 +84,7 @@ export function seloTributacao(regime: RegimeInterestadual, uf: string | null): 
   const u = (uf ?? '').trim().toUpperCase();
   switch (regime) {
     case 'ST': return `${u} · revenda: ICMS-ST somado ao total`;
-    case 'DIFAL': return `${u} · não contribuinte: DIFAL por conta da AC`;
+    case 'DIFAL': return `${u} · não contribuinte: DIFAL somado ao total`;
     case 'PRESENCIAL': return `${u} · venda presencial: sem DIFAL`;
     case 'FORA_ESCOPO': return `${u} · fora do escopo: imposto interestadual não calculado`;
     default: return null;

@@ -29,7 +29,7 @@ export interface ItemParaCelta {
   custo_ref?: number | null;
   promocao_codigo?: number | null;
   fora_promocao?: boolean;
-  /** imposto fora do estado da linha (cliente do Pará): ST somado ao total ou DIFAL como custo da AC */
+  /** imposto fora do estado da linha (cliente do Pará): ST ou DIFAL, os dois somados ao total ao cliente */
   icms_st?: number | null;
   difal?: number | null;
 }
@@ -135,6 +135,8 @@ export interface CorpoCelta {
    * Ausente = nada gravado (cliente de MT ou venda presencial).
    */
   tributacao?: { regime: 'difal' | 'st' };
+  /** DIFAL cobrado do cliente: vai para "Desp. Acessórias" do orçamento no Celta (soma dos itens) e entra no TOTAL. */
+  desp_acessorias?: number;
   itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; valor_descto: number; difal?: number; icms_st?: number }>;
 }
 
@@ -182,6 +184,7 @@ export function corpoParaCelta(o: OrcamentoParaCelta, comTributacao = false): Co
     ...(fp ? { fp_entrada: fp, fp_demais_parcelas: fp } : {}),
     observacao: soAscii(obs).slice(0, OBSERVACAO_MAX),
     ...(regime ? { tributacao: { regime } } : {}),
+    ...(regime === 'difal' ? { desp_acessorias: round2(itens.reduce((t, i) => t + (i.difal ?? 0), 0)) } : {}),
     itens,
   };
 }

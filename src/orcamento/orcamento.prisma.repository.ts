@@ -1,3 +1,4 @@
+import { round2 } from './regua';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
@@ -428,12 +429,12 @@ export class OrcamentoPrismaRepository {
       desconto_total: n(o.desconto_total),
       total: n(o.total),
       desc_pct: n(o.desc_pct),
-      // imposto fora do estado: ST vai ao cliente (total_cliente), DIFAL é custo da AC
+      // imposto fora do estado: ST e DIFAL (despesa acessória) vão ao cliente — total_cliente soma os dois
       presencial: !!o.presencial,
       tributacao: o.tributacao ?? null,
       icms_st: n(o.icms_st),
       difal: n(o.difal),
-      total_cliente: n(o.total) + n(o.icms_st),
+      total_cliente: round2(n(o.total) + n(o.icms_st) + n(o.difal)),
       acima_alcada: !!o.acima_alcada,
       bolsa_pct_antes: nn(o.bolsa_pct_antes),
       bolsa_pct_depois: nn(o.bolsa_pct_depois),
@@ -631,7 +632,7 @@ export class OrcamentoPrismaRepository {
       where: { rep_codigo: rep, status: { in: ['ENVIADO', 'APROVACAO'] } },
       select: {
         id: true, numero: true, cli_nome: true, total: true, desconto_total: true, subtotal: true,
-        itens: { select: { quantidade: true, custo_ref: true, total: true, difal: true } },
+        itens: { select: { quantidade: true, custo_ref: true, total: true } },
       },
     });
   }

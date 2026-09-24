@@ -59,9 +59,12 @@ describe('corpoParaCelta', () => {
     expect(c.tributacao).toEqual({ regime: 'st' });
     expect(c.itens[0].icms_st).toBe(65.53);
     expect(c.itens[0].difal).toBeUndefined();
-    const d = corpoParaCelta({ ...base, tributacao: 'DIFAL', itens: [{ ...base.itens[0], difal: 23.9 }] }, true);
+    const d = corpoParaCelta({ ...base, tributacao: 'DIFAL', itens: [{ ...base.itens[0], difal: 23.9 }, { ...base.itens[1], difal: 1.13 }] }, true);
     expect(d.tributacao).toEqual({ regime: 'difal' });
     expect(d.itens[0]).toMatchObject({ difal: 23.9 });
+    // DIFAL cobrado do cliente: vai em "Desp. Acessórias" do orçamento do Celta (soma dos itens)
+    expect(d.desp_acessorias).toBe(25.03);
+    expect(c.desp_acessorias).toBeUndefined();
     // presencial ou fora do escopo: nada vai, mesmo com a chave ligada
     expect(corpoParaCelta({ ...base, tributacao: 'PRESENCIAL' }, true).tributacao).toBeUndefined();
   });
