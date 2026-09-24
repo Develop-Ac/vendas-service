@@ -49,7 +49,8 @@ const HEADER = b64(JSON.stringify({ alg: 'EdDSA', typ: 'JWT' }));
 
 /** PEM da chave privada como vem do .env (entre aspas, com `\n` escapado) ou com quebras reais. */
 export function chavePrivada(pem: string | undefined) {
-  const s = (pem ?? '').trim();
+  // do .env vem entre aspas com `\n` escapado; de um painel (sem dotenv) pode vir com as aspas dentro do valor
+  const s = (pem ?? '').trim().replace(/^["']|["']$/g, '').trim();
   if (!s) return null;
   return createPrivateKey(s.replace(/\\n/g, '\n'));
 }

@@ -4,6 +4,7 @@ import { assinarComprovante, chavePrivada, VALIDADE_S } from './comprovante';
 describe('comprovante de aprovação', () => {
   const par = generateKeyPairSync('ed25519');
   const pem = par.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+  const escapado = pem.replace(/\n/g, '\\n');
   const dados = {
     empresa: 3,
     cli_codigo: 40275,
@@ -26,8 +27,9 @@ describe('comprovante de aprovação', () => {
     expect(assinarComprovante(dados, pem)).not.toBe(token);
   });
 
-  it('aceita o PEM com as quebras escapadas, como vem do .env', () => {
-    expect(chavePrivada(pem.replace(/\n/g, '\\n'))).not.toBeNull();
+  it('aceita o PEM como vem do .env (quebras escapadas) e de um painel (com aspas em volta)', () => {
+    expect(chavePrivada(escapado)).not.toBeNull();
+    expect(chavePrivada(`"${escapado}"`)).not.toBeNull();
     expect(chavePrivada(undefined)).toBeNull();
     expect(() => assinarComprovante(dados, '')).toThrow(/ORCAMENTO_APROVACAO_CHAVE_PRIVADA/);
   });
