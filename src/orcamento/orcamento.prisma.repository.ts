@@ -200,7 +200,7 @@ export class OrcamentoPrismaRepository {
     return criados.map((r) => this.mapOportunidade(r));
   }
 
-  async alterarOportunidade(id: number, data: { pct_vendedor?: number; quantidade?: number; custo_bolsa?: number; encerrado_em?: Date | null }) {
+  async alterarOportunidade(id: number, data: { pct_vendedor?: number; custo_bolsa?: number; encerrado_em?: Date | null }) {
     const r = await this.prisma.ven_bolsa_oportunidade.update({ where: { id }, data: { ...data, updated_at: new Date() } });
     return this.mapOportunidade(r);
   }

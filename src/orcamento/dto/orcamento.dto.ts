@@ -286,7 +286,7 @@ export class ItemOportunidadeDto {
   @IsInt()
   pro_codigo: number;
 
-  @ApiProperty({ description: 'Unidades do lote cobertas pela regra (nasce da quantidade da nota).' })
+  @ApiProperty({ description: 'Quantidade do item na nota. O lote gravado é o menor entre ela e o estoque de hoje.' })
   @IsNumber()
   @Min(0)
   quantidade: number;
@@ -342,12 +342,6 @@ export class AlterarOportunidadeDto {
   @IsNumber()
   @Min(0)
   pct_vendedor?: number;
-
-  @ApiProperty({ required: false, description: 'Nova quantidade do lote.' })
-  @IsOptional()
-  @IsNumber()
-  @Min(0)
-  quantidade?: number;
 
   @ApiProperty({ required: false, description: 'true encerra o registro hoje (vendas de hoje em diante voltam ao custo real).' })
   @IsOptional()

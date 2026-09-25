@@ -605,11 +605,17 @@ export class OrcamentoService {
     try {
       const abertas = await this.db.oportunidadesAbertas();
       if (!abertas.length) return;
-      const vendidas = await this.bi.unidadesVendidasDesde(abertas.map((o) => ({ pro_codigo: o.pro_codigo, desde: o.vigente_de.toISOString().slice(0, 10).replace(/-/g, '') })));
+      // o lote é o que ainda está na prateleira: acaba pela contagem de vendas OU quando o estoque zera
+      const [vendidas, produtos] = await Promise.all([
+        this.bi.unidadesVendidasDesde(abertas.map((o) => ({ pro_codigo: o.pro_codigo, desde: o.vigente_de.toISOString().slice(0, 10).replace(/-/g, '') }))),
+        this.erp.produtosPorCodigo(abertas.map((o) => o.pro_codigo)),
+      ]);
+      const estoque = new Map<number, number>(produtos.map((p) => [p.PRO_CODIGO, p.ESTOQUE_DISPONIVEL]));
       await this.db.apurarOportunidades(
         abertas.map((o) => {
           const v = vendidas.get(o.pro_codigo) ?? 0;
-          return { id: o.id, vendida: v, encerrar: v >= o.quantidade - 1e-6 };
+          const e = estoque.get(o.pro_codigo);
+          return { id: o.id, vendida: v, encerrar: v >= o.quantidade - 1e-6 || (e != null && e <= 0) };
         }),
       );
     } catch (e) {
@@ -653,13 +659,16 @@ export class OrcamentoService {
         const custo = p && p.PRECO_CUSTO > 0 ? p.PRECO_CUSTO : null;
         const preco_tabela = p?.PRECO2 ?? 0;
         const sobra = custo != null && preco_tabela > 0 ? custoParaBolsa(custo, preco_tabela, piso, PCT_VENDEDOR_PADRAO).sobra : null;
+        const estoque_disponivel = p?.ESTOQUE_DISPONIVEL ?? 0;
         return {
           ...i,
           descricao: p?.PRO_DESCRICAO ?? i.descricao,
           na_empresa_3: !!p,
           custo,
           preco_tabela,
-          estoque_disponivel: p?.ESTOQUE_DISPONIVEL ?? 0,
+          estoque_disponivel,
+          // o lote coberto é o que ainda está na prateleira: nunca mais do que a nota trouxe
+          lote: Math.max(0, Math.min(i.quantidade, estoque_disponivel)),
           sobra,
           vigente: vigentes.get(i.pro_codigo) ?? null,
         };
@@ -680,7 +689,9 @@ export class OrcamentoService {
       if (!p) { erros.push(`Produto ${i.pro_codigo} não existe na empresa 3.`); continue; }
       if (!(pct >= 0 && pct <= 1)) { erros.push(`${p.PRO_DESCRICAO}: a parte do vendedor deve ficar entre 0 e 100%.`); continue; }
       if (!(p.PRECO_CUSTO > 0) || !(p.PRECO2 > 0)) { erros.push(`${p.PRO_DESCRICAO}: sem custo ou sem preço na tabela 2 — não há sobra a repartir.`); continue; }
-      if (!(Number(i.quantidade) > 0)) { erros.push(`${p.PRO_DESCRICAO}: a quantidade do lote deve ser maior que zero.`); continue; }
+      // lote = o que da nota ainda está em estoque hoje (a tela não edita isso)
+      const quantidade = Math.min(Number(i.quantidade), p.ESTOQUE_DISPONIVEL);
+      if (!(quantidade > 0)) { erros.push(`${p.PRO_DESCRICAO}: sem estoque hoje — não há lote a cobrir.`); continue; }
       const c = custoParaBolsa(p.PRECO_CUSTO, p.PRECO2, piso, pct);
       linhas.push({
         pro_codigo: i.pro_codigo,
@@ -689,7 +700,7 @@ export class OrcamentoService {
         nota_fiscal: dto.nota_fiscal ?? null,
         for_codigo: dto.for_codigo ?? null,
         for_nome: dto.for_nome ?? null,
-        quantidade: Number(i.quantidade),
+        quantidade,
         custo_nota: i.custo_nota ?? null,
         custo: p.PRECO_CUSTO,
         preco_tabela: p.PRECO2,
@@ -715,11 +726,14 @@ export class OrcamentoService {
     const estoque = new Map<number, number>(produtos.map((p) => [p.PRO_CODIGO, p.ESTOQUE_DISPONIVEL]));
     return rows.map((r) => {
       const c = custoParaBolsa(r.custo, r.preco_tabela, r.piso, r.pct_vendedor);
-      return { ...r, sobra: c.sobra, vendedor: c.vendedor, reserva: c.reserva, restante: Math.max(0, r.quantidade - r.vendida), estoque_disponivel: estoque.get(r.pro_codigo) ?? null };
+      const e = estoque.get(r.pro_codigo) ?? null;
+      // o que resta do lote é o que ainda está na prateleira, nunca mais do que a nota menos o vendido
+      const restante = r.encerrado_em ? 0 : Math.max(0, Math.min(r.quantidade - r.vendida, e ?? Infinity));
+      return { ...r, sobra: c.sobra, vendedor: c.vendedor, reserva: c.reserva, restante, estoque_disponivel: e };
     });
   }
 
-  /** Muda a parte do vendedor ou a quantidade do lote aberto (custo/tabela/piso do registro ficam), ou encerra. */
+  /** Muda a parte do vendedor do lote aberto (custo/tabela/piso do registro ficam), ou encerra. */
   async alterarOportunidade(id: number, dto: AlterarOportunidadeDto) {
     const atual = await this.db.oportunidade(id);
     if (!atual) throw new NotFoundException('Registro não encontrado.');
@@ -729,11 +743,9 @@ export class OrcamentoService {
       return this.db.alterarOportunidade(id, { encerrado_em: new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) });
     }
     const pct = dto.pct_vendedor ?? atual.pct_vendedor;
-    const quantidade = dto.quantidade ?? atual.quantidade;
     if (!(pct >= 0 && pct <= 1)) throw new BadRequestException('A parte do vendedor deve ficar entre 0 e 100%.');
-    if (!(quantidade > 0)) throw new BadRequestException('A quantidade do lote deve ser maior que zero.');
     const c = custoParaBolsa(atual.custo, atual.preco_tabela, atual.piso, pct);
-    const r = await this.db.alterarOportunidade(id, { pct_vendedor: pct, quantidade, custo_bolsa: c.custo_bolsa });
+    const r = await this.db.alterarOportunidade(id, { pct_vendedor: pct, custo_bolsa: c.custo_bolsa });
     this.apuracaoOportunidadeEm = 0;
     return r;
   }

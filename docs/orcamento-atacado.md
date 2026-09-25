@@ -132,14 +132,16 @@ orçamento, promoção, compensação) e na leitura do mês no BI (`custoBolsaSq
 trocado por custo p/ bolsa × quantidade nos produtos com lote vigente na data). Régua, faixa da
 comissão, "abaixo do custo", piso custo × 1,25, Celta e nota seguem com o custo real.
 
-Vigência por lote: vale das vendas a partir do registro e encerra sozinha quando as unidades
-vendidas desde então (BI, todos os canais, devolução desconta) chegam à quantidade registrada
-(nasce da nota, editável). A apuração roda na leitura da bolsa e da lista, no máximo a cada 10 min,
+Vigência por lote: o lote é o que da nota ainda está na prateleira no dia do registro (menor entre
+a quantidade da nota e o estoque de hoje; a tela não edita). Vale das vendas a partir do registro e
+encerra sozinha quando as unidades vendidas desde então (BI, todos os canais, devolução desconta)
+chegam ao lote, ou quando o estoque do produto zera. "Restam" = menor entre lote − vendidas e o
+estoque de hoje. A apuração roda na leitura da bolsa e da lista, no máximo a cada 10 min,
 e grava `vendida`/`encerrado_em`. Registrar de novo o mesmo produto encerra o lote aberto (as
 vendas do dia já vão para o novo). O lote que acaba hoje encerra hoje: as vendas de hoje voltam
 ao custo real. Rotas: `GET /orcamento/oportunidade/nota?numero=&fornecedor=&chave=` (NF-e lançada
 na empresa 1, itens com custo/tabela 2/estoque da empresa 3 e a sobra), `GET/POST
-/orcamento/oportunidade`, `PUT /orcamento/oportunidade/:id` (% / quantidade / encerrar).
+/orcamento/oportunidade`, `PUT /orcamento/oportunidade/:id` (% do vendedor ou encerrar).
 SQL manual bloco 14. Função pura em `oportunidade.ts` (+ spec).
 
 ## Comissão estimada (ao lado da bolsa)

@@ -87,7 +87,7 @@ export class OrcamentoController {
   }
 
   @Put('oportunidade/:id')
-  @ApiOperation({ summary: 'Muda a parte do vendedor / quantidade de um lote aberto, ou encerra.' })
+  @ApiOperation({ summary: 'Muda a parte do vendedor de um lote aberto, ou encerra.' })
   alterarOportunidade(@Param('id', ParseIntPipe) id: number, @Body() dto: AlterarOportunidadeDto) {
     return this.service.alterarOportunidade(id, dto);
   }
