@@ -229,7 +229,7 @@ export interface Avaliacao {
 
 // 13,85 × 2,30 dá 31,854999… em ponto flutuante; sem a folga o meio-centavo cai para baixo.
 export const round2 = (v: number) => Math.round(v * 100 + 1e-7) / 100;
-const round4 = (v: number) => Math.round(v * 10000 + 1e-7) / 10000;
+export const round4 = (v: number) => Math.round(v * 10000 + 1e-7) / 10000;
 
 /**
  * Avalia um item: classe, faixa, desconto máximo e PREÇO MÍNIMO.

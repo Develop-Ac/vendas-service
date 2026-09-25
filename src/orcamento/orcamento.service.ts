@@ -25,7 +25,8 @@ import {
   RegraFaixa,
   round2,
 } from './regua';
-import { DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, SalvarOrcamentoDto, TributacaoDto } from './dto/orcamento.dto';
+import { AlterarOportunidadeDto, DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, RegistrarOportunidadeDto, SalvarOrcamentoDto, TributacaoDto } from './dto/orcamento.dto';
+import { custoParaBolsa, PCT_VENDEDOR_PADRAO } from './oportunidade';
 import { calcularDifal, calcularSt, descricaoIndicadorIe, regimeInterestadual, seloTributacao, type ParametrosSt, type RegimeInterestadual } from './tributacao';
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
@@ -72,6 +73,8 @@ export interface ProdutoOrcamento {
   estoque_fora: number;
   estoque_terceiros: number;
   custo: number | null;
+  /** compra de oportunidade: custo que a BOLSA usa no lugar de `custo` (reserva da empresa); nulo = sem lote vigente */
+  custo_bolsa: number | null;
   preco_tabela: number;
   /** Preço da tabela do cliente ANTES da promoção (o "de:" da EST012). */
   preco_original: number;
@@ -438,9 +441,11 @@ export class OrcamentoService {
         return [] as number[];
       }),
     ]);
+    // compra de oportunidade: lotes que cobrem vendas do mês (vigentes ou encerrados há pouco)
+    const lotes = await this.oportunidadesParaBolsa(2);
     const [v, clientes, celulas, cfgComissao] = await Promise.all([
-      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos),
-      this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes).catch((e) => {
+      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
+      this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
         return [];
       }),
@@ -561,7 +566,7 @@ export class OrcamentoService {
     const periodo = mesComissional();
     const chaves = mesesAnteriores(periodo.ano, periodo.mes, meses);
     const [rows, { piso }] = await Promise.all([
-      this.bi.bolsaClienteMensal(rep, cli, chaves[chaves.length - 1], chaves[0]),
+      this.oportunidadesParaBolsa(meses + 1).then((lotes) => this.bi.bolsaClienteMensal(rep, cli, chaves[chaves.length - 1], chaves[0], lotes)),
       this.pisoVigente(periodo),
     ]);
     const linhas = chaves.map(({ ano, mes }) => {
@@ -582,13 +587,164 @@ export class OrcamentoService {
     };
   }
 
+  /* ------------------------------------------------- compra de oportunidade */
+
+  private apuracaoOportunidadeEm = 0;
+
+  /**
+   * Conta as unidades vendidas de cada lote aberto (BI: todos os canais, devolução
+   * desconta) e encerra o lote que chegou à quantidade. Roda no máximo a cada 10 min,
+   * puxado pela leitura da bolsa e da lista — não há job. Falha do BI não derruba a
+   * bolsa: o lote segue como estava.
+   * ponytail: o lote que acaba hoje encerra hoje, e as vendas de hoje voltam ao custo
+   * real; para dar o dia inteiro ao lote seria preciso encerrar amanhã.
+   */
+  private async apurarOportunidades() {
+    if (Date.now() - this.apuracaoOportunidadeEm < 10 * 60_000) return;
+    this.apuracaoOportunidadeEm = Date.now();
+    try {
+      const abertas = await this.db.oportunidadesAbertas();
+      if (!abertas.length) return;
+      const vendidas = await this.bi.unidadesVendidasDesde(abertas.map((o) => ({ pro_codigo: o.pro_codigo, desde: o.vigente_de.toISOString().slice(0, 10).replace(/-/g, '') })));
+      await this.db.apurarOportunidades(
+        abertas.map((o) => {
+          const v = vendidas.get(o.pro_codigo) ?? 0;
+          return { id: o.id, vendida: v, encerrar: v >= o.quantidade - 1e-6 };
+        }),
+      );
+    } catch (e) {
+      this.logger.warn(`Apuração dos lotes de oportunidade falhou: ${(e as Error).message}`);
+    }
+  }
+
+  /** Lotes que cobrem vendas dos últimos `meses` meses — o que a bolsa lê do BI precisa para trocar o custo. */
+  private async oportunidadesParaBolsa(meses: number) {
+    await this.apurarOportunidades();
+    const desde = new Date();
+    desde.setMonth(desde.getMonth() - meses);
+    return this.db.oportunidadesDesde(desde).catch((e) => {
+      this.logger.warn(`Lotes de oportunidade indisponíveis (bolsa usa o custo real): ${(e as Error).message}`);
+      return [];
+    });
+  }
+
+  /**
+   * Nota de compra para a tela: itens da nota (empresa 1) com custo de reposição,
+   * preço de tabela 2 e estoque da empresa 3, a sobra a preço de tabela e o lote
+   * vigente do produto, se houver. Mais de uma nota com o número → a tela escolhe.
+   */
+  async notaCompra(f: { numero?: number; fornecedor?: number; chave?: string }) {
+    if (!f.numero && !f.chave) throw new BadRequestException('Informe o número da nota (e o fornecedor) ou a chave de 44 dígitos.');
+    const notas = await this.erp.notasEntrada(f);
+    if (!notas.length) throw new NotFoundException('Nota de compra não encontrada: só NF-e lançada na empresa 1.');
+    if (notas.length > 1) return { notas, nota: null, piso: null, itens: [] };
+    const nota = notas[0];
+    const [itens, { piso }] = await Promise.all([this.erp.itensNotaEntrada(nota.nfe), this.pisoVigente(mesComissional())]);
+    const codigos = itens.map((i) => i.pro_codigo);
+    const [produtos, vigentes] = await Promise.all([this.erp.produtosPorCodigo(codigos), this.db.oportunidadesVigentes(codigos)]);
+    const porCodigo = new Map(produtos.map((p) => [p.PRO_CODIGO, p]));
+    return {
+      notas,
+      nota,
+      piso,
+      pct_padrao: PCT_VENDEDOR_PADRAO,
+      itens: itens.map((i) => {
+        const p = porCodigo.get(i.pro_codigo);
+        const custo = p && p.PRECO_CUSTO > 0 ? p.PRECO_CUSTO : null;
+        const preco_tabela = p?.PRECO2 ?? 0;
+        const sobra = custo != null && preco_tabela > 0 ? custoParaBolsa(custo, preco_tabela, piso, PCT_VENDEDOR_PADRAO).sobra : null;
+        return {
+          ...i,
+          descricao: p?.PRO_DESCRICAO ?? i.descricao,
+          na_empresa_3: !!p,
+          custo,
+          preco_tabela,
+          estoque_disponivel: p?.ESTOQUE_DISPONIVEL ?? 0,
+          sobra,
+          vigente: vigentes.get(i.pro_codigo) ?? null,
+        };
+      }),
+    };
+  }
+
+  /** Registra o lote de cada item com o custo/tabela/piso de HOJE; lote aberto do mesmo produto encerra. */
+  async registrarOportunidades(dto: RegistrarOportunidadeDto) {
+    const codigos = dto.itens.map((i) => i.pro_codigo);
+    const [produtos, { piso }] = await Promise.all([this.erp.produtosPorCodigo(codigos), this.pisoVigente(mesComissional())]);
+    const porCodigo = new Map(produtos.map((p) => [p.PRO_CODIGO, p]));
+    const erros: string[] = [];
+    const linhas: Parameters<OrcamentoPrismaRepository['registrarOportunidades']>[0] = [];
+    for (const i of dto.itens) {
+      const p = porCodigo.get(i.pro_codigo);
+      const pct = Number(i.pct_vendedor);
+      if (!p) { erros.push(`Produto ${i.pro_codigo} não existe na empresa 3.`); continue; }
+      if (!(pct >= 0 && pct <= 1)) { erros.push(`${p.PRO_DESCRICAO}: a parte do vendedor deve ficar entre 0 e 100%.`); continue; }
+      if (!(p.PRECO_CUSTO > 0) || !(p.PRECO2 > 0)) { erros.push(`${p.PRO_DESCRICAO}: sem custo ou sem preço na tabela 2 — não há sobra a repartir.`); continue; }
+      if (!(Number(i.quantidade) > 0)) { erros.push(`${p.PRO_DESCRICAO}: a quantidade do lote deve ser maior que zero.`); continue; }
+      const c = custoParaBolsa(p.PRECO_CUSTO, p.PRECO2, piso, pct);
+      linhas.push({
+        pro_codigo: i.pro_codigo,
+        descricao: p.PRO_DESCRICAO ?? null,
+        nfe: dto.nfe ?? null,
+        nota_fiscal: dto.nota_fiscal ?? null,
+        for_codigo: dto.for_codigo ?? null,
+        for_nome: dto.for_nome ?? null,
+        quantidade: Number(i.quantidade),
+        custo_nota: i.custo_nota ?? null,
+        custo: p.PRECO_CUSTO,
+        preco_tabela: p.PRECO2,
+        piso,
+        pct_vendedor: pct,
+        custo_bolsa: c.custo_bolsa,
+        criado_por: dto.criado_por ?? null,
+      });
+    }
+    if (erros.length) throw new BadRequestException(erros);
+    if (!linhas.length) throw new BadRequestException('Nenhum item para registrar.');
+    const r = await this.db.registrarOportunidades(linhas);
+    this.apuracaoOportunidadeEm = 0;
+    return r;
+  }
+
+  /** Lotes registrados (vigentes primeiro) com vendidas, restantes, estoque atual e a repartição da sobra. */
+  async listarOportunidades() {
+    await this.apurarOportunidades();
+    const rows = await this.db.listarOportunidades();
+    const abertos = rows.filter((r) => !r.encerrado_em).map((r) => r.pro_codigo);
+    const produtos = abertos.length ? await this.erp.produtosPorCodigo(abertos).catch(() => [] as ProdutoErp[]) : [];
+    const estoque = new Map<number, number>(produtos.map((p) => [p.PRO_CODIGO, p.ESTOQUE_DISPONIVEL]));
+    return rows.map((r) => {
+      const c = custoParaBolsa(r.custo, r.preco_tabela, r.piso, r.pct_vendedor);
+      return { ...r, sobra: c.sobra, vendedor: c.vendedor, reserva: c.reserva, restante: Math.max(0, r.quantidade - r.vendida), estoque_disponivel: estoque.get(r.pro_codigo) ?? null };
+    });
+  }
+
+  /** Muda a parte do vendedor ou a quantidade do lote aberto (custo/tabela/piso do registro ficam), ou encerra. */
+  async alterarOportunidade(id: number, dto: AlterarOportunidadeDto) {
+    const atual = await this.db.oportunidade(id);
+    if (!atual) throw new NotFoundException('Registro não encontrado.');
+    if (atual.encerrado_em) throw new BadRequestException('Lote encerrado: para voltar a valer, registre a nota de novo.');
+    if (dto.encerrar) {
+      const d = new Date();
+      return this.db.alterarOportunidade(id, { encerrado_em: new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) });
+    }
+    const pct = dto.pct_vendedor ?? atual.pct_vendedor;
+    const quantidade = dto.quantidade ?? atual.quantidade;
+    if (!(pct >= 0 && pct <= 1)) throw new BadRequestException('A parte do vendedor deve ficar entre 0 e 100%.');
+    if (!(quantidade > 0)) throw new BadRequestException('A quantidade do lote deve ser maior que zero.');
+    const c = custoParaBolsa(atual.custo, atual.preco_tabela, atual.piso, pct);
+    const r = await this.db.alterarOportunidade(id, { pct_vendedor: pct, quantidade, custo_bolsa: c.custo_bolsa });
+    this.apuracaoOportunidadeEm = 0;
+    return r;
+  }
+
   /* ------------------------------------------------------------ produtos */
 
   /** Enriquecimento comum: régua, exceção, giro, último preço do cliente, equivalente. */
   private async enriquecer(produtos: ProdutoErp[], tabelaPreco: string | null, cli?: number): Promise<ProdutoOrcamento[]> {
     if (!produtos.length) return [];
     const codigos = produtos.map((p) => p.PRO_CODIGO);
-    const [regua, volume, excecoes, giro, ultimos, comGrupo, promos] = await Promise.all([
+    const [regua, volume, excecoes, giro, ultimos, comGrupo, promos, oportunidades] = await Promise.all([
       this.db.regua(),
       this.db.volume(),
       this.db.excecoes(codigos),
@@ -604,10 +760,14 @@ export class OrcamentoService {
         this.logger.warn(`Promoções indisponíveis: ${(e as Error).message}`);
         return new Map<number, PromocaoItem>();
       }),
+      this.db.oportunidadesVigentes(codigos).catch((e) => {
+        this.logger.warn(`Lotes de oportunidade indisponíveis (bolsa usa o custo real): ${(e as Error).message}`);
+        return new Map<number, { custo_bolsa: number }>();
+      }),
     ]);
     const ultimoPor = new Map(ultimos.map((u) => [u.pro_codigo, u]));
     return produtos.map((p) =>
-      this.montarProduto(p, tabelaPreco, regua, volume, excecoes.get(p.PRO_CODIGO) ?? null, giro.get(p.PRO_CODIGO) ?? null, ultimoPor.get(p.PRO_CODIGO) ?? null, comGrupo.has(p.PRO_CODIGO), promos.get(p.PRO_CODIGO) ?? null),
+      this.montarProduto(p, tabelaPreco, regua, volume, excecoes.get(p.PRO_CODIGO) ?? null, giro.get(p.PRO_CODIGO) ?? null, ultimoPor.get(p.PRO_CODIGO) ?? null, comGrupo.has(p.PRO_CODIGO), promos.get(p.PRO_CODIGO) ?? null, oportunidades.get(p.PRO_CODIGO) ?? null),
     );
   }
 
@@ -621,6 +781,7 @@ export class OrcamentoService {
     ultimo: { dt_emissao: string; unitario: number; quantidade: number } | null,
     temEquivalente: boolean,
     promo: PromocaoItem | null,
+    oportunidade: { custo_bolsa: number } | null,
   ): ProdutoOrcamento {
     // Serviço (subtipo 09) não traz preço de tabela: o vendedor informa o valor no orçamento.
     const tabela = ehServico(p.SUBTIPO) ? { coluna: colunaTabela(tabelaPreco), preco: 0, fallback: false } : precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
@@ -678,6 +839,7 @@ export class OrcamentoService {
       estoque_fora: p.ESTOQUE_FORA_ESTABELECIMENTO,
       estoque_terceiros: p.ESTOQUE_EM_TERCEIROS,
       custo,
+      custo_bolsa: oportunidade && custo != null ? oportunidade.custo_bolsa : null,
       preco_tabela: preco.preco,
       preco_original: tabela.preco,
       tabela_coluna: preco.coluna,
@@ -1014,6 +1176,8 @@ export class OrcamentoService {
       // em centavos. Abaixo da tabela é desconto (a régua e a bolsa avaliam esse preço);
       // acima é acréscimo — desconto zero e a diferença gravada em `acrescimo`.
       const descPedido = Math.min(1, Math.max(0, Number(i.desc_pct ?? 0)));
+      // compra de oportunidade: a bolsa (e só ela) vê o custo com a reserva da empresa
+      const custoBolsa = p.custo_bolsa ?? p.custo;
       const unitFechado = Number(i.preco_unit ?? 0);
       let preco =
         tabela > 0
@@ -1048,9 +1212,9 @@ export class OrcamentoService {
       const linhaTotal = round2(preco * qtd);
       // serviço não conta para a bolsa (nem como neutro): a bolsa é de mercadoria
       if (p.servico) servicos += linhaTotal; // fora da bolsa (nem como neutro): a bolsa é de mercadoria
-      else if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
+      else if (custoBolsa != null && custoBolsa > 0) custoOrc += custoBolsa * qtd;
       else semCusto += linhaTotal;
-      if (!fora && p.promocao) promos.push({ preco, custo: p.custo, qtd });
+      if (!fora && p.promocao) promos.push({ preco, custo: custoBolsa, qtd });
       // linha com acréscimo entra no subtotal pelo próprio preço: o acréscimo não abate o desconto das outras
       subtotal += round2(Math.max(tabela, preco) * qtd);
       total += linhaTotal;
@@ -1069,7 +1233,7 @@ export class OrcamentoService {
         total: linhaTotal,
         // R$ cobrados acima da tabela na linha inteira; só no banco (relatório), nenhuma tela mostra
         acrescimo: tabela > 0 && preco > tabela ? round2((preco - tabela) * qtd) : 0,
-        custo_ref: p.custo,
+        custo_ref: custoBolsa,
         classe: av.classe,
         mix: av.mix,
         faixa: av.faixa,

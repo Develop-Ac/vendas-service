@@ -278,3 +278,79 @@ export class ExcecaoReguaDto {
   @IsBoolean()
   remover?: boolean;
 }
+
+/* ------------------------------------------------- compra de oportunidade */
+
+export class ItemOportunidadeDto {
+  @ApiProperty()
+  @IsInt()
+  pro_codigo: number;
+
+  @ApiProperty({ description: 'Unidades do lote cobertas pela regra (nasce da quantidade da nota).' })
+  @IsNumber()
+  @Min(0)
+  quantidade: number;
+
+  @ApiProperty({ description: 'Fração da sobra que fica com o vendedor (0 a 1).' })
+  @IsNumber()
+  @Min(0)
+  pct_vendedor: number;
+
+  @ApiProperty({ required: false, description: 'Custo do item na nota (informação).' })
+  @IsOptional()
+  @IsNumber()
+  custo_nota?: number | null;
+}
+
+export class RegistrarOportunidadeDto {
+  @ApiProperty({ required: false, description: 'NF_ENTRADA.NFE (chave interna, empresa 1).' })
+  @IsOptional()
+  @IsInt()
+  nfe?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  nota_fiscal?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  for_codigo?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  for_nome?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  criado_por?: string;
+
+  @ApiProperty({ type: [ItemOportunidadeDto] })
+  @IsArray()
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => ItemOportunidadeDto)
+  itens: ItemOportunidadeDto[];
+}
+
+export class AlterarOportunidadeDto {
+  @ApiProperty({ required: false, description: 'Nova fração da sobra para o vendedor (0 a 1); recalcula o custo para a bolsa.' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  pct_vendedor?: number;
+
+  @ApiProperty({ required: false, description: 'Nova quantidade do lote.' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  quantidade?: number;
+
+  @ApiProperty({ required: false, description: 'true encerra o registro hoje (vendas de hoje em diante voltam ao custo real).' })
+  @IsOptional()
+  @IsBoolean()
+  encerrar?: boolean;
+}

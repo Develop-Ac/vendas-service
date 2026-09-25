@@ -20,6 +20,28 @@ export const TABELAS_ATACADO = ['2', '5'];
 /** Empresa que EMITE a nota de venda: os parâmetros fiscais (ST, DIFAL) são lidos dela. */
 export const EMPRESA_FISCAL = 1;
 
+export interface NotaEntrada {
+  nfe: number;
+  nota_fiscal: number;
+  serie: string | null;
+  chave: string | null;
+  for_codigo: number;
+  for_nome: string | null;
+  dt_emissao: string | null;
+  dt_entrada: string | null;
+  total: number;
+}
+
+export interface ItemNotaEntrada {
+  item: number;
+  pro_codigo: number;
+  descricao: string | null;
+  quantidade: number;
+  unitario: number;
+  custo_nota: number | null;
+  total: number;
+}
+
 export interface ProdutoErp {
   PRO_CODIGO: number;
   PRO_DESCRICAO: string;
@@ -397,6 +419,64 @@ export class OrcamentoErpRepository {
       for (const x of r) achadas.add(String(x.CHAVE_NFE));
     }
     return achadas;
+  }
+
+  /**
+   * Notas de compra (NF-e LANÇADAS na empresa 1) pelo número — com ou sem o
+   * fornecedor — ou pela chave. O mesmo número existe em mais de um fornecedor;
+   * sem o fornecedor podem voltar várias e a tela escolhe.
+   */
+  async notasEntrada(f: { numero?: number; fornecedor?: number; chave?: string }): Promise<NotaEntrada[]> {
+    const filtros: FiltroErp[] = [
+      { campo: 'MODELO_NOTA', op: 'igual', valor: 55 },
+      { campo: 'STATUS', op: 'igual', valor: 1 },
+      { campo: 'DT_CANCELAMENTO', op: 'nulo' },
+    ];
+    if (f.chave) filtros.push({ campo: 'CHAVE_NFE', op: 'igual', valor: f.chave });
+    else {
+      filtros.push({ campo: 'NOTA_FISCAL', op: 'igual', valor: f.numero });
+      if (f.fornecedor) filtros.push({ campo: 'FOR_CODIGO', op: 'igual', valor: f.fornecedor });
+    }
+    const r = await this.erp.consultar<Record<string, any>>('nf-entrada', {
+      empresa: EMPRESA_FISCAL,
+      campos: ['NFE', 'NOTA_FISCAL', 'SERIE', 'CHAVE_NFE', 'FOR_CODIGO', 'DT_EMISSAO', 'DT_ENTRADA', 'TOTAL_NOTA', { campo: 'fornecedor.FOR_NOME', como: 'FOR_NOME' }],
+      filtros,
+      ordenar: [{ campo: 'DT_ENTRADA', dir: 'desc' }],
+      limite: 20,
+      semCache: true,
+    });
+    return r.map((x) => ({
+      nfe: Number(x.NFE),
+      nota_fiscal: Number(x.NOTA_FISCAL),
+      serie: x.SERIE == null ? null : String(x.SERIE).trim(),
+      chave: x.CHAVE_NFE == null ? null : String(x.CHAVE_NFE),
+      for_codigo: Number(x.FOR_CODIGO),
+      for_nome: x.FOR_NOME == null ? null : String(x.FOR_NOME).trim(),
+      dt_emissao: x.DT_EMISSAO == null ? null : String(x.DT_EMISSAO).slice(0, 10),
+      dt_entrada: x.DT_ENTRADA == null ? null : String(x.DT_ENTRADA).slice(0, 10),
+      total: Number(x.TOTAL_NOTA ?? 0),
+    }));
+  }
+
+  /** Itens de uma nota de compra (empresa 1) com o custo calculado no lançamento. */
+  async itensNotaEntrada(nfe: number): Promise<ItemNotaEntrada[]> {
+    const r = await this.erp.consultar<Record<string, any>>('nfe-itens', {
+      empresa: EMPRESA_FISCAL,
+      campos: ['ITEM', 'PRO_CODIGO', 'QUANTIDADE', 'UNITARIO', 'CUSTO_NOTA', 'TOTAL', { campo: 'produto.PRO_DESCRICAO', como: 'PRO_DESCRICAO' }],
+      filtros: [{ campo: 'NFE', op: 'igual', valor: nfe }],
+      ordenar: [{ campo: 'ITEM', dir: 'asc' }],
+      limite: 2000,
+      semCache: true,
+    });
+    return r.map((x) => ({
+      item: Number(x.ITEM),
+      pro_codigo: Number(x.PRO_CODIGO),
+      descricao: x.PRO_DESCRICAO == null ? null : String(x.PRO_DESCRICAO).trim(),
+      quantidade: Number(x.QUANTIDADE ?? 0),
+      unitario: Number(x.UNITARIO ?? 0),
+      custo_nota: x.CUSTO_NOTA == null ? null : Number(x.CUSTO_NOTA),
+      total: Number(x.TOTAL ?? 0),
+    }));
   }
 
   /**

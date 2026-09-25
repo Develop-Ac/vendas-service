@@ -117,6 +117,31 @@ A tela projeta o saldo "depois" com o orçamento em edição (`total`, `desconto
 amarelo = dentro da bolsa, vermelho = bolsa estourada), o rateio por cliente (`por_cliente`,
 quem gerou o saldo) e a participação MIX1 com o degrau da escada (22/26/30% → ×1,25/×1,5/×2,0).
 
+### Compra de oportunidade: reserva da empresa (25/09/2026)
+
+Num lote comprado muito abaixo do custo normal, com o preço mantido perto do mercado, a sobra
+(preço − custo × piso) cresceria e iria inteira para a bolsa. A gestão registra a nota de compra
+(tela **Compra de oportunidade**, só gestão) e diz quanto da sobra a preço de tabela fica com o
+vendedor; o resto é reserva da empresa. Grava-se por produto, em `ven_bolsa_oportunidade`, o
+**custo para a bolsa** = custo + (1 − %) × sobra ÷ piso, fixo em reais (tabela sobe depois → a
+diferença é do vendedor). Exemplo: custo 210,66, tabela 882,07, piso 1,538, 20% → sobra 558,07,
+vendedor 111,61, reserva 446,46, custo para a bolsa 500,95.
+
+Só a bolsa usa esse custo: no orçamento (`custo_bolsa` do produto → `custo_ref`, custo do
+orçamento, promoção, compensação) e na leitura do mês no BI (`custoBolsaSql`: o custo da venda é
+trocado por custo p/ bolsa × quantidade nos produtos com lote vigente na data). Régua, faixa da
+comissão, "abaixo do custo", piso custo × 1,25, Celta e nota seguem com o custo real.
+
+Vigência por lote: vale das vendas a partir do registro e encerra sozinha quando as unidades
+vendidas desde então (BI, todos os canais, devolução desconta) chegam à quantidade registrada
+(nasce da nota, editável). A apuração roda na leitura da bolsa e da lista, no máximo a cada 10 min,
+e grava `vendida`/`encerrado_em`. Registrar de novo o mesmo produto encerra o lote aberto (as
+vendas do dia já vão para o novo). O lote que acaba hoje encerra hoje: as vendas de hoje voltam
+ao custo real. Rotas: `GET /orcamento/oportunidade/nota?numero=&fornecedor=&chave=` (NF-e lançada
+na empresa 1, itens com custo/tabela 2/estoque da empresa 3 e a sobra), `GET/POST
+/orcamento/oportunidade`, `PUT /orcamento/oportunidade/:id` (% / quantidade / encerrar).
+SQL manual bloco 14. Função pura em `oportunidade.ts` (+ spec).
+
 ## Comissão estimada (ao lado da bolsa)
 
 `comissao` na resposta da bolsa: `atual` (mês como está) e `com_orcamento` (se o orçamento fechar),

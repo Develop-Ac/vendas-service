@@ -1,6 +1,7 @@
 import { round2 } from './regua';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import type { ven_bolsa_oportunidade } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } from './regua';
 
@@ -14,6 +15,11 @@ import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } fro
 
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 const nn = (v: unknown): number | null => (v == null ? null : Number(v));
+/** Hoje como coluna DATE (meia-noite UTC do dia local): o Prisma grava só a data. */
+const hojeData = () => {
+  const d = new Date();
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+};
 
 export interface GiroItem {
   pro_codigo: number;
@@ -112,6 +118,105 @@ export class OrcamentoPrismaRepository {
       update: data,
     });
     return { ...r, desc_max: nn(r.desc_max) };
+  }
+
+  /* --------------------------------------------- compra de oportunidade */
+
+  private mapOportunidade(r: ven_bolsa_oportunidade) {
+    return {
+      id: r.id,
+      pro_codigo: r.pro_codigo,
+      descricao: r.descricao,
+      nfe: r.nfe,
+      nota_fiscal: r.nota_fiscal,
+      for_codigo: r.for_codigo,
+      for_nome: r.for_nome,
+      quantidade: Number(r.quantidade),
+      custo_nota: nn(r.custo_nota),
+      custo: Number(r.custo),
+      preco_tabela: Number(r.preco_tabela),
+      piso: Number(r.piso),
+      pct_vendedor: Number(r.pct_vendedor),
+      custo_bolsa: Number(r.custo_bolsa),
+      vigente_de: r.vigente_de,
+      vendida: Number(r.vendida),
+      apurado_em: r.apurado_em,
+      encerrado_em: r.encerrado_em,
+      criado_por: r.criado_por,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    };
+  }
+
+  /** Lotes vigentes dos produtos (um por produto): o custo que a bolsa usa hoje. */
+  async oportunidadesVigentes(codigos: number[]) {
+    const saida = new Map<number, ReturnType<OrcamentoPrismaRepository['mapOportunidade']>>();
+    if (!codigos.length) return saida;
+    const rows = await this.prisma.ven_bolsa_oportunidade.findMany({ where: { pro_codigo: { in: codigos }, encerrado_em: null } });
+    for (const r of rows) saida.set(r.pro_codigo, this.mapOportunidade(r));
+    return saida;
+  }
+
+  async oportunidadesAbertas() {
+    const rows = await this.prisma.ven_bolsa_oportunidade.findMany({ where: { encerrado_em: null } });
+    return rows.map((r) => this.mapOportunidade(r));
+  }
+
+  /** Lotes que cobrem alguma venda a partir de `desde` (vigentes ou encerrados depois dela) — a bolsa do mês. */
+  async oportunidadesDesde(desde: Date) {
+    const rows = await this.prisma.ven_bolsa_oportunidade.findMany({
+      where: { OR: [{ encerrado_em: null }, { encerrado_em: { gte: desde } }] },
+      select: { pro_codigo: true, custo_bolsa: true, vigente_de: true, encerrado_em: true },
+    });
+    return rows.map((r) => ({ pro_codigo: r.pro_codigo, custo_bolsa: Number(r.custo_bolsa), vigente_de: r.vigente_de, encerrado_em: r.encerrado_em }));
+  }
+
+  async listarOportunidades() {
+    const rows = await this.prisma.ven_bolsa_oportunidade.findMany({ orderBy: { updated_at: 'desc' }, take: 300 });
+    return rows.map((r) => this.mapOportunidade(r)).sort((a, b) => Number(!!a.encerrado_em) - Number(!!b.encerrado_em));
+  }
+
+  async oportunidade(id: number) {
+    const r = await this.prisma.ven_bolsa_oportunidade.findUnique({ where: { id } });
+    return r ? this.mapOportunidade(r) : null;
+  }
+
+  /** Um registro por lote: o lote aberto do mesmo produto encerra hoje (vendas de hoje já vão para o novo). */
+  async registrarOportunidades(
+    linhas: Array<{
+      pro_codigo: number; descricao: string | null; nfe: number | null; nota_fiscal: number | null; for_codigo: number | null; for_nome: string | null;
+      quantidade: number; custo_nota: number | null; custo: number; preco_tabela: number; piso: number; pct_vendedor: number; custo_bolsa: number; criado_por: string | null;
+    }>,
+  ) {
+    const hoje = hojeData();
+    const criados = await this.prisma.$transaction(async (tx) => {
+      const out: ven_bolsa_oportunidade[] = [];
+      for (const l of linhas) {
+        await tx.ven_bolsa_oportunidade.updateMany({ where: { pro_codigo: l.pro_codigo, encerrado_em: null }, data: { encerrado_em: hoje, updated_at: new Date() } });
+        out.push(await tx.ven_bolsa_oportunidade.create({ data: { ...l, vigente_de: hoje } }));
+      }
+      return out;
+    });
+    return criados.map((r) => this.mapOportunidade(r));
+  }
+
+  async alterarOportunidade(id: number, data: { pct_vendedor?: number; quantidade?: number; custo_bolsa?: number; encerrado_em?: Date | null }) {
+    const r = await this.prisma.ven_bolsa_oportunidade.update({ where: { id }, data: { ...data, updated_at: new Date() } });
+    return this.mapOportunidade(r);
+  }
+
+  /** Grava a apuração das vendidas; o lote que chegou à quantidade encerra hoje. */
+  async apurarOportunidades(rows: Array<{ id: number; vendida: number; encerrar: boolean }>) {
+    if (!rows.length) return;
+    const agora = new Date(), hoje = hojeData();
+    await this.prisma.$transaction(
+      rows.map((r) =>
+        this.prisma.ven_bolsa_oportunidade.update({
+          where: { id: r.id },
+          data: { vendida: r.vendida, apurado_em: agora, ...(r.encerrar ? { encerrado_em: hoje } : {}), updated_at: agora },
+        }),
+      ),
+    );
   }
 
   /* ------------------------------------------------ equivalentes e giro */

@@ -2271,6 +2271,34 @@ model ven_regua_atacado {
   @@unique([classe, faixa], map: "uq_ven_regua_atacado")
 }
 
+/// Compra de oportunidade: custo que a bolsa usa para o produto enquanto o lote da nota durar.
+/// Um registro por lote; registrar de novo encerra o anterior (histórico fica para a bolsa do mês).
+model ven_bolsa_oportunidade {
+  id           Int       @id @default(autoincrement())
+  pro_codigo   Int
+  descricao    String?
+  nfe          Int?
+  nota_fiscal  Int?
+  for_codigo   Int?
+  for_nome     String?
+  quantidade   Decimal   @db.Decimal(15, 4)
+  custo_nota   Decimal?  @db.Decimal(15, 4)
+  custo        Decimal   @db.Decimal(15, 4)
+  preco_tabela Decimal   @db.Decimal(15, 2)
+  piso         Decimal   @db.Decimal(8, 4)
+  pct_vendedor Decimal   @db.Decimal(5, 4)
+  custo_bolsa  Decimal   @db.Decimal(15, 4)
+  vigente_de   DateTime  @db.Date
+  vendida      Decimal   @default(0) @db.Decimal(15, 4)
+  apurado_em   DateTime? @db.Timestamptz(6)
+  encerrado_em DateTime? @db.Date
+  criado_por   String?
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([pro_codigo])
+}
+
 model ven_regua_item_excecao {
   pro_codigo  Int       @id
   classe      String

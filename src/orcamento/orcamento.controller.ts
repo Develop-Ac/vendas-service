@@ -18,7 +18,9 @@ import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { OrcamentoService } from './orcamento.service';
 import {
   AcaoOrcamentoDto,
+  AlterarOportunidadeDto,
   DecisaoSaldoDto,
+  RegistrarOportunidadeDto,
   EntregueOrcamentoDto,
   DesfechoOrcamentoDto,
   ExcecaoReguaDto,
@@ -59,6 +61,35 @@ export class OrcamentoController {
   @ApiOperation({ summary: 'Cria/atualiza/remove a exceção de um item.' })
   salvarExcecao(@Param('pro_codigo', ParseIntPipe) pro: number, @Body() dto: ExcecaoReguaDto) {
     return this.service.salvarExcecao(pro, dto);
+  }
+
+  /* ------------------------------------------------- compra de oportunidade */
+
+  @Get('oportunidade/nota')
+  @ApiOperation({ summary: 'Nota de compra (NF-e lançada na empresa 1) com os itens, custo, tabela 2 e sobra — pelo número (+ fornecedor) ou pela chave.' })
+  @ApiQuery({ name: 'numero', required: false })
+  @ApiQuery({ name: 'fornecedor', required: false })
+  @ApiQuery({ name: 'chave', required: false })
+  notaCompra(@Query('numero') numero?: string, @Query('fornecedor') fornecedor?: string, @Query('chave') chave?: string) {
+    return this.service.notaCompra({ numero: toNum(numero), fornecedor: toNum(fornecedor), chave: chave?.trim() || undefined });
+  }
+
+  @Get('oportunidade')
+  @ApiOperation({ summary: 'Lotes de compra de oportunidade registrados (vigentes primeiro), com vendidas e restantes.' })
+  oportunidades() {
+    return this.service.listarOportunidades();
+  }
+
+  @Post('oportunidade')
+  @ApiOperation({ summary: 'Registra os itens de uma nota de compra com a parte da sobra que fica com o vendedor.' })
+  registrarOportunidades(@Body() dto: RegistrarOportunidadeDto) {
+    return this.service.registrarOportunidades(dto);
+  }
+
+  @Put('oportunidade/:id')
+  @ApiOperation({ summary: 'Muda a parte do vendedor / quantidade de um lote aberto, ou encerra.' })
+  alterarOportunidade(@Param('id', ParseIntPipe) id: number, @Body() dto: AlterarOportunidadeDto) {
+    return this.service.alterarOportunidade(id, dto);
   }
 
   @Get('vendedores')
