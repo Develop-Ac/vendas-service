@@ -26,6 +26,7 @@ import {
   ExcecaoReguaDto,
   SalvarOrcamentoDto,
   TributacaoDto,
+  VendaPerdidaPesquisaDto,
 } from './dto/orcamento.dto';
 
 const toNum = (v?: string) => (v == null || v === '' ? undefined : Number(v));
@@ -90,6 +91,12 @@ export class OrcamentoController {
   @ApiOperation({ summary: 'Muda a parte do vendedor de um lote aberto, ou encerra.' })
   alterarOportunidade(@Param('id', ParseIntPipe) id: number, @Body() dto: AlterarOportunidadeDto) {
     return this.service.alterarOportunidade(id, dto);
+  }
+
+  @Post('venda-perdida')
+  @ApiOperation({ summary: 'Venda perdida pela pesquisa (F7): item sem saldo, quantidade 1, sem precisar do orçamento; similar com saldo exige justificativa.' })
+  vendaPerdidaPesquisa(@Body() dto: VendaPerdidaPesquisaDto) {
+    return this.service.vendaPerdidaPesquisa(dto);
   }
 
   @Get('vendedores')

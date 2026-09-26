@@ -252,6 +252,22 @@ para a diferença. Depois da decisão o orçamento é regravado pelo caminho nor
 bolsa recalculados). Se não sobrar item, nada é regravado e a tela registra o desfecho PERDIDO
 (motivo SEM_ESTOQUE). Regra pura em `saldo.ts` (testes em `saldo.spec.ts`).
 
+## Venda perdida pela pesquisa (F7) — 26/09/2026
+
+Na pesquisa de produtos o vendedor aperta **F7** (ou o botão "Venda perdida (F7)" no painel do item)
+e registra a venda perdida do item sob o cursor sem pôr o item no orçamento e fechar. Só vale com
+disponível zero e nada aguardando liberação (peça já na loja em conferência conta como saldo);
+serviço fica fora — nesses casos a tela avisa e nada é gravado. Motivo fixo `SEM_SALDO`, quantidade
+1. Similar com saldo → "Similar com saldo: …" e justificativa obrigatória, como no Fechou.
+
+`POST /orcamento/venda-perdida` grava em `ven_venda_perdida` **sem orçamento** (`orcamento_id`
+opcional desde o SQL bloco 15), uma por cliente + produto + dia de Cuiabá (índice parcial): repetir
+só atualiza. Se a pesquisa foi aberta de um orçamento já salvo, o registro nasce amarrado a ele. Se
+depois o mesmo item cair como venda perdida no Fechou do dia, `registrarVendaPerdida` amarra o
+registro da pesquisa ao orçamento em vez de criar outro. A busca (`produtos/pesquisa`) devolve
+`venda_perdida_hoje` por item para o selo na grade. A análise de estoque lê a tabela por produto,
+quantidade e data — registros sem orçamento entram sem mudança lá.
+
 ## Vender fora da promoção ou liquidação
 
 Item com promoção vigente na tabela do cliente entra com o preço promocional fechado. O vendedor

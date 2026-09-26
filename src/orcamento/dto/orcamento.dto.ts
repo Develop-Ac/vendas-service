@@ -248,6 +248,39 @@ export class DecisaoSaldoDto extends AcaoOrcamentoDto {
   decisoes: DecisaoSaldoItemDto[];
 }
 
+/** Venda perdida registrada da PESQUISA de produtos (F7): item sem saldo, quantidade 1, sem precisar de orçamento. */
+export class VendaPerdidaPesquisaDto extends AcaoOrcamentoDto {
+  @ApiProperty()
+  @IsInt()
+  cli_codigo: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  rep_codigo?: number;
+
+  @ApiProperty()
+  @IsInt()
+  pro_codigo: number;
+
+  @ApiProperty({ required: false, description: 'Orçamento já salvo de onde a pesquisa foi aberta: o registro nasce amarrado a ele.' })
+  @IsOptional()
+  @IsString()
+  orcamento_id?: string;
+
+  @ApiProperty({ required: false, description: 'Equivalente COM saldo que a tela encontrou; com ele a justificativa é obrigatória.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  similar_disponivel?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  justificativa?: string;
+}
+
 export class ExcecaoReguaDto {
   @ApiProperty({ enum: ['EXCLUSIVO', 'OPORTUNIDADE'] })
   @IsIn(['EXCLUSIVO', 'OPORTUNIDADE'])

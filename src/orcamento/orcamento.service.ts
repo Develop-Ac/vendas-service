@@ -25,7 +25,7 @@ import {
   RegraFaixa,
   round2,
 } from './regua';
-import { AlterarOportunidadeDto, DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, RegistrarOportunidadeDto, SalvarOrcamentoDto, TributacaoDto } from './dto/orcamento.dto';
+import { AlterarOportunidadeDto, DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, RegistrarOportunidadeDto, SalvarOrcamentoDto, TributacaoDto, VendaPerdidaPesquisaDto } from './dto/orcamento.dto';
 import { custoParaBolsa, PCT_VENDEDOR_PADRAO } from './oportunidade';
 import { calcularDifal, calcularSt, descricaoIndicadorIe, regimeInterestadual, seloTributacao, type ParametrosSt, type RegimeInterestadual } from './tributacao';
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
@@ -75,6 +75,8 @@ export interface ProdutoOrcamento {
   custo: number | null;
   /** compra de oportunidade: custo que a BOLSA usa no lugar de `custo` (reserva da empresa); nulo = sem lote vigente */
   custo_bolsa: number | null;
+  /** pesquisa: já há venda perdida registrada hoje deste item para o cliente (selo na grade) */
+  venda_perdida_hoje?: boolean;
   preco_tabela: number;
   /** Preço da tabela do cliente ANTES da promoção (o "de:" da EST012). */
   preco_original: number;
@@ -587,6 +589,34 @@ export class OrcamentoService {
     };
   }
 
+  /* --------------------------------------------- venda perdida pela pesquisa */
+
+  /**
+   * F7 na pesquisa: venda perdida do item sem saldo, quantidade 1, sem precisar do orçamento.
+   * Só vale com disponível zero e nada aguardando liberação (peça já na loja em conferência
+   * conta como saldo); serviço não tem saldo. Similar com saldo exige justificativa, como no Fechou.
+   */
+  async vendaPerdidaPesquisa(dto: VendaPerdidaPesquisaDto) {
+    const [p] = await this.erp.produtosPorCodigo([dto.pro_codigo]);
+    if (!p) throw new NotFoundException(`Produto ${dto.pro_codigo} não encontrado na empresa 3.`);
+    if (ehServico(p.SUBTIPO)) throw new BadRequestException('Serviço não tem saldo: não é venda perdida.');
+    const { saldoPor } = await this.saldoComLiberacao([p.PRO_CODIGO], await this.enriquecer([p], null, dto.cli_codigo));
+    if ((saldoPor.get(p.PRO_CODIGO) ?? 0) > 0) throw new BadRequestException(p.ESTOQUE_DISPONIVEL > 0 ? 'Item tem saldo.' : 'Item chega em breve (aguardando liberação).');
+    const similar = dto.similar_disponivel?.trim() || null;
+    const justificativa = dto.justificativa?.trim() || null;
+    if (similar && !justificativa) throw new BadRequestException('Há similar com saldo: justifique a venda perdida.');
+    const usuario = { usuario_id: dto.usuario_id ?? null, usuario_nome: dto.usuario_nome ?? null };
+    if (dto.orcamento_id) {
+      const o = await this.db.obter(dto.orcamento_id).catch(() => null);
+      if (o) {
+        await this.db.registrarVendaPerdida(o, [{ pro_codigo: p.PRO_CODIGO, descricao: p.PRO_DESCRICAO, quantidade: 1, similar_disponivel: similar, justificativa }], dto);
+        return { pro_codigo: p.PRO_CODIGO, orcamento_id: o.id };
+      }
+    }
+    const r = await this.db.registrarVendaPerdidaPesquisa({ cli_codigo: dto.cli_codigo, rep_codigo: dto.rep_codigo ?? null, pro_codigo: p.PRO_CODIGO, descricao: p.PRO_DESCRICAO, similar_disponivel: similar, justificativa, ...usuario });
+    return { pro_codigo: p.PRO_CODIGO, orcamento_id: null, id: r.id };
+  }
+
   /* ------------------------------------------------- compra de oportunidade */
 
   private apuracaoOportunidadeEm = 0;
@@ -903,6 +933,11 @@ export class OrcamentoService {
     const extrasOk = extrasErp.filter((p) => (o.inativos || p.INATIVO !== 'S') && (!o.comEstoque || p.ESTOQUE_DISPONIVEL > 0) && (!o.comercializavel || p.COMERCIALIZAVEL !== 'N'));
     const todos = await this.enriquecer([...achados, ...extrasOk], tabelaPreco, cli);
     for (const p of todos) p.grupo_chave = chavePor.get(p.pro_codigo) ?? `solo:${p.pro_codigo}`;
+    // selo "venda perdida hoje": o vendedor não registra a mesma perda duas vezes sem querer
+    if (cli) {
+      const perdidas = await this.db.vendasPerdidasHoje(cli, todos.map((p) => p.pro_codigo)).catch(() => new Set<number>());
+      for (const p of todos) p.venda_perdida_hoje = perdidas.has(p.pro_codigo);
+    }
 
     // Ordem: grupos na ordem em que apareceram na busca; dentro do grupo, o
     // principal (maior saldo; empate = menor código) e depois os similares por saldo.

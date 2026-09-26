@@ -15,6 +15,13 @@ import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } fro
 
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 const nn = (v: unknown): number | null => (v == null ? null : Number(v));
+/** Início e fim (exclusivo) do dia de HOJE em Cuiabá (UTC−4, sem horário de verão), como instantes UTC. */
+const diaCuiaba = (): [Date, Date] => {
+  const desloc = 4 * 60 * 60_000;
+  const local = Date.now() - desloc;
+  const inicio = Math.floor(local / 86_400_000) * 86_400_000 + desloc;
+  return [new Date(inicio), new Date(inicio + 86_400_000)];
+};
 /** Hoje como coluna DATE (meia-noite UTC do dia local): o Prisma grava só a data. */
 const hojeData = () => {
   const d = new Date();
@@ -713,6 +720,17 @@ export class OrcamentoPrismaRepository {
   ) {
     for (const l of linhas) {
       const extras = { similar_disponivel: l.similar_disponivel ?? null, justificativa: l.justificativa ?? null };
+      // O vendedor já registrou este item hoje pela pesquisa (F7), sem orçamento: o registro
+      // passa a ser o do orçamento, em vez de contar a mesma perda duas vezes.
+      const daPesquisa = await this.vendaPerdidaPesquisaHoje(o.cli_codigo, l.pro_codigo);
+      if (daPesquisa) {
+        await this.prisma.ven_venda_perdida.deleteMany({ where: { orcamento_id: o.id, pro_codigo: l.pro_codigo } });
+        await this.prisma.ven_venda_perdida.update({
+          where: { id: daPesquisa.id },
+          data: { orcamento_id: o.id, orcamento_numero: o.numero, quantidade: l.quantidade, rep_codigo: o.rep_codigo, usuario_id: usuario?.usuario_id ?? null, usuario_nome: usuario?.usuario_nome ?? null, ...extras },
+        });
+        continue;
+      }
       await this.prisma.ven_venda_perdida.upsert({
         where: { orcamento_id_pro_codigo: { orcamento_id: o.id, pro_codigo: l.pro_codigo } },
         create: {
@@ -730,6 +748,37 @@ export class OrcamentoPrismaRepository {
         update: { quantidade: l.quantidade, usuario_id: usuario?.usuario_id ?? null, usuario_nome: usuario?.usuario_nome ?? null, created_at: new Date(), ...extras },
       });
     }
+  }
+
+  /** Registro de hoje (dia de Cuiabá) do item para o cliente, feito pela pesquisa (sem orçamento). */
+  private async vendaPerdidaPesquisaHoje(cli: number, pro: number) {
+    const [de, ate] = diaCuiaba();
+    return this.prisma.ven_venda_perdida.findFirst({ where: { cli_codigo: cli, pro_codigo: pro, orcamento_id: null, created_at: { gte: de, lt: ate } } });
+  }
+
+  /**
+   * Venda perdida pela PESQUISA (F7): sem orçamento, uma por cliente + produto + dia —
+   * repetir no mesmo dia só atualiza. Com o orçamento já salvo, vai pelo caminho do Fechou.
+   */
+  async registrarVendaPerdidaPesquisa(l: {
+    cli_codigo: number; rep_codigo: number | null; pro_codigo: number; descricao: string | null;
+    similar_disponivel: string | null; justificativa: string | null; usuario_id: string | null; usuario_nome: string | null;
+  }) {
+    const atual = await this.vendaPerdidaPesquisaHoje(l.cli_codigo, l.pro_codigo);
+    const dados = { descricao: l.descricao, rep_codigo: l.rep_codigo, similar_disponivel: l.similar_disponivel, justificativa: l.justificativa, usuario_id: l.usuario_id, usuario_nome: l.usuario_nome };
+    if (atual) return this.prisma.ven_venda_perdida.update({ where: { id: atual.id }, data: dados });
+    return this.prisma.ven_venda_perdida.create({ data: { ...dados, cli_codigo: l.cli_codigo, pro_codigo: l.pro_codigo, quantidade: 1, motivo: 'SEM_SALDO', orcamento_id: null } });
+  }
+
+  /** Itens com venda perdida registrada HOJE para o cliente (pesquisa ou Fechou) — o selo na pesquisa. */
+  async vendasPerdidasHoje(cli: number, codigos: number[]): Promise<Set<number>> {
+    if (!codigos.length) return new Set();
+    const [de, ate] = diaCuiaba();
+    const rows = await this.prisma.ven_venda_perdida.findMany({
+      where: { cli_codigo: cli, pro_codigo: { in: codigos }, created_at: { gte: de, lt: ate } },
+      select: { pro_codigo: true },
+    });
+    return new Set(rows.map((r) => r.pro_codigo));
   }
 
   /** Orçamentos abertos deste vendedor (ENVIADO/APROVACAO) — para a bolsa projetada. */

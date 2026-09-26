@@ -282,3 +282,13 @@ CREATE TABLE IF NOT EXISTS ven_bolsa_oportunidade (
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS ven_bolsa_oportunidade_pro_idx ON ven_bolsa_oportunidade (pro_codigo);
+
+-- 15) Venda perdida pela pesquisa de produtos (26/09/2026): o vendedor aperta F7 no item sem saldo
+--     e registra a perda sem pôr o item no orçamento. O registro nasce sem orçamento (cliente,
+--     vendedor, produto, quantidade 1, motivo SEM_SALDO, similar/justificativa); se o mesmo item
+--     cair como venda perdida no Fechou do dia, o serviço amarra este registro ao orçamento em vez
+--     de criar outro. Sem orçamento vale UM por cliente + produto + dia (dia de Cuiabá).
+ALTER TABLE ven_venda_perdida ALTER COLUMN orcamento_id DROP NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_ven_venda_perdida_pesquisa_dia
+  ON ven_venda_perdida (cli_codigo, pro_codigo, ((created_at AT TIME ZONE 'America/Cuiaba')::date))
+  WHERE orcamento_id IS NULL;
