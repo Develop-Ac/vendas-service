@@ -2383,11 +2383,21 @@ model ven_wa_mensagem {
   timestamp     DateTime @db.Timestamptz(6)
   ack           Int?
   created_at    DateTime @default(now()) @db.Timestamptz(6)
+  // Conteúdo (só sessões em WA_CORPO_SESSOES) — sql/whatsapp_conversas_postgres.sql
+  corpo                  String?
+  midia_chave            String?
+  midia_mime             String?
+  transcricao            String?
+  transcricao_status     String?
+  transcricao_tentativas Int      @default(0)
+  updated_at             DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 
   @@unique([sessao, message_id], map: "uq_ven_wa_msg_sessao_id")
   @@index([chave], map: "idx_ven_wa_msg_chave")
   @@index([cli_codigo, direcao, timestamp], map: "idx_ven_wa_msg_cli_dir_ts")
   @@index([sessao, timestamp], map: "idx_ven_wa_msg_sessao_ts")
+  @@index([transcricao_status, timestamp], map: "idx_ven_wa_msg_transcricao")
+  @@index([updated_at], map: "idx_ven_wa_msg_updated")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.

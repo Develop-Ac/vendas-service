@@ -1,6 +1,7 @@
 import { WhatsappService, chaveTelefone } from './whatsapp.service';
 import { WhatsappRepository } from './whatsapp.repository';
 import { ErpApiService } from '../common/erp-api/erp-api.service';
+import { S3Service } from '../storage/s3.service';
 
 describe('chaveTelefone', () => {
   it('normaliza para DDD + últimos 8 dígitos, sobrevivendo ao 9º dígito', () => {
@@ -55,12 +56,18 @@ describe('WhatsappService', () => {
     ]),
   } as unknown as ErpApiService;
 
-  const service = new WhatsappService(repo, erp);
+  const s3 = {
+    putObject: jest.fn(async () => undefined),
+    getObjectBuffer: jest.fn(async () => Buffer.from('OggS-audio')),
+  } as unknown as S3Service;
+
+  const service = new WhatsappService(repo, erp, s3);
 
   beforeEach(() => {
     gravadas = [];
     acks = [];
     vinculos = new Map([['6588887777', 1]]);
+    delete process.env.WA_CORPO_SESSOES;
     jest.clearAllMocks();
   });
 
