@@ -16,6 +16,7 @@ import {
 import type { FastifyReply } from 'fastify';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { OrcamentoService } from './orcamento.service';
+import { ProdutosDiaService } from './produtos-dia.service';
 import {
   AcaoOrcamentoDto,
   AlterarOportunidadeDto,
@@ -27,6 +28,7 @@ import {
   SalvarOrcamentoDto,
   TributacaoDto,
   VendaPerdidaPesquisaDto,
+  RegenerarProdutosDiaDto,
 } from './dto/orcamento.dto';
 
 const toNum = (v?: string) => (v == null || v === '' ? undefined : Number(v));
@@ -42,7 +44,10 @@ const toNum = (v?: string) => (v == null || v === '' ? undefined : Number(v));
 @Controller('orcamento')
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
 export class OrcamentoController {
-  constructor(private readonly service: OrcamentoService) {}
+  constructor(
+    private readonly service: OrcamentoService,
+    private readonly produtosDia: ProdutosDiaService,
+  ) {}
 
   /* ------------------------------------------------------------- régua */
 
@@ -91,6 +96,28 @@ export class OrcamentoController {
   @ApiOperation({ summary: 'Muda a parte do vendedor de um lote aberto, ou encerra.' })
   alterarOportunidade(@Param('id', ParseIntPipe) id: number, @Body() dto: AlterarOportunidadeDto) {
     return this.service.alterarOportunidade(id, dto);
+  }
+
+  /* ----------------------------------------------------- produtos do dia */
+
+  @Get('produtos-dia')
+  @ApiOperation({ summary: 'Produtos do dia para o supervisor do atacado: lotes de oportunidade ordenados por bolsa × demanda esperada, com os clientes devidos; e os lotes de fora por estoque.' })
+  @ApiQuery({ name: 'data', required: false, description: 'YYYY-MM-DD (padrão hoje, Cuiabá)' })
+  produtosDoDia(@Query('data') data?: string) {
+    if (data && !/^\d{4}-\d{2}-\d{2}$/.test(data)) throw new BadRequestException('data: YYYY-MM-DD');
+    return this.produtosDia.listar(data);
+  }
+
+  @Get('produtos-dia/datas')
+  @ApiOperation({ summary: 'Dias com lista de produtos do dia gerada (mais recente primeiro).' })
+  produtosDoDiaDatas() {
+    return this.produtosDia.datas();
+  }
+
+  @Post('produtos-dia/regenerar')
+  @ApiOperation({ summary: 'Refaz a lista de hoje (gestão): substitui a lista do dia, não duplica.' })
+  produtosDoDiaRegenerar(@Body() dto: RegenerarProdutosDiaDto) {
+    return this.produtosDia.regenerar(dto.gerado_por?.trim() || null);
   }
 
   @Post('venda-perdida')

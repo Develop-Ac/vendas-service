@@ -381,3 +381,10 @@ export class AlterarOportunidadeDto {
   @IsBoolean()
   encerrar?: boolean;
 }
+
+export class RegenerarProdutosDiaDto {
+  @ApiProperty({ required: false, description: 'Nome do usuário que apertou o botão (fica em gerado_por).' })
+  @IsOptional()
+  @IsString()
+  gerado_por?: string;
+}

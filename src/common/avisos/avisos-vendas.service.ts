@@ -113,6 +113,32 @@ export class AvisosVendasService {
   }
   private cacheAprovadores: { ids: string[]; em: number } | null = null;
 
+  /** Supervisão do atacado e gerência (hub do cadastro): quem recebe os produtos do dia. */
+  async gestaoAtacado(): Promise<string[]> {
+    if (this.cacheGestao && Date.now() - this.cacheGestao.em < 600_000) return this.cacheGestao.ids;
+    let ids: string[] = [];
+    try {
+      const rows = await this.prisma.sis_usuarios.findMany({
+        where: { trash: 0, vendas_hub_inicial: { in: ['SUPERVISAO_ATACADO', 'GERENCIA'], mode: 'insensitive' } },
+        select: { id: true },
+      });
+      ids = rows.map((r) => r.id);
+    } catch (e) {
+      this.logger.warn(`gestão do atacado: ${(e as Error).message}`);
+    }
+    this.cacheGestao = { ids, em: Date.now() };
+    return ids;
+  }
+  private cacheGestao: { ids: string[]; em: number } | null = null;
+
+  /** Lista de produtos do dia pronta (ref = data: regenerar no mesmo dia não avisa de novo). */
+  async produtosDia(data: string, resumo: { total: number; bolsa: number; fora: number }) {
+    if (!resumo.total) return;
+    const usuarios = await this.gestaoAtacado();
+    if (!usuarios.length) return;
+    this.avisos.emitir('produtos.dia', { ref: data, vars: { total: resumo.total, bolsa: brl(resumo.bolsa), fora: resumo.fora }, usuarios });
+  }
+
   /** Vendedor mandou orçamento acima do desconto máximo para a gerência aprovar. */
   async orcamentoAprovacao(o: { id: string; numero: number; cli_codigo: number; cli_nome: string | null; rep_codigo: number | null; rep_nome: string | null; total: unknown }) {
     const usuarios = await this.aprovadores();

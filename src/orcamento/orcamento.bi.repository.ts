@@ -417,6 +417,31 @@ export class OrcamentoBiRepository {
     return saida;
   }
 
+  /**
+   * Venda do ATACADO de cada produto num dia (devolução desconta): a apuração
+   * da lista de produtos do dia. `dia` = YYYYMMDD.
+   */
+  async vendaAtacadoNoDia(codigos: number[], dia: string): Promise<Map<number, { qtd: number; valor: number }>> {
+    const saida = new Map<number, { qtd: number; valor: number }>();
+    const unicos = [...new Set(codigos.filter((c) => Number.isFinite(c)))];
+    if (!unicos.length || !/^\d{8}$/.test(dia)) return saida;
+    const rows = await this.mssql.query<{ pro_codigo: number; qtd: number; valor: number }>(
+      `
+      SELECT v.PRO_CODIGO AS pro_codigo,
+             COALESCE(SUM(CASE WHEN v.OPF_CODIGO = 2 THEN -v.QUANTIDADE ELSE v.QUANTIDADE END), 0) AS qtd,
+             COALESCE(SUM(CASE WHEN v.OPF_CODIGO = 2 THEN -v.liquido_produto ELSE v.liquido_produto END), 0) AS valor
+      FROM dbo.vw_analise_vendas v
+      WHERE v.PRO_CODIGO IN (${unicos.map((c) => Math.trunc(c)).join(',')})
+        AND v.local_venda = 'ATACADO' AND v.DT_CANCELAMENTO IS NULL
+        AND CAST(v.dt_emissao_convertida AS date) = CAST(@dia AS date)
+      GROUP BY v.PRO_CODIGO
+      `,
+      { dia },
+    );
+    for (const r of rows) saida.set(Number(r.pro_codigo), { qtd: Number(r.qtd ?? 0), valor: Math.round(Number(r.valor ?? 0) * 100) / 100 });
+    return saida;
+  }
+
   /** Crédito em aberto, faturamento e última compra do cliente. */
   async resumoCliente(cli: number): Promise<ResumoClienteBi> {
     const rows = await this.mssql.query<any>(

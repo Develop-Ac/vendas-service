@@ -893,7 +893,7 @@ export class OrcamentoService {
       principal: false,
       avaliacao,
       excecao_motivo: excecao?.motivo ?? null,
-      giro: giro ? { curva_abc: giro.curva_abc, categoria_saldo_atual: giro.categoria_saldo_atual, tempo_medio_saldo_atual: giro.tempo_medio_saldo_atual, tendencia_label: giro.tendencia_label, group_id: giro.group_id } : null,
+      giro: giro ? { curva_abc: giro.curva_abc, categoria_saldo_atual: giro.categoria_saldo_atual, tempo_medio_saldo_atual: giro.tempo_medio_saldo_atual, tendencia_label: giro.tendencia_label, group_id: giro.group_id, grupo_chave: giro.grupo_chave, demanda_media_dia: giro.demanda_media_dia, estoque_min_sugerido: giro.estoque_min_sugerido } : null,
       ultimo_preco_cliente: ultimo ? { dt_emissao: ultimo.dt_emissao, unitario: ultimo.unitario, quantidade: ultimo.quantidade } : null,
       tem_equivalente: temEquivalente,
       promocao: aplica && promo ? { codigo: promo.prom_codigo, descricao: promo.descricao, data_final: promo.data_final, somente_avista: promo.somente_avista } : null,

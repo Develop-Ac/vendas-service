@@ -3,6 +3,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { MssqlService } from '../common/mssql/mssql.service';
 import { OrcamentoController } from './orcamento.controller';
 import { OrcamentoService } from './orcamento.service';
+import { ProdutosDiaService } from './produtos-dia.service';
 import { OrcamentoErpRepository } from './orcamento.erp.repository';
 import { OrcamentoBiRepository } from './orcamento.bi.repository';
 import { OrcamentoPrismaRepository } from './orcamento.prisma.repository';
@@ -25,6 +26,7 @@ import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
     OrcamentoComparativoScheduler,
     AvisosVendasService,
     OrcamentoService,
+    ProdutosDiaService,
     OrcamentoErpRepository,
     OrcamentoBiRepository,
     OrcamentoPrismaRepository,

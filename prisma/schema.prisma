@@ -2301,6 +2301,37 @@ model ven_bolsa_oportunidade {
   @@index([pro_codigo])
 }
 
+model ven_produto_dia {
+  id                  Int       @id @default(autoincrement())
+  data                DateTime  @db.Date
+  posicao             Int?      @db.SmallInt
+  lote_id             Int
+  pro_codigo          Int
+  descricao           String?
+  grupo_chave         String?
+  chave_item          String
+  bolsa_unidade       Decimal   @db.Decimal(15, 2)
+  giro_dia            Decimal   @db.Decimal(15, 4)
+  demanda_clientes    Decimal   @db.Decimal(15, 4)
+  demanda_esperada    Decimal   @db.Decimal(15, 4)
+  score               Decimal   @db.Decimal(15, 2)
+  estoque_considerado Decimal   @db.Decimal(15, 4)
+  estoque_disponivel  Decimal?  @db.Decimal(15, 4)
+  restante_lote       Decimal   @db.Decimal(15, 4)
+  cobertura_dias      Int?
+  estoque_min         Decimal?  @db.Decimal(15, 4)
+  clientes            Json      @default("[]")
+  clientes_total      Int       @default(0)
+  motivo_fora         String?
+  vendida_qtd         Decimal?  @db.Decimal(15, 4)
+  vendida_valor       Decimal?  @db.Decimal(15, 2)
+  apurado_em          DateTime? @db.Timestamptz(6)
+  gerado_em           DateTime  @default(now()) @db.Timestamptz(6)
+  gerado_por          String?
+
+  @@index([data, posicao])
+}
+
 model ven_regua_item_excecao {
   pro_codigo  Int       @id
   classe      String

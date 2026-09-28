@@ -1,7 +1,8 @@
 import { round2 } from './regua';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
-import type { ven_bolsa_oportunidade } from '@prisma/client';
+import type { ven_bolsa_oportunidade, ven_produto_dia } from '@prisma/client';
+import { ClienteDevido, ItemProdutoDia, MotivoFora } from './produtos-dia';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } from './regua';
 
@@ -28,6 +29,17 @@ const hojeData = () => {
   return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
 };
 
+/** Linha gravada de produtos do dia: o item calculado mais a apuração e a origem. */
+export interface ItemProdutoDiaRow extends ItemProdutoDia {
+  id: number;
+  data: string;
+  vendida_qtd: number | null;
+  vendida_valor: number | null;
+  apurado_em: Date | null;
+  gerado_em: Date;
+  gerado_por: string | null;
+}
+
 export interface GiroItem {
   pro_codigo: number;
   curva_abc: string | null;
@@ -35,6 +47,10 @@ export interface GiroItem {
   tempo_medio_saldo_atual: number | null;
   tendencia_label: string | null;
   group_id: string | null;
+  grupo_chave: string | null;
+  /** demanda média diária de todos os canais e ponto de pedido (produtos do dia) */
+  demanda_media_dia: number | null;
+  estoque_min_sugerido: number | null;
 }
 
 /** Uma chegada prevista de um produto: pedido de compra em aberto, com a data e de onde ela veio. */
@@ -392,7 +408,7 @@ export class OrcamentoPrismaRepository {
     if (!codigos.length) return saida;
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT f.pro_codigo, f.curva_abc, f.categoria_saldo_atual, f.tempo_medio_saldo_atual,
-             f.tendencia_label, f.group_id
+             f.tendencia_label, f.group_id, f.grupo_chave, f.demanda_media_dia, f.estoque_min_sugerido
       FROM com_fifo_completo f
       WHERE f.pro_codigo IN (${Prisma.join(codigos.map(String))})
         AND f.data_processamento = (SELECT MAX(data_processamento) FROM com_fifo_completo)
@@ -405,9 +421,110 @@ export class OrcamentoPrismaRepository {
         tempo_medio_saldo_atual: nn(r.tempo_medio_saldo_atual),
         tendencia_label: r.tendencia_label ?? null,
         group_id: r.group_id ?? null,
+        grupo_chave: r.grupo_chave ?? null,
+        demanda_media_dia: nn(r.demanda_media_dia),
+        estoque_min_sugerido: nn(r.estoque_min_sugerido),
       });
     }
     return saida;
+  }
+
+  /* ------------------------------------------------------ produtos do dia */
+
+  private mapProdutoDia(r: ven_produto_dia): ItemProdutoDiaRow {
+    return {
+      id: r.id,
+      data: r.data.toISOString().slice(0, 10),
+      posicao: r.posicao,
+      lote_id: r.lote_id,
+      pro_codigo: r.pro_codigo,
+      descricao: r.descricao,
+      grupo_chave: r.grupo_chave,
+      chave_item: r.chave_item,
+      bolsa_unidade: Number(r.bolsa_unidade),
+      giro_dia: Number(r.giro_dia),
+      demanda_clientes: Number(r.demanda_clientes),
+      demanda_esperada: Number(r.demanda_esperada),
+      score: Number(r.score),
+      estoque_considerado: Number(r.estoque_considerado),
+      estoque_disponivel: nn(r.estoque_disponivel),
+      restante_lote: Number(r.restante_lote),
+      cobertura_dias: r.cobertura_dias,
+      estoque_min: nn(r.estoque_min),
+      clientes: (r.clientes as unknown as ClienteDevido[]) ?? [],
+      clientes_total: r.clientes_total,
+      motivo_fora: (r.motivo_fora as MotivoFora | null) ?? null,
+      vendida_qtd: nn(r.vendida_qtd),
+      vendida_valor: nn(r.vendida_valor),
+      apurado_em: r.apurado_em,
+      gerado_em: r.gerado_em,
+      gerado_por: r.gerado_por,
+    };
+  }
+
+  /** Troca a lista do dia (itens + lotes de fora) numa transação: regenerar não duplica. */
+  async salvarProdutosDia(data: string, itens: ItemProdutoDia[], geradoPor: string | null) {
+    const dia = new Date(`${data}T00:00:00Z`);
+    const agora = new Date();
+    await this.prisma.$transaction([
+      this.prisma.ven_produto_dia.deleteMany({ where: { data: dia } }),
+      this.prisma.ven_produto_dia.createMany({
+        data: itens.map((i) => ({
+          data: dia,
+          posicao: i.posicao,
+          lote_id: i.lote_id,
+          pro_codigo: i.pro_codigo,
+          descricao: i.descricao,
+          grupo_chave: i.grupo_chave,
+          chave_item: i.chave_item,
+          bolsa_unidade: i.bolsa_unidade,
+          giro_dia: i.giro_dia,
+          demanda_clientes: i.demanda_clientes,
+          demanda_esperada: i.demanda_esperada,
+          score: i.score,
+          estoque_considerado: i.estoque_considerado,
+          estoque_disponivel: i.estoque_disponivel,
+          restante_lote: i.restante_lote,
+          cobertura_dias: i.cobertura_dias,
+          estoque_min: i.estoque_min,
+          clientes: i.clientes as unknown as Prisma.InputJsonValue,
+          clientes_total: i.clientes_total,
+          motivo_fora: i.motivo_fora,
+          gerado_em: agora,
+          gerado_por: geradoPor,
+        })),
+      }),
+    ]);
+  }
+
+  async produtosDia(data: string): Promise<ItemProdutoDiaRow[]> {
+    const rows = await this.prisma.ven_produto_dia.findMany({
+      where: { data: new Date(`${data}T00:00:00Z`) },
+      orderBy: [{ posicao: { sort: 'asc', nulls: 'last' } }, { score: 'desc' }],
+    });
+    return rows.map((r) => this.mapProdutoDia(r));
+  }
+
+  /** Dias com lista gerada, mais recente primeiro. */
+  async datasProdutosDia(limite = 60): Promise<string[]> {
+    const rows = await this.prisma.ven_produto_dia.groupBy({ by: ['data'], orderBy: { data: 'desc' }, take: limite });
+    return rows.map((r) => r.data.toISOString().slice(0, 10));
+  }
+
+  /** Listas anteriores a `antesDe` ainda sem apuração (normalmente só a de ontem). */
+  async produtosDiaSemApuracao(antesDe: string): Promise<ItemProdutoDiaRow[]> {
+    const rows = await this.prisma.ven_produto_dia.findMany({
+      where: { data: { lt: new Date(`${antesDe}T00:00:00Z`) }, apurado_em: null, posicao: { not: null } },
+    });
+    return rows.map((r) => this.mapProdutoDia(r));
+  }
+
+  async apurarProdutosDia(rows: Array<{ id: number; vendida_qtd: number; vendida_valor: number }>) {
+    if (!rows.length) return;
+    const agora = new Date();
+    await this.prisma.$transaction(
+      rows.map((r) => this.prisma.ven_produto_dia.update({ where: { id: r.id }, data: { vendida_qtd: r.vendida_qtd, vendida_valor: r.vendida_valor, apurado_em: agora } })),
+    );
   }
 
   /* ------------------------------------------------------ vendem juntos */

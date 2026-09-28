@@ -99,6 +99,16 @@ export const CATALOGO_VENDAS: Catalogo = {
     prioridade: 'normal',
     alvo: { tipo: 'usuario' },
   },
+  'produtos.dia': {
+    descricao: 'Produtos do dia: lotes de oportunidade para o supervisor do atacado empurrar hoje.',
+    titulo: 'Produtos do dia: {total} item(ns) para empurrar',
+    corpo: 'Bolsa potencial de {bolsa} · {fora} lote(s) de fora por estoque',
+    link: '/vendas/produtos-do-dia',
+    canais: ['badge', 'mural'],
+    prioridade: 'normal',
+    alvo: { tipo: 'usuario' },
+    cooldown_min: 60,
+  },
   'carteira.mudou': {
     descricao: 'Cliente entrou ou saiu da carteira (carteirização do ERP).',
     titulo: 'Carteira: {cliente} {movimento}',
