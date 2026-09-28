@@ -125,7 +125,8 @@ interface WebhookWaha {
     body?: string;
     hasMedia?: boolean;
     media?: { url?: string | null; mimetype?: string | null; filename?: string | null } | null;
-    _data?: { type?: string; caption?: string; mimetype?: string; size?: number } | null;
+    // WEBJS: metadados da mensagem; NOWEB: a mensagem crua do Baileys (key, message...).
+    _data?: { type?: string; caption?: string; mimetype?: string; size?: number; [k: string]: unknown } | null;
     [k: string]: unknown;
   };
 }
@@ -238,7 +239,13 @@ export class WhatsappService {
     }
     const chave = chaveTelefone(telefone);
     const cli_codigo = chave ? await this.repo.resolverChave(chave) : null;
-    const tipo = typeof p.type === 'string' ? p.type : (p._data?.type ?? null);
+    // WEBJS manda `type`; NOWEB não (o `_data` é a mensagem crua do Baileys),
+    // então o tipo sai da mídia: texto → 'chat', mídia → prefixo do mimetype.
+    const mimeMidia = (p.media?.mimetype ?? p._data?.mimetype ?? '').toString();
+    const tipo =
+      typeof p.type === 'string'
+        ? p.type
+        : (p._data?.type ?? (!p.hasMedia ? 'chat' : mimeMidia.split('/')[0] || null));
     const timestamp = p.timestamp ? new Date(Number(p.timestamp) * 1000) : new Date();
 
     // Reentrega do webhook ou histórico repetindo o que já entrou: sai antes de baixar mídia.
@@ -315,6 +322,10 @@ export class WhatsappService {
           ultimoErro = `HTTP ${r.status}`;
           continue;
         }
+        // NOWEB não informa o tamanho no payload: o corte de 20 MB vale pelo
+        // content-length antes de ler o corpo (sem o header, confere depois).
+        const declarado = Number(r.headers?.get('content-length'));
+        if (declarado > MIDIA_MAX_BYTES) return null;
         corpo = Buffer.from(await r.arrayBuffer());
         break;
       } catch (e) {

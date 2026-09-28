@@ -190,6 +190,65 @@ describe('WhatsappService', () => {
     }
   });
 
+  describe('payload NOWEB (sem type, sem _data.size)', () => {
+    const imagem = {
+      id: 'true_556588887777@c.us_NW1',
+      from: '556588887777@c.us',
+      to: 'me@c.us',
+      fromMe: false,
+      timestamp: 1756300000,
+      body: 'foto do vidro',
+      hasMedia: true,
+      media: { url: 'http://localhost:3000/api/files/NW1.jpeg', mimetype: 'image/jpeg' },
+      _data: { key: {}, message: {} },
+    };
+    const baixa = (headers: Record<string, string> = {}) =>
+      jest.fn(async () => ({
+        ok: true,
+        headers: new Headers(headers),
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      }));
+
+    beforeEach(() => {
+      process.env.WA_CORPO_SESSOES = 'rep-316';
+      process.env.WA_API_URL = 'http://waha.local:3000';
+    });
+    afterEach(() => {
+      delete process.env.WA_API_URL;
+      delete (global as any).fetch;
+    });
+
+    it('mídia: tipo sai do mimetype, legenda vem do body, mídia é guardada', async () => {
+      (global as any).fetch = baixa({ 'content-length': '3' });
+      const r = await service.processarWebhook({ event: 'message', session: 'rep-316', payload: { ...imagem } });
+      expect(r).toMatchObject({ gravada: true, midia: true });
+      expect(s3.putObject).toHaveBeenCalledTimes(1);
+      expect(gravadas[0]).toMatchObject({
+        tipo: 'image',
+        corpo: 'foto do vidro',
+        midia_chave: 'rep-316/2025/08/true_556588887777_c.us_NW1.jpg',
+        midia_mime: 'image/jpeg',
+      });
+    });
+
+    it('texto sem mídia: tipo chat', async () => {
+      await service.processarWebhook({
+        event: 'message',
+        session: 'rep-316',
+        payload: { id: 'nw2', from: '556588887777@c.us', fromMe: false, body: 'bom dia', _data: {} },
+      });
+      expect(gravadas[0]).toMatchObject({ tipo: 'chat', corpo: 'bom dia', midia_chave: null });
+    });
+
+    it('content-length acima de 20 MB: não guarda a mídia, mas grava a mensagem', async () => {
+      (global as any).fetch = baixa({ 'content-length': String(21 * 1024 * 1024) });
+      const r = await service.processarWebhook({ event: 'message', session: 'rep-316', payload: { ...imagem } });
+      expect(r).toMatchObject({ gravada: true, midia: false });
+      expect(s3.putObject).not.toHaveBeenCalled();
+      expect(gravadas[0]).toMatchObject({ tipo: 'image', corpo: 'foto do vidro', midia_chave: null });
+    });
+  });
+
   it('message.ack atualiza o status sem criar linha', async () => {
     await service.processarWebhook({
       event: 'message.ack',
