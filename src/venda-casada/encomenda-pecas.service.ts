@@ -34,6 +34,24 @@ const PRO_CODIGO_SEM_ERP = 99999;
 /** Status que exige `motivo` (gravado em motivoCancelamento). */
 const STATUS_CANCELADO = 'Cancelado';
 
+/** Único status em que compras pode editar os itens cotados. */
+const STATUS_EM_COTACAO = 'Em cotação';
+
+/** Cuiabá é UTC-4 o ano todo (sem horário de verão). */
+const FUSO_CUIABA_MS = 4 * 3_600_000;
+
+/**
+ * Agora no horário de Cuiabá, para gravar em coluna TIMESTAMP sem fuso: o Prisma
+ * grava os campos UTC do Date, então deslocamos 4h para o valor gravado ser a
+ * hora local (é o que a tela mostra, sem converter).
+ */
+function agoraCuiaba(): Date {
+  return new Date(Date.now() - FUSO_CUIABA_MS);
+}
+
+const ANO_MINIMO = 1900;
+const ANO_MAXIMO = 2100;
+
 /** Em multipart os valores chegam como string; nos GETs/POST JSON já vêm tipados. */
 function toNumberOrNull(valor: unknown): number | null {
   if (valor === null || valor === undefined || valor === '') return null;
@@ -194,16 +212,19 @@ export class EncomendaPecasService {
     if (itens.length === 0) {
       throw new BadRequestException('Informe ao menos uma peça em "pecas".');
     }
+    const ano = this.anoObrigatorio(dto.ano);
+    const cliente = await this.clienteObrigatorio(dto.cli_codigo);
     const itensCotados = this.normalizarPecasCotadas(dto.pecas_cotadas);
     const oficina = await this.oficinaPelaOs(dto.os);
 
     const encomenda = await this.repository.create(
       {
+        created_at: agoraCuiaba(),
         nome_vendedor: dto.nome_vendedor ?? null,
         carro: dto.carro ?? null,
-        ano: toNumberOrNull(dto.ano),
+        ano,
         observacao: dto.observacao ?? null,
-        cliente: dto.cliente ?? null,
+        cliente: toStringOrNull(dto.cliente?.trim()) ?? cliente.CLI_NOME,
         numero: dto.numero ?? null,
         oficina,
         os: toStringOrNull(dto.os),
@@ -223,6 +244,29 @@ export class EncomendaPecasService {
     }
 
     return this.findById(encomenda.id);
+  }
+
+  private anoObrigatorio(valor: unknown): number {
+    const ano = toNumberOrNull(valor);
+    if (ano === null || !Number.isInteger(ano) || ano < ANO_MINIMO || ano > ANO_MAXIMO) {
+      throw new BadRequestException(
+        `Informe o "ano" do carro (inteiro entre ${ANO_MINIMO} e ${ANO_MAXIMO}).`,
+      );
+    }
+    return ano;
+  }
+
+  /** O código do cliente é obrigatório e precisa existir no ERP. */
+  private async clienteObrigatorio(valor: unknown): Promise<ClienteEncomenda> {
+    const codigo = toNumberOrNull(valor);
+    if (codigo === null || !Number.isInteger(codigo) || codigo <= 0) {
+      throw new BadRequestException('Informe o código do cliente em "cli_codigo".');
+    }
+    const cliente = await this.erpRepository.clientePorCodigo(codigo);
+    if (!cliente) {
+      throw new BadRequestException(`Cliente ${codigo} não encontrado no ERP.`);
+    }
+    return cliente;
   }
 
   /** Encomenda é de oficina quando a OS informada está com STATUS 1 no ERP; sem OS, false. */
@@ -430,6 +474,48 @@ export class EncomendaPecasService {
 
     await this.repository.updateNfe(id, toStringOrNull(dto.nfe?.trim()));
     return this.findById(id);
+  }
+
+  /**
+   * Edita um item cotado. Só vale enquanto a encomenda está "Em cotação": depois
+   * disso o vendedor já está escolhendo em cima desses valores.
+   */
+  async updateItemCotado(
+    id: number,
+    dto: VendaCasadaItemDto,
+  ): Promise<ven_encomenda_pecas_itens_cotados> {
+    const item = await this.repository.findItemCotadoById(id);
+    if (!item) {
+      throw new NotFoundException(`Item cotado com id ${id} não encontrado`);
+    }
+
+    const encomenda = item.encomenda_pecas_id
+      ? await this.repository.findById(item.encomenda_pecas_id)
+      : null;
+    if (encomenda?.status !== STATUS_EM_COTACAO) {
+      throw new BadRequestException(
+        `Itens cotados só podem ser editados com a encomenda em "${STATUS_EM_COTACAO}".`,
+      );
+    }
+
+    const [normalizado] = this.normalizarPecasCotadas([dto]);
+    // Campos que não vieram mantêm o valor gravado (o Prisma ignora undefined);
+    // `autorizado` é da escolha do vendedor e não muda por aqui.
+    const opcional = <T>(campo: keyof VendaCasadaItemDto, valor: T): T | undefined =>
+      dto[campo] === undefined ? undefined : valor;
+
+    return this.repository.updateItemCotado(id, {
+      nome: normalizado.nome,
+      valor: normalizado.valor,
+      prazo: opcional('prazo', normalizado.prazo),
+      fornecedor: opcional('fornecedor', normalizado.fornecedor),
+      marca: opcional('marca', normalizado.marca),
+      transpostadora: opcional('transpostadora', normalizado.transpostadora),
+      custo: opcional('custo', normalizado.custo),
+      margem: opcional('margem', normalizado.margem),
+      frete: opcional('frete', normalizado.frete),
+      imposto: opcional('imposto', normalizado.imposto),
+    });
   }
 
   async updateItemCotadoAutorizado(

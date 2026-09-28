@@ -2018,7 +2018,7 @@ model ven_encomenda_pecas {
   numero                                 String?                                  @db.VarChar(50)
   imagem                                 String?
   status                                 String?                                  @db.VarChar(50)
-  created_at                             DateTime?                                @default(now()) @db.Date
+  created_at                             DateTime?                                @default(now()) @db.Timestamp(6)
   motivoCancelamento                     String?
   motivoDenaoCotar                       String?
   nfe                                    String?
@@ -2151,6 +2151,12 @@ model ven_orcamento {
   celta_importado_em DateTime?            @db.Timestamptz(6)
   comparado          Boolean              @default(false)
   liberadogerencia   Boolean?
+  presencial         Boolean              @default(false)
+  tributacao         String?
+  icms_st            Decimal              @default(0) @db.Decimal(15, 2)
+  difal              Decimal              @default(0) @db.Decimal(15, 2)
+  meia_nota          Boolean              @default(false)
+  aprovado_codigo    Int?
   itens              ven_orcamento_item[]
   ven_venda_perdida  ven_venda_perdida[]
 
@@ -2213,6 +2219,9 @@ model ven_orcamento_item {
   qtd_encomenda      Decimal       @default(0) @db.Decimal(15, 3)
   fora_promocao      Boolean       @default(false)
   acrescimo          Decimal       @default(0) @db.Decimal(15, 2)
+  icms_st            Decimal       @default(0) @db.Decimal(15, 2)
+  difal              Decimal       @default(0) @db.Decimal(15, 2)
+  difal_pct          Decimal?      @db.Decimal(6, 4)
   ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([orcamento_id], map: "idx_ven_orcamento_item_orc")
@@ -2220,21 +2229,21 @@ model ven_orcamento_item {
 }
 
 model ven_venda_perdida {
-  id                 String        @id @default(cuid())
-  orcamento_id       String
+  id                 String         @id @default(cuid())
+  orcamento_id       String?
   orcamento_numero   Int?
   pro_codigo         Int
   descricao          String?
-  quantidade         Decimal       @db.Decimal(15, 3)
+  quantidade         Decimal        @db.Decimal(15, 3)
   cli_codigo         Int?
   rep_codigo         Int?
-  motivo             String        @default("SEM_SALDO")
+  motivo             String         @default("SEM_SALDO")
   usuario_id         String?
   usuario_nome       String?
-  created_at         DateTime      @default(now()) @db.Timestamptz(6)
+  created_at         DateTime       @default(now()) @db.Timestamptz(6)
   similar_disponivel String?
   justificativa      String?
-  ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  ven_orcamento      ven_orcamento? @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@unique([orcamento_id, pro_codigo], map: "uq_ven_venda_perdida_orc_pro")
   @@index([pro_codigo], map: "idx_ven_venda_perdida_pro")
@@ -2333,23 +2342,32 @@ model ven_wa_contato {
 }
 
 model ven_wa_mensagem {
-  id            String   @id @default(cuid())
-  message_id    String
-  sessao        String
-  rep_codigo    Int?
-  chat_telefone String
-  chave         String
-  cli_codigo    Int?
-  direcao       String
-  tipo          String?
-  timestamp     DateTime @db.Timestamptz(6)
-  ack           Int?
-  created_at    DateTime @default(now()) @db.Timestamptz(6)
+  id                     String   @id @default(cuid())
+  message_id             String
+  sessao                 String
+  rep_codigo             Int?
+  chat_telefone          String
+  chave                  String
+  cli_codigo             Int?
+  direcao                String
+  tipo                   String?
+  timestamp              DateTime @db.Timestamptz(6)
+  ack                    Int?
+  created_at             DateTime @default(now()) @db.Timestamptz(6)
+  corpo                  String?
+  midia_chave            String?
+  midia_mime             String?
+  transcricao            String?
+  transcricao_status     String?
+  transcricao_tentativas Int      @default(0)
+  updated_at             DateTime @default(now()) @db.Timestamptz(6)
 
   @@unique([sessao, message_id], map: "uq_ven_wa_msg_sessao_id")
   @@index([chave], map: "idx_ven_wa_msg_chave")
   @@index([cli_codigo, direcao, timestamp], map: "idx_ven_wa_msg_cli_dir_ts")
   @@index([sessao, timestamp], map: "idx_ven_wa_msg_sessao_ts")
+  @@index([transcricao_status, timestamp], map: "idx_ven_wa_msg_transcricao")
+  @@index([updated_at], map: "idx_ven_wa_msg_updated")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
@@ -2474,6 +2492,50 @@ model avi_resposta {
 
   @@id([aviso_id, usuario_id])
   @@index([usuario_id], map: "ix_avi_resposta_usuario")
+}
+
+model api_aprovacoes {
+  id            String    @id(map: "api_aprovacoes_pk") @db.VarChar(64)
+  empresa       Int       @db.SmallInt
+  cli_codigo    Int
+  aprovador     Int
+  solicitante   Int
+  justificativa String
+  credencial    String    @db.VarChar(60)
+  comprovante   String
+  itens         Json
+  orcamento     Int?
+  bloqueio      Int?
+  usada_em      DateTime  @default(now()) @db.Timestamptz(6)
+  concluida_em  DateTime? @db.Timestamptz(6)
+
+  @@index([empresa, orcamento], map: "api_aprovacoes_orcamento_idx")
+}
+
+model ven_bolsa_oportunidade {
+  id           Int       @id @default(autoincrement())
+  pro_codigo   Int
+  descricao    String?
+  nfe          Int?
+  nota_fiscal  Int?
+  for_codigo   Int?
+  for_nome     String?
+  quantidade   Decimal   @db.Decimal(15, 4)
+  custo_nota   Decimal?  @db.Decimal(15, 4)
+  custo        Decimal   @db.Decimal(15, 4)
+  preco_tabela Decimal   @db.Decimal(15, 2)
+  piso         Decimal   @db.Decimal(8, 4)
+  pct_vendedor Decimal   @db.Decimal(5, 4)
+  custo_bolsa  Decimal   @db.Decimal(15, 4)
+  vigente_de   DateTime  @db.Date
+  vendida      Decimal   @default(0) @db.Decimal(15, 4)
+  apurado_em   DateTime? @db.Timestamptz(6)
+  encerrado_em DateTime? @db.Date
+  criado_por   String?
+  created_at   DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([pro_codigo], map: "ven_bolsa_oportunidade_pro_idx")
 }
 
 enum rec_estado_resolucao {
