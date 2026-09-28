@@ -241,6 +241,11 @@ export class WhatsappService {
     const tipo = typeof p.type === 'string' ? p.type : (p._data?.type ?? null);
     const timestamp = p.timestamp ? new Date(Number(p.timestamp) * 1000) : new Date();
 
+    // Reentrega do webhook ou histórico repetindo o que já entrou: sai antes de baixar mídia.
+    if (await this.repo.existe(sessao, String(p.id))) {
+      return { gravada: false, casada: cli_codigo != null, midia: false, duplicada: true };
+    }
+
     let conteudo: Pick<MensagemRow, 'corpo' | 'midia_chave' | 'midia_mime' | 'transcricao_status'> = {};
     if (sessoesComCorpo().has(sessao)) {
       const corpo = (typeof p.body === 'string' && p.body) || p._data?.caption || null;

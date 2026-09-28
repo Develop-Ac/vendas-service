@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface ContatoSeedRow {
@@ -108,17 +107,23 @@ export class WhatsappRepository {
   }
 
   // ------------------------------------------------------------ mensagens
-  /** Grava um evento; reentrega do mesmo id (sessao+message_id) é ignorada. */
+  /** Já existe (sessao+message_id)? Consulta barata antes de baixar mídia no histórico. */
+  async existe(sessao: string, message_id: string): Promise<boolean> {
+    const m = await this.prisma.ven_wa_mensagem.findUnique({
+      where: { sessao_message_id: { sessao, message_id } },
+      select: { id: true },
+    });
+    return m != null;
+  }
+
+  /**
+   * Grava um evento; reentrega do mesmo id (sessao+message_id) é ignorada SEM erro
+   * (skipDuplicates) — o webhook do WAHA reentrega e o histórico repete mensagens
+   * que o webhook já pegou; um create com P2002 enchia o log de prisma:error.
+   */
   async gravarMensagem(row: MensagemRow): Promise<boolean> {
-    try {
-      await this.prisma.ven_wa_mensagem.create({ data: row });
-      return true;
-    } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        return false; // duplicata — o webhook do WAHA pode reentregar
-      }
-      throw e;
-    }
+    const r = await this.prisma.ven_wa_mensagem.createMany({ data: [row], skipDuplicates: true });
+    return r.count > 0;
   }
 
   async atualizarAck(sessao: string, message_id: string, ack: number) {

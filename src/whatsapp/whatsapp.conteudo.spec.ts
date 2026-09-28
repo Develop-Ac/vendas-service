@@ -17,6 +17,7 @@ describe('WhatsappService — conteúdo', () => {
 
   const repo = {
     resolverChave: jest.fn(async (chave: string) => vinculos.get(chave) ?? null),
+    existe: jest.fn(async () => false),
     gravarMensagem: jest.fn(async (row: any) => {
       gravadas.push(row);
       return true;
