@@ -2152,18 +2152,11 @@ model ven_orcamento {
   comparado          Boolean              @default(false)
   liberadogerencia   Boolean?
   presencial         Boolean              @default(false)
-<<<<<<< HEAD
   tributacao         String?
   icms_st            Decimal              @default(0) @db.Decimal(15, 2)
   difal              Decimal              @default(0) @db.Decimal(15, 2)
   meia_nota          Boolean              @default(false)
   aprovado_codigo    Int?
-=======
-  meia_nota          Boolean              @default(false)
-  tributacao         String?
-  icms_st            Decimal              @default(0) @db.Decimal(15, 2)
-  difal              Decimal              @default(0) @db.Decimal(15, 2)
->>>>>>> 62faf7814bd63c47b7d1050600dbc9f058fc50dd
   itens              ven_orcamento_item[]
   ven_venda_perdida  ven_venda_perdida[]
 
@@ -2238,11 +2231,7 @@ model ven_orcamento_item {
 /// Venda perdida: pelo Fechou do orçamento (com orcamento_id) ou pela pesquisa de produtos (F7, sem orçamento).
 /// Sem orçamento vale uma por cliente + produto + dia (índice parcial no SQL manual; o Prisma não o modela).
 model ven_venda_perdida {
-<<<<<<< HEAD
   id                 String         @id @default(cuid())
-=======
-  id                 String        @id @default(cuid())
->>>>>>> 62faf7814bd63c47b7d1050600dbc9f058fc50dd
   orcamento_id       String?
   orcamento_numero   Int?
   pro_codigo         Int
@@ -2414,7 +2403,6 @@ model ven_wa_contato {
 }
 
 model ven_wa_mensagem {
-<<<<<<< HEAD
   id                     String   @id @default(cuid())
   message_id             String
   sessao                 String
@@ -2427,32 +2415,13 @@ model ven_wa_mensagem {
   timestamp              DateTime @db.Timestamptz(6)
   ack                    Int?
   created_at             DateTime @default(now()) @db.Timestamptz(6)
-=======
-  id            String   @id @default(cuid())
-  message_id    String
-  sessao        String
-  rep_codigo    Int?
-  chat_telefone String
-  chave         String
-  cli_codigo    Int?
-  direcao       String
-  tipo          String?
-  timestamp     DateTime @db.Timestamptz(6)
-  ack           Int?
-  created_at    DateTime @default(now()) @db.Timestamptz(6)
-  // Conteúdo (só sessões em WA_CORPO_SESSOES) — sql/whatsapp_conversas_postgres.sql
->>>>>>> 62faf7814bd63c47b7d1050600dbc9f058fc50dd
   corpo                  String?
   midia_chave            String?
   midia_mime             String?
   transcricao            String?
   transcricao_status     String?
   transcricao_tentativas Int      @default(0)
-<<<<<<< HEAD
   updated_at             DateTime @default(now()) @db.Timestamptz(6)
-=======
-  updated_at             DateTime @default(now()) @updatedAt @db.Timestamptz(6)
->>>>>>> 62faf7814bd63c47b7d1050600dbc9f058fc50dd
 
   @@unique([sessao, message_id], map: "uq_ven_wa_msg_sessao_id")
   @@index([chave], map: "idx_ven_wa_msg_chave")
