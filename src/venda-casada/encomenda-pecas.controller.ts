@@ -26,7 +26,7 @@ import {
 } from '@nestjs/swagger';
 import { EncomendaPecasService } from './encomenda-pecas.service';
 import { CreateVendaCasadaDto } from './dto/create-encomenda-pecas.dto';
-import { AddPecasCotadasDto } from './dto/add-pecas-cotadas.dto';
+import { AddPecasCotadasDto, VendaCasadaItemDto } from './dto/add-pecas-cotadas.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { UpdateItemCotadoDto } from './dto/update-item-cotado.dto';
 import { UpdateNfeDto } from './dto/update-nfe.dto';
@@ -168,9 +168,9 @@ export class EncomendaPecasController {
             },
           },
         },
-        ano: { type: 'integer' },
+        ano: { type: 'integer', description: 'Obrigatório (1900–2100).' },
         observacao: { type: 'string' },
-        cli_codigo: { type: 'integer' },
+        cli_codigo: { type: 'integer', description: 'Obrigatório; precisa existir no ERP.' },
         cliente: { type: 'string' },
         numero: { type: 'string' },
         os: {
@@ -188,7 +188,7 @@ export class EncomendaPecasController {
     },
   })
   @ApiResponse({ status: 201, description: 'Encomenda de peça criada com sucesso' })
-  @ApiResponse({ status: 400, description: 'Sem peças, OS inválida ou OS não encontrada no ERP' })
+  @ApiResponse({ status: 400, description: 'Sem peças, sem ano, cliente ausente/inexistente no ERP ou OS inválida/não encontrada' })
   create(
     @Body() dto: CreateVendaCasadaDto,
     @UploadedFiles() files?: UploadedFileData[],
@@ -222,7 +222,10 @@ export class EncomendaPecasController {
       'gravado em `motivoCancelamento` (retornado no GET e GET /:id). Em qualquer outro status ' +
       'o `motivoCancelamento` é limpo. `motivoDenaoCotar` é opcional e grava na coluna de mesmo ' +
       'nome (se não vier, mantém o valor atual). `prazo` (YYYY-MM-DD) também é opcional e grava ' +
-      'na coluna `prazo` com a mesma regra; vazio ou null limpa.',
+      'na coluna `prazo` com a mesma regra; vazio ou null limpa. Sem `prazo`, o servidor aplica ' +
+      'hoje (Cuiabá) + 7 dias ao sair de "Em cotação" ou "Aguardando Sup. Compras 2" para ' +
+      '"Aguardando Sup. Compras 1"/"Aguardando Vendedor". Grava a hora de entrada na nova etapa ' +
+      'e devolve a encomenda como no GET /:id (com `etapas` e `prazo_vencido`).',
   })
   @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
   @ApiBody({ type: UpdateStatusDto })
@@ -253,6 +256,25 @@ export class EncomendaPecasController {
     @Body() dto: UpdateNfeDto,
   ) {
     return this.service.updateNfe(id, dto);
+  }
+
+  @Put('item_cotado/:id')
+  @ApiOperation({
+    summary: 'Edita um item cotado',
+    description:
+      'Só é permitido com a encomenda em "Em cotação". `nome` e `valor` são obrigatórios; ' +
+      'os demais campos, se não vierem, mantêm o valor atual (vazio limpa). `autorizado` é ignorado.',
+  })
+  @ApiParam({ name: 'id', type: Number, description: 'ID do item cotado' })
+  @ApiBody({ type: VendaCasadaItemDto })
+  @ApiResponse({ status: 200, description: 'Item cotado atualizado com sucesso' })
+  @ApiResponse({ status: 400, description: 'Dados inválidos ou encomenda fora de "Em cotação"' })
+  @ApiResponse({ status: 404, description: 'Item cotado não encontrado' })
+  editarItemCotado(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: VendaCasadaItemDto,
+  ) {
+    return this.service.updateItemCotado(id, dto);
   }
 
   @Patch('item_cotado/:id')

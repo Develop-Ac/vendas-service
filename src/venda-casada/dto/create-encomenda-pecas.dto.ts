@@ -9,6 +9,8 @@ import {
   IsDefined,
   IsNotEmpty,
   IsPositive,
+  Max,
+  Min,
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
@@ -83,22 +85,25 @@ export class CreateVendaCasadaDto {
   @Type(() => VendaCasadaItemDto)
   pecas_cotadas?: VendaCasadaItemDto[];
 
-  @ApiProperty({ description: 'Ano', required: false })
-  @IsOptional()
+  @ApiProperty({ description: 'Ano do carro', example: 2018 })
+  @IsDefined()
   @Type(() => Number)
   @IsInt()
-  ano?: number;
+  @Min(1900)
+  @Max(2100)
+  ano!: number;
 
   @ApiProperty({ description: 'Observação', required: false })
   @IsOptional()
   @IsString()
   observacao?: string;
 
-  @ApiProperty({ description: 'Código do cliente no ERP', required: false })
-  @IsOptional()
+  @ApiProperty({ description: 'Código do cliente no ERP (precisa existir no ERP)', example: 1234 })
+  @IsDefined()
   @Type(() => Number)
   @IsInt()
-  cli_codigo?: number;
+  @IsPositive()
+  cli_codigo!: number;
 
   @ApiProperty({ description: 'Cliente', required: false })
   @IsOptional()

@@ -3,6 +3,7 @@ import {
   ANEXO_TIPO_CARRO,
   ANEXO_TIPO_COMPROVANTE,
   AnexoTipo,
+  ColunaEtapa,
   CreateItemEncomendadoInput,
   CreateVendaCasadaItemInput,
   EncomendaPecasRepository,
@@ -33,6 +34,111 @@ const PRO_CODIGO_SEM_ERP = 99999;
 
 /** Status que exige `motivo` (gravado em motivoCancelamento). */
 const STATUS_CANCELADO = 'Cancelado';
+
+/** Único status em que compras pode editar os itens cotados. */
+const STATUS_EM_COTACAO = 'Em cotação';
+
+/** Cuiabá é UTC-4 o ano todo (sem horário de verão). */
+const FUSO_CUIABA_MS = 4 * 3_600_000;
+
+/**
+ * Agora no horário de Cuiabá, para gravar em coluna TIMESTAMP sem fuso: o Prisma
+ * grava os campos UTC do Date, então deslocamos 4h para o valor gravado ser a
+ * hora local (é o que a tela mostra, sem converter).
+ */
+function agoraCuiaba(): Date {
+  return new Date(Date.now() - FUSO_CUIABA_MS);
+}
+
+/** Dias que o vendedor tem para concluir a escolha dos itens. */
+const PRAZO_PADRAO_DIAS = 7;
+
+/** Hoje em Cuiabá + PRAZO_PADRAO_DIAS, à meia-noite UTC (como o Prisma grava @db.Date). */
+function prazoPadrao(): Date {
+  const hoje = agoraCuiaba();
+  return new Date(
+    Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), hoje.getUTCDate() + PRAZO_PADRAO_DIAS),
+  );
+}
+
+/**
+ * O prazo padrão começa a contar quando a encomenda vai para o vendedor (direto
+ * ou passando pelo Sup. Compras 1) saindo da cotação, ou quando o Sup. Compras 2
+ * devolve para ele. Liberar do Sup. Compras 1 para o vendedor mantém o prazo.
+ */
+const ORIGENS_QUE_DEFINEM_PRAZO = ['em cotação', 'aguardando sup. compras 2'];
+const DESTINOS_QUE_DEFINEM_PRAZO = ['aguardando sup. compras 1', 'aguardando vendedor'];
+
+/** Vencido o prazo nessas etapas, a encomenda conta como cancelada (ver intranet). */
+const STATUS_SUJEITOS_AO_PRAZO = [
+  'aguardando cotação',
+  'em aberto',
+  'em cotação',
+  'em andamento',
+  'aguardando sup. compras 1',
+  'aguardando vendedor',
+];
+
+/** Etapas em que o relógio para: não contam "até agora". */
+const ETAPAS_FINAIS: ColunaEtapa[] = ['chegou', 'cancelado'];
+
+export type TempoEtapa = {
+  coluna: ColunaEtapa;
+  /** Hora de entrada, como gravada (hora de Cuiabá). */
+  entrada: Date;
+  /** Minutos na etapa: até a próxima entrada ou, na etapa atual, até agora. */
+  duracao_min: number | null;
+  atual: boolean;
+};
+
+/**
+ * Etapas pelas quais a encomenda passou, em ordem de entrada. Se voltou para
+ * uma etapa, vale a entrada mais recente. "Agora" é o relógio do servidor.
+ */
+function tempoPorEtapa(venda: VendaCasadaComItens, agora: Date): TempoEtapa[] {
+  const passadas = Object.values(ETAPA_COLUNA)
+    .map((coluna) => ({ coluna, entrada: venda[coluna] }))
+    .filter((e): e is { coluna: ColunaEtapa; entrada: Date } => e.entrada instanceof Date)
+    .sort((a, b) => a.entrada.getTime() - b.entrada.getTime());
+
+  return passadas.map((e, i) => {
+    const proxima = passadas[i + 1];
+    const atual = !proxima && !ETAPAS_FINAIS.includes(e.coluna);
+    const fim = proxima ? proxima.entrada : atual ? agora : null;
+    return {
+      ...e,
+      atual,
+      duracao_min:
+        fim === null ? null : Math.max(0, Math.floor((fim.getTime() - e.entrada.getTime()) / 60_000)),
+    };
+  });
+}
+
+/** O prazo vale até o fim do dia (em Cuiabá): vence a partir do dia seguinte. */
+function prazoVencido(venda: VendaCasadaComItens, agora: Date): boolean {
+  if (!venda.prazo) return false;
+  if (!STATUS_SUJEITOS_AO_PRAZO.includes((venda.status ?? '').trim().toLowerCase())) return false;
+  return formatDateOnly(venda.prazo)! < agora.toISOString().slice(0, 10);
+}
+
+/**
+ * Status -> coluna que guarda quando a encomenda entrou nele. A comparação é sem
+ * caixa ("cancelado" e "Cancelado" coexistem). Status fora da lista não grava hora.
+ */
+const ETAPA_COLUNA: Record<string, ColunaEtapa> = {
+  'aguardando cotação': 'aguardando_cotacao',
+  'em cotação': 'em_cotacao',
+  'aguardando sup. compras 1': 'aguardando_sup_compras_1',
+  'aguardando vendedor': 'aguardando_vendedor',
+  'aguardando sup. compras 2': 'aguardando_sup_compras_2',
+  'liberado para comprar': 'liberado_para_comprar',
+  comprado: 'comprado',
+  chegou: 'chegou',
+  cancelado: 'cancelado',
+};
+
+const ANO_MINIMO = 1900;
+const ANO_MAXIMO = 2100;
 
 /** Em multipart os valores chegam como string; nos GETs/POST JSON já vêm tipados. */
 function toNumberOrNull(valor: unknown): number | null {
@@ -124,6 +230,9 @@ export type AnexoComUrl = ven_encomenda_pecas_anexos & { url: string | null };
 export type VendaCasadaComUrls = Omit<VendaCasadaComItens, 'anexos' | 'prazo'> & {
   anexos: AnexoComUrl[];
   prazo: string | null;
+  /** Calculado no servidor para não depender do relógio do cliente. */
+  prazo_vencido: boolean;
+  etapas: TempoEtapa[];
 };
 
 @Injectable()
@@ -166,7 +275,15 @@ export class EncomendaPecasService {
       venda.imagem ? this.gerarUrlAnexo(venda.imagem, this.BUCKET) : null,
     ]);
 
-    return { ...venda, anexos, imagem, prazo: formatDateOnly(venda.prazo) };
+    const agora = agoraCuiaba();
+    return {
+      ...venda,
+      anexos,
+      imagem,
+      prazo: formatDateOnly(venda.prazo),
+      prazo_vencido: prazoVencido(venda, agora),
+      etapas: tempoPorEtapa(venda, agora),
+    };
   }
 
   /** Se o objeto não existir mais no bucket, devolve null em vez de quebrar o GET. */
@@ -194,16 +311,21 @@ export class EncomendaPecasService {
     if (itens.length === 0) {
       throw new BadRequestException('Informe ao menos uma peça em "pecas".');
     }
+    const ano = this.anoObrigatorio(dto.ano);
+    const cliente = await this.clienteObrigatorio(dto.cli_codigo);
     const itensCotados = this.normalizarPecasCotadas(dto.pecas_cotadas);
     const oficina = await this.oficinaPelaOs(dto.os);
 
+    const agora = agoraCuiaba();
     const encomenda = await this.repository.create(
       {
+        created_at: agora,
+        aguardando_cotacao: agora,
         nome_vendedor: dto.nome_vendedor ?? null,
         carro: dto.carro ?? null,
-        ano: toNumberOrNull(dto.ano),
+        ano,
         observacao: dto.observacao ?? null,
-        cliente: dto.cliente ?? null,
+        cliente: toStringOrNull(dto.cliente?.trim()) ?? cliente.CLI_NOME,
         numero: dto.numero ?? null,
         oficina,
         os: toStringOrNull(dto.os),
@@ -223,6 +345,29 @@ export class EncomendaPecasService {
     }
 
     return this.findById(encomenda.id);
+  }
+
+  private anoObrigatorio(valor: unknown): number {
+    const ano = toNumberOrNull(valor);
+    if (ano === null || !Number.isInteger(ano) || ano < ANO_MINIMO || ano > ANO_MAXIMO) {
+      throw new BadRequestException(
+        `Informe o "ano" do carro (inteiro entre ${ANO_MINIMO} e ${ANO_MAXIMO}).`,
+      );
+    }
+    return ano;
+  }
+
+  /** O código do cliente é obrigatório e precisa existir no ERP. */
+  private async clienteObrigatorio(valor: unknown): Promise<ClienteEncomenda> {
+    const codigo = toNumberOrNull(valor);
+    if (codigo === null || !Number.isInteger(codigo) || codigo <= 0) {
+      throw new BadRequestException('Informe o código do cliente em "cli_codigo".');
+    }
+    const cliente = await this.erpRepository.clientePorCodigo(codigo);
+    if (!cliente) {
+      throw new BadRequestException(`Cliente ${codigo} não encontrado no ERP.`);
+    }
+    return cliente;
   }
 
   /** Encomenda é de oficina quando a OS informada está com STATUS 1 no ERP; sem OS, false. */
@@ -379,7 +524,7 @@ export class EncomendaPecasService {
     return this.repository.addPecasCotadas(id, itens);
   }
 
-  async updateStatus(id: number, dto: UpdateStatusDto): Promise<VendaCasadaComItens> {
+  async updateStatus(id: number, dto: UpdateStatusDto): Promise<VendaCasadaComUrls> {
     const venda = await this.repository.findById(id);
     if (!venda) {
       throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
@@ -403,15 +548,29 @@ export class EncomendaPecasService {
         ? undefined
         : toStringOrNull(String(dto.motivoDenaoCotar ?? '').trim());
 
-    // Mesma regra: ausente mantém; vazio/null limpa.
-    const prazo = dto.prazo === undefined ? undefined : toDateOnlyOrNull(dto.prazo, 'prazo');
+    // Hora de entrada na etapa; repetir o mesmo status não reinicia o relógio
+    const statusAnterior = (venda.status ?? '').trim().toLowerCase();
+    const coluna = ETAPA_COLUNA[status.toLowerCase()];
+    const mudouDeEtapa = statusAnterior !== status.toLowerCase();
 
-    return this.repository.updateStatus(id, {
+    // Prazo explícito continua aceito (ausente mantém; vazio/null limpa). Sem ele,
+    // o servidor aplica o prazo padrão nas transições que o reiniciam.
+    const prazo =
+      dto.prazo !== undefined
+        ? toDateOnlyOrNull(dto.prazo, 'prazo')
+        : ORIGENS_QUE_DEFINEM_PRAZO.includes(statusAnterior) &&
+            DESTINOS_QUE_DEFINEM_PRAZO.includes(status.toLowerCase())
+          ? prazoPadrao()
+          : undefined;
+
+    await this.repository.updateStatus(id, {
       status,
       motivoCancelamento: cancelado ? motivo : null,
       motivoDenaoCotar,
       prazo,
+      ...(coluna && mudouDeEtapa ? { [coluna]: agoraCuiaba() } : {}),
     });
+    return this.findById(id);
   }
 
   /** Grava a NF-e da encomenda; vazio ou null limpa a coluna. */
@@ -430,6 +589,48 @@ export class EncomendaPecasService {
 
     await this.repository.updateNfe(id, toStringOrNull(dto.nfe?.trim()));
     return this.findById(id);
+  }
+
+  /**
+   * Edita um item cotado. Só vale enquanto a encomenda está "Em cotação": depois
+   * disso o vendedor já está escolhendo em cima desses valores.
+   */
+  async updateItemCotado(
+    id: number,
+    dto: VendaCasadaItemDto,
+  ): Promise<ven_encomenda_pecas_itens_cotados> {
+    const item = await this.repository.findItemCotadoById(id);
+    if (!item) {
+      throw new NotFoundException(`Item cotado com id ${id} não encontrado`);
+    }
+
+    const encomenda = item.encomenda_pecas_id
+      ? await this.repository.findById(item.encomenda_pecas_id)
+      : null;
+    if (encomenda?.status !== STATUS_EM_COTACAO) {
+      throw new BadRequestException(
+        `Itens cotados só podem ser editados com a encomenda em "${STATUS_EM_COTACAO}".`,
+      );
+    }
+
+    const [normalizado] = this.normalizarPecasCotadas([dto]);
+    // Campos que não vieram mantêm o valor gravado (o Prisma ignora undefined);
+    // `autorizado` é da escolha do vendedor e não muda por aqui.
+    const opcional = <T>(campo: keyof VendaCasadaItemDto, valor: T): T | undefined =>
+      dto[campo] === undefined ? undefined : valor;
+
+    return this.repository.updateItemCotado(id, {
+      nome: normalizado.nome,
+      valor: normalizado.valor,
+      prazo: opcional('prazo', normalizado.prazo),
+      fornecedor: opcional('fornecedor', normalizado.fornecedor),
+      marca: opcional('marca', normalizado.marca),
+      transpostadora: opcional('transpostadora', normalizado.transpostadora),
+      custo: opcional('custo', normalizado.custo),
+      margem: opcional('margem', normalizado.margem),
+      frete: opcional('frete', normalizado.frete),
+      imposto: opcional('imposto', normalizado.imposto),
+    });
   }
 
   async updateItemCotadoAutorizado(
