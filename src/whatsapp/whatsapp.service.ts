@@ -408,7 +408,11 @@ export class WhatsappService {
         body: form,
         signal: AbortSignal.timeout(Number(process.env.WA_TRANSCRICAO_TIMEOUT_MS) || 600_000),
       });
-      if (r.status >= 500) return { indisponivel: true, erro: `HTTP ${r.status}` };
+      // 401/403 = token errado, 404 = rota ausente (runner antigo), 5xx = caiu: são problemas
+      // do transcritor, não do áudio — parar o tick sem contar, senão a fila inteira vira ERRO.
+      if (r.status >= 500 || [401, 403, 404].includes(r.status)) {
+        return { indisponivel: true, erro: `HTTP ${r.status}` };
+      }
       if (!r.ok) return { texto: null, erro: `HTTP ${r.status}` };
       const j = (await r.json()) as { texto?: string; text?: string };
       return { texto: String(j.texto ?? j.text ?? '') };

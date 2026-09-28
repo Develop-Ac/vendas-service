@@ -100,9 +100,12 @@ e contato ficam de fora. Falha ao baixar a mídia não impede gravar a mensagem.
 **Transcrição:** cron por minuto no vendas-service, um áudio por vez, nos dois
 sentidos. Manda o arquivo por multipart a `WA_TRANSCRICAO_URL` (o
 `POST /transcrever` do runner do assistente na .146, Bearer
-`WA_TRANSCRICAO_TOKEN` = `IA_RUNNER_TOKEN`) e grava `{ texto }`. Resposta 4xx
-conta tentativa (3 = ERRO, áudio fica no MinIO); rede ou 5xx encerra o tick sem
-contar — a fila espera o transcritor voltar. `WA_TRANSCRICAO_SO_RECEBIDAS=1`
+`WA_TRANSCRICAO_TOKEN` = `IA_RUNNER_TOKEN`, valor idêntico nos dois lados) e grava
+`{ texto }`. 400/413/415/422 (problema do arquivo) contam tentativa (3 = ERRO, áudio
+fica no MinIO); rede, 5xx, 401/403 (token) e 404 (runner sem a rota) encerram o tick
+sem contar — a fila espera o transcritor voltar. Áudios que viraram ERRO por
+problema do transcritor voltam à fila com o UPDATE comentado no fim de
+`sql/whatsapp_conversas_postgres.sql`. `WA_TRANSCRICAO_SO_RECEBIDAS=1`
 prioriza só o áudio do cliente se a CPU apertar. Disparo manual:
 `POST /whatsapp/transcricao/processar`.
 

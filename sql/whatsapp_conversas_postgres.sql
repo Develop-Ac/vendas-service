@@ -23,3 +23,10 @@ CREATE INDEX IF NOT EXISTS idx_ven_wa_msg_transcricao ON ven_wa_mensagem (transc
 CREATE INDEX IF NOT EXISTS idx_ven_wa_msg_updated ON ven_wa_mensagem (updated_at);
 
 -- Bucket no MinIO local (criar pelo console/mc): whatsapp-atacado
+
+-- ----------------------------------------------------------------------------
+-- Operação: devolver à fila os áudios que viraram ERRO (ou gastaram tentativas)
+-- por problema do transcritor, não do arquivo — ex.: token errado, runner fora.
+-- UPDATE ven_wa_mensagem
+--    SET transcricao_status = 'PENDENTE', transcricao_tentativas = 0
+--  WHERE transcricao_status IN ('PENDENTE', 'ERRO') AND transcricao IS NULL AND midia_chave IS NOT NULL;

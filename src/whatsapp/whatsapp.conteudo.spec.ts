@@ -218,6 +218,17 @@ describe('WhatsappService — conteúdo', () => {
     expect(pendentes).toHaveLength(0); // a2 foi lida, mas não contou tentativa
   });
 
+  it('processador: 401 (token errado) e 404 (runner sem a rota) param o tick sem contar tentativa', async () => {
+    process.env.WA_TRANSCRICAO_URL = 'http://146.local:9200/transcrever';
+    for (const status of [401, 404]) {
+      pendentes = [{ id: 'a1', midia_chave: 'k1', midia_mime: 'audio/ogg', transcricao_tentativas: 0 }];
+      (global as any).fetch = jest.fn().mockResolvedValue({ ok: false, status });
+      const r = await service.processarAudiosPendentes();
+      expect(r).toMatchObject({ processados: 1, falhas: 0, parado: `HTTP ${status}` });
+    }
+    expect(falhas).toEqual([]);
+  });
+
   it('processador: sem WA_TRANSCRICAO_URL não faz nada', async () => {
     expect(await service.processarAudiosPendentes()).toBeNull();
     expect(repo.proximoAudioPendente).not.toHaveBeenCalled();
