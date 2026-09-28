@@ -100,6 +100,16 @@ export class SalvarOrcamentoDto {
   @Type(() => ItemOrcamentoDto)
   itens: ItemOrcamentoDto[];
 
+  @ApiProperty({ description: 'Venda presencial (cliente retira na loja). Só muda o imposto de cliente não contribuinte/isento de outro estado: presencial não gera DIFAL. Padrão: não presencial.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  presencial?: boolean;
+
+  @ApiProperty({ description: 'Meia nota: metade do valor sai em produto e metade em serviço. ST e DIFAL estimados sobre metade de cada item; na importação ao Celta o imposto vai em Desp. Acessórias.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  meia_nota?: boolean;
+
   @ApiProperty({ required: false })
   @IsOptional()
   @IsString()
@@ -109,6 +119,46 @@ export class SalvarOrcamentoDto {
   @IsOptional()
   @IsString()
   usuario_nome?: string;
+}
+
+export class ItemTributacaoDto {
+  @ApiProperty({ example: 49464 })
+  @IsInt()
+  pro_codigo: number;
+
+  @ApiProperty({ description: 'Total líquido da linha (preço negociado × quantidade).' })
+  @IsNumber()
+  @Min(0)
+  total: number;
+
+  @ApiProperty({ description: 'Serviço (subtipo 09): fora do ICMS.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  servico?: boolean;
+}
+
+/** Prévia do imposto interestadual do orçamento em edição — a tela pergunta, o serviço calcula. */
+export class TributacaoDto {
+  @ApiProperty({ example: 1462 })
+  @IsInt()
+  cli_codigo: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  presencial?: boolean;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsBoolean()
+  meia_nota?: boolean;
+
+  @ApiProperty({ type: [ItemTributacaoDto] })
+  @IsArray()
+  @ArrayMaxSize(200)
+  @ValidateNested({ each: true })
+  @Type(() => ItemTributacaoDto)
+  itens: ItemTributacaoDto[];
 }
 
 export class EntregueOrcamentoDto {
@@ -198,6 +248,39 @@ export class DecisaoSaldoDto extends AcaoOrcamentoDto {
   decisoes: DecisaoSaldoItemDto[];
 }
 
+/** Venda perdida registrada da PESQUISA de produtos (F7): item sem saldo, quantidade 1, sem precisar de orçamento. */
+export class VendaPerdidaPesquisaDto extends AcaoOrcamentoDto {
+  @ApiProperty()
+  @IsInt()
+  cli_codigo: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  rep_codigo?: number;
+
+  @ApiProperty()
+  @IsInt()
+  pro_codigo: number;
+
+  @ApiProperty({ required: false, description: 'Orçamento já salvo de onde a pesquisa foi aberta: o registro nasce amarrado a ele.' })
+  @IsOptional()
+  @IsString()
+  orcamento_id?: string;
+
+  @ApiProperty({ required: false, description: 'Equivalente COM saldo que a tela encontrou; com ele a justificativa é obrigatória.' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(300)
+  similar_disponivel?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  justificativa?: string;
+}
+
 export class ExcecaoReguaDto {
   @ApiProperty({ enum: ['EXCLUSIVO', 'OPORTUNIDADE'] })
   @IsIn(['EXCLUSIVO', 'OPORTUNIDADE'])
@@ -227,4 +310,81 @@ export class ExcecaoReguaDto {
   @IsOptional()
   @IsBoolean()
   remover?: boolean;
+}
+
+/* ------------------------------------------------- compra de oportunidade */
+
+export class ItemOportunidadeDto {
+  @ApiProperty()
+  @IsInt()
+  pro_codigo: number;
+
+  @ApiProperty({ description: 'Quantidade do item na nota. O lote gravado é o menor entre ela e o estoque de hoje.' })
+  @IsNumber()
+  @Min(0)
+  quantidade: number;
+
+  @ApiProperty({ description: 'Fração da sobra que fica com o vendedor (0 a 1).' })
+  @IsNumber()
+  @Min(0)
+  pct_vendedor: number;
+
+  @ApiProperty({ required: false, description: 'Custo do item na nota (informação).' })
+  @IsOptional()
+  @IsNumber()
+  custo_nota?: number | null;
+}
+
+export class RegistrarOportunidadeDto {
+  @ApiProperty({ required: false, description: 'NF_ENTRADA.NFE (chave interna, empresa 1).' })
+  @IsOptional()
+  @IsInt()
+  nfe?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  nota_fiscal?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsInt()
+  for_codigo?: number;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  for_nome?: string;
+
+  @ApiProperty({ required: false })
+  @IsOptional()
+  @IsString()
+  criado_por?: string;
+
+  @ApiProperty({ type: [ItemOportunidadeDto] })
+  @IsArray()
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => ItemOportunidadeDto)
+  itens: ItemOportunidadeDto[];
+}
+
+export class AlterarOportunidadeDto {
+  @ApiProperty({ required: false, description: 'Nova fração da sobra para o vendedor (0 a 1); recalcula o custo para a bolsa.' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  pct_vendedor?: number;
+
+  @ApiProperty({ required: false, description: 'true encerra o registro hoje (vendas de hoje em diante voltam ao custo real).' })
+  @IsOptional()
+  @IsBoolean()
+  encerrar?: boolean;
+}
+
+export class RegenerarProdutosDiaDto {
+  @ApiProperty({ required: false, description: 'Nome do usuário que apertou o botão (fica em gerado_por).' })
+  @IsOptional()
+  @IsString()
+  gerado_por?: string;
 }

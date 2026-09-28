@@ -1,5 +1,8 @@
+import { round2 } from './regua';
 import { Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import type { ven_bolsa_oportunidade, ven_produto_dia } from '@prisma/client';
+import { ClienteDevido, ItemProdutoDia, MotivoFora } from './produtos-dia';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } from './regua';
 
@@ -13,6 +16,29 @@ import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } fro
 
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 const nn = (v: unknown): number | null => (v == null ? null : Number(v));
+/** Início e fim (exclusivo) do dia de HOJE em Cuiabá (UTC−4, sem horário de verão), como instantes UTC. */
+const diaCuiaba = (): [Date, Date] => {
+  const desloc = 4 * 60 * 60_000;
+  const local = Date.now() - desloc;
+  const inicio = Math.floor(local / 86_400_000) * 86_400_000 + desloc;
+  return [new Date(inicio), new Date(inicio + 86_400_000)];
+};
+/** Hoje como coluna DATE (meia-noite UTC do dia local): o Prisma grava só a data. */
+const hojeData = () => {
+  const d = new Date();
+  return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+};
+
+/** Linha gravada de produtos do dia: o item calculado mais a apuração e a origem. */
+export interface ItemProdutoDiaRow extends ItemProdutoDia {
+  id: number;
+  data: string;
+  vendida_qtd: number | null;
+  vendida_valor: number | null;
+  apurado_em: Date | null;
+  gerado_em: Date;
+  gerado_por: string | null;
+}
 
 export interface GiroItem {
   pro_codigo: number;
@@ -21,6 +47,10 @@ export interface GiroItem {
   tempo_medio_saldo_atual: number | null;
   tendencia_label: string | null;
   group_id: string | null;
+  grupo_chave: string | null;
+  /** demanda média diária de todos os canais e ponto de pedido (produtos do dia) */
+  demanda_media_dia: number | null;
+  estoque_min_sugerido: number | null;
 }
 
 /** Uma chegada prevista de um produto: pedido de compra em aberto, com a data e de onde ela veio. */
@@ -111,6 +141,105 @@ export class OrcamentoPrismaRepository {
       update: data,
     });
     return { ...r, desc_max: nn(r.desc_max) };
+  }
+
+  /* --------------------------------------------- compra de oportunidade */
+
+  private mapOportunidade(r: ven_bolsa_oportunidade) {
+    return {
+      id: r.id,
+      pro_codigo: r.pro_codigo,
+      descricao: r.descricao,
+      nfe: r.nfe,
+      nota_fiscal: r.nota_fiscal,
+      for_codigo: r.for_codigo,
+      for_nome: r.for_nome,
+      quantidade: Number(r.quantidade),
+      custo_nota: nn(r.custo_nota),
+      custo: Number(r.custo),
+      preco_tabela: Number(r.preco_tabela),
+      piso: Number(r.piso),
+      pct_vendedor: Number(r.pct_vendedor),
+      custo_bolsa: Number(r.custo_bolsa),
+      vigente_de: r.vigente_de,
+      vendida: Number(r.vendida),
+      apurado_em: r.apurado_em,
+      encerrado_em: r.encerrado_em,
+      criado_por: r.criado_por,
+      created_at: r.created_at,
+      updated_at: r.updated_at,
+    };
+  }
+
+  /** Lotes vigentes dos produtos (um por produto): o custo que a bolsa usa hoje. */
+  async oportunidadesVigentes(codigos: number[]) {
+    const saida = new Map<number, ReturnType<OrcamentoPrismaRepository['mapOportunidade']>>();
+    if (!codigos.length) return saida;
+    const rows = await this.prisma.ven_bolsa_oportunidade.findMany({ where: { pro_codigo: { in: codigos }, encerrado_em: null } });
+    for (const r of rows) saida.set(r.pro_codigo, this.mapOportunidade(r));
+    return saida;
+  }
+
+  async oportunidadesAbertas() {
+    const rows = await this.prisma.ven_bolsa_oportunidade.findMany({ where: { encerrado_em: null } });
+    return rows.map((r) => this.mapOportunidade(r));
+  }
+
+  /** Lotes que cobrem alguma venda a partir de `desde` (vigentes ou encerrados depois dela) — a bolsa do mês. */
+  async oportunidadesDesde(desde: Date) {
+    const rows = await this.prisma.ven_bolsa_oportunidade.findMany({
+      where: { OR: [{ encerrado_em: null }, { encerrado_em: { gte: desde } }] },
+      select: { pro_codigo: true, custo_bolsa: true, vigente_de: true, encerrado_em: true },
+    });
+    return rows.map((r) => ({ pro_codigo: r.pro_codigo, custo_bolsa: Number(r.custo_bolsa), vigente_de: r.vigente_de, encerrado_em: r.encerrado_em }));
+  }
+
+  async listarOportunidades() {
+    const rows = await this.prisma.ven_bolsa_oportunidade.findMany({ orderBy: { updated_at: 'desc' }, take: 300 });
+    return rows.map((r) => this.mapOportunidade(r)).sort((a, b) => Number(!!a.encerrado_em) - Number(!!b.encerrado_em));
+  }
+
+  async oportunidade(id: number) {
+    const r = await this.prisma.ven_bolsa_oportunidade.findUnique({ where: { id } });
+    return r ? this.mapOportunidade(r) : null;
+  }
+
+  /** Um registro por lote: o lote aberto do mesmo produto encerra hoje (vendas de hoje já vão para o novo). */
+  async registrarOportunidades(
+    linhas: Array<{
+      pro_codigo: number; descricao: string | null; nfe: number | null; nota_fiscal: number | null; for_codigo: number | null; for_nome: string | null;
+      quantidade: number; custo_nota: number | null; custo: number; preco_tabela: number; piso: number; pct_vendedor: number; custo_bolsa: number; criado_por: string | null;
+    }>,
+  ) {
+    const hoje = hojeData();
+    const criados = await this.prisma.$transaction(async (tx) => {
+      const out: ven_bolsa_oportunidade[] = [];
+      for (const l of linhas) {
+        await tx.ven_bolsa_oportunidade.updateMany({ where: { pro_codigo: l.pro_codigo, encerrado_em: null }, data: { encerrado_em: hoje, updated_at: new Date() } });
+        out.push(await tx.ven_bolsa_oportunidade.create({ data: { ...l, vigente_de: hoje } }));
+      }
+      return out;
+    });
+    return criados.map((r) => this.mapOportunidade(r));
+  }
+
+  async alterarOportunidade(id: number, data: { pct_vendedor?: number; custo_bolsa?: number; encerrado_em?: Date | null }) {
+    const r = await this.prisma.ven_bolsa_oportunidade.update({ where: { id }, data: { ...data, updated_at: new Date() } });
+    return this.mapOportunidade(r);
+  }
+
+  /** Grava a apuração das vendidas; o lote que chegou à quantidade encerra hoje. */
+  async apurarOportunidades(rows: Array<{ id: number; vendida: number; encerrar: boolean }>) {
+    if (!rows.length) return;
+    const agora = new Date(), hoje = hojeData();
+    await this.prisma.$transaction(
+      rows.map((r) =>
+        this.prisma.ven_bolsa_oportunidade.update({
+          where: { id: r.id },
+          data: { vendida: r.vendida, apurado_em: agora, ...(r.encerrar ? { encerrado_em: hoje } : {}), updated_at: agora },
+        }),
+      ),
+    );
   }
 
   /* ------------------------------------------------ equivalentes e giro */
@@ -279,7 +408,7 @@ export class OrcamentoPrismaRepository {
     if (!codigos.length) return saida;
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT f.pro_codigo, f.curva_abc, f.categoria_saldo_atual, f.tempo_medio_saldo_atual,
-             f.tendencia_label, f.group_id
+             f.tendencia_label, f.group_id, f.grupo_chave, f.demanda_media_dia, f.estoque_min_sugerido
       FROM com_fifo_completo f
       WHERE f.pro_codigo IN (${Prisma.join(codigos.map(String))})
         AND f.data_processamento = (SELECT MAX(data_processamento) FROM com_fifo_completo)
@@ -292,9 +421,110 @@ export class OrcamentoPrismaRepository {
         tempo_medio_saldo_atual: nn(r.tempo_medio_saldo_atual),
         tendencia_label: r.tendencia_label ?? null,
         group_id: r.group_id ?? null,
+        grupo_chave: r.grupo_chave ?? null,
+        demanda_media_dia: nn(r.demanda_media_dia),
+        estoque_min_sugerido: nn(r.estoque_min_sugerido),
       });
     }
     return saida;
+  }
+
+  /* ------------------------------------------------------ produtos do dia */
+
+  private mapProdutoDia(r: ven_produto_dia): ItemProdutoDiaRow {
+    return {
+      id: r.id,
+      data: r.data.toISOString().slice(0, 10),
+      posicao: r.posicao,
+      lote_id: r.lote_id,
+      pro_codigo: r.pro_codigo,
+      descricao: r.descricao,
+      grupo_chave: r.grupo_chave,
+      chave_item: r.chave_item,
+      bolsa_unidade: Number(r.bolsa_unidade),
+      giro_dia: Number(r.giro_dia),
+      demanda_clientes: Number(r.demanda_clientes),
+      demanda_esperada: Number(r.demanda_esperada),
+      score: Number(r.score),
+      estoque_considerado: Number(r.estoque_considerado),
+      estoque_disponivel: nn(r.estoque_disponivel),
+      restante_lote: Number(r.restante_lote),
+      cobertura_dias: r.cobertura_dias,
+      estoque_min: nn(r.estoque_min),
+      clientes: (r.clientes as unknown as ClienteDevido[]) ?? [],
+      clientes_total: r.clientes_total,
+      motivo_fora: (r.motivo_fora as MotivoFora | null) ?? null,
+      vendida_qtd: nn(r.vendida_qtd),
+      vendida_valor: nn(r.vendida_valor),
+      apurado_em: r.apurado_em,
+      gerado_em: r.gerado_em,
+      gerado_por: r.gerado_por,
+    };
+  }
+
+  /** Troca a lista do dia (itens + lotes de fora) numa transação: regenerar não duplica. */
+  async salvarProdutosDia(data: string, itens: ItemProdutoDia[], geradoPor: string | null) {
+    const dia = new Date(`${data}T00:00:00Z`);
+    const agora = new Date();
+    await this.prisma.$transaction([
+      this.prisma.ven_produto_dia.deleteMany({ where: { data: dia } }),
+      this.prisma.ven_produto_dia.createMany({
+        data: itens.map((i) => ({
+          data: dia,
+          posicao: i.posicao,
+          lote_id: i.lote_id,
+          pro_codigo: i.pro_codigo,
+          descricao: i.descricao,
+          grupo_chave: i.grupo_chave,
+          chave_item: i.chave_item,
+          bolsa_unidade: i.bolsa_unidade,
+          giro_dia: i.giro_dia,
+          demanda_clientes: i.demanda_clientes,
+          demanda_esperada: i.demanda_esperada,
+          score: i.score,
+          estoque_considerado: i.estoque_considerado,
+          estoque_disponivel: i.estoque_disponivel,
+          restante_lote: i.restante_lote,
+          cobertura_dias: i.cobertura_dias,
+          estoque_min: i.estoque_min,
+          clientes: i.clientes as unknown as Prisma.InputJsonValue,
+          clientes_total: i.clientes_total,
+          motivo_fora: i.motivo_fora,
+          gerado_em: agora,
+          gerado_por: geradoPor,
+        })),
+      }),
+    ]);
+  }
+
+  async produtosDia(data: string): Promise<ItemProdutoDiaRow[]> {
+    const rows = await this.prisma.ven_produto_dia.findMany({
+      where: { data: new Date(`${data}T00:00:00Z`) },
+      orderBy: [{ posicao: { sort: 'asc', nulls: 'last' } }, { score: 'desc' }],
+    });
+    return rows.map((r) => this.mapProdutoDia(r));
+  }
+
+  /** Dias com lista gerada, mais recente primeiro. */
+  async datasProdutosDia(limite = 60): Promise<string[]> {
+    const rows = await this.prisma.ven_produto_dia.groupBy({ by: ['data'], orderBy: { data: 'desc' }, take: limite });
+    return rows.map((r) => r.data.toISOString().slice(0, 10));
+  }
+
+  /** Listas anteriores a `antesDe` ainda sem apuração (normalmente só a de ontem). */
+  async produtosDiaSemApuracao(antesDe: string): Promise<ItemProdutoDiaRow[]> {
+    const rows = await this.prisma.ven_produto_dia.findMany({
+      where: { data: { lt: new Date(`${antesDe}T00:00:00Z`) }, apurado_em: null, posicao: { not: null } },
+    });
+    return rows.map((r) => this.mapProdutoDia(r));
+  }
+
+  async apurarProdutosDia(rows: Array<{ id: number; vendida_qtd: number; vendida_valor: number }>) {
+    if (!rows.length) return;
+    const agora = new Date();
+    await this.prisma.$transaction(
+      rows.map((r) => this.prisma.ven_produto_dia.update({ where: { id: r.id }, data: { vendida_qtd: r.vendida_qtd, vendida_valor: r.vendida_valor, apurado_em: agora } })),
+    );
   }
 
   /* ------------------------------------------------------ vendem juntos */
@@ -387,6 +617,9 @@ export class OrcamentoPrismaRepository {
       desc_pct: n(i.desc_pct),
       total: n(i.total),
       custo_ref: nn(i.custo_ref),
+      icms_st: n(i.icms_st),
+      difal: n(i.difal),
+      difal_pct: nn(i.difal_pct),
       classe: i.classe,
       mix: i.mix,
       faixa: i.faixa,
@@ -425,6 +658,13 @@ export class OrcamentoPrismaRepository {
       desconto_total: n(o.desconto_total),
       total: n(o.total),
       desc_pct: n(o.desc_pct),
+      // imposto fora do estado: ST e DIFAL (despesa acessória) vão ao cliente — total_cliente soma os dois
+      presencial: !!o.presencial,
+      meia_nota: !!o.meia_nota,
+      tributacao: o.tributacao ?? null,
+      icms_st: n(o.icms_st),
+      difal: n(o.difal),
+      total_cliente: round2(n(o.total) + n(o.icms_st) + n(o.difal)),
       acima_alcada: !!o.acima_alcada,
       bolsa_pct_antes: nn(o.bolsa_pct_antes),
       bolsa_pct_depois: nn(o.bolsa_pct_depois),
@@ -597,6 +837,17 @@ export class OrcamentoPrismaRepository {
   ) {
     for (const l of linhas) {
       const extras = { similar_disponivel: l.similar_disponivel ?? null, justificativa: l.justificativa ?? null };
+      // O vendedor já registrou este item hoje pela pesquisa (F7), sem orçamento: o registro
+      // passa a ser o do orçamento, em vez de contar a mesma perda duas vezes.
+      const daPesquisa = await this.vendaPerdidaPesquisaHoje(o.cli_codigo, l.pro_codigo);
+      if (daPesquisa) {
+        await this.prisma.ven_venda_perdida.deleteMany({ where: { orcamento_id: o.id, pro_codigo: l.pro_codigo } });
+        await this.prisma.ven_venda_perdida.update({
+          where: { id: daPesquisa.id },
+          data: { orcamento_id: o.id, orcamento_numero: o.numero, quantidade: l.quantidade, rep_codigo: o.rep_codigo, usuario_id: usuario?.usuario_id ?? null, usuario_nome: usuario?.usuario_nome ?? null, ...extras },
+        });
+        continue;
+      }
       await this.prisma.ven_venda_perdida.upsert({
         where: { orcamento_id_pro_codigo: { orcamento_id: o.id, pro_codigo: l.pro_codigo } },
         create: {
@@ -614,6 +865,37 @@ export class OrcamentoPrismaRepository {
         update: { quantidade: l.quantidade, usuario_id: usuario?.usuario_id ?? null, usuario_nome: usuario?.usuario_nome ?? null, created_at: new Date(), ...extras },
       });
     }
+  }
+
+  /** Registro de hoje (dia de Cuiabá) do item para o cliente, feito pela pesquisa (sem orçamento). */
+  private async vendaPerdidaPesquisaHoje(cli: number, pro: number) {
+    const [de, ate] = diaCuiaba();
+    return this.prisma.ven_venda_perdida.findFirst({ where: { cli_codigo: cli, pro_codigo: pro, orcamento_id: null, created_at: { gte: de, lt: ate } } });
+  }
+
+  /**
+   * Venda perdida pela PESQUISA (F7): sem orçamento, uma por cliente + produto + dia —
+   * repetir no mesmo dia só atualiza. Com o orçamento já salvo, vai pelo caminho do Fechou.
+   */
+  async registrarVendaPerdidaPesquisa(l: {
+    cli_codigo: number; rep_codigo: number | null; pro_codigo: number; descricao: string | null;
+    similar_disponivel: string | null; justificativa: string | null; usuario_id: string | null; usuario_nome: string | null;
+  }) {
+    const atual = await this.vendaPerdidaPesquisaHoje(l.cli_codigo, l.pro_codigo);
+    const dados = { descricao: l.descricao, rep_codigo: l.rep_codigo, similar_disponivel: l.similar_disponivel, justificativa: l.justificativa, usuario_id: l.usuario_id, usuario_nome: l.usuario_nome };
+    if (atual) return this.prisma.ven_venda_perdida.update({ where: { id: atual.id }, data: dados });
+    return this.prisma.ven_venda_perdida.create({ data: { ...dados, cli_codigo: l.cli_codigo, pro_codigo: l.pro_codigo, quantidade: 1, motivo: 'SEM_SALDO', orcamento_id: null } });
+  }
+
+  /** Itens com venda perdida registrada HOJE para o cliente (pesquisa ou Fechou) — o selo na pesquisa. */
+  async vendasPerdidasHoje(cli: number, codigos: number[]): Promise<Set<number>> {
+    if (!codigos.length) return new Set();
+    const [de, ate] = diaCuiaba();
+    const rows = await this.prisma.ven_venda_perdida.findMany({
+      where: { cli_codigo: cli, pro_codigo: { in: codigos }, created_at: { gte: de, lt: ate } },
+      select: { pro_codigo: true },
+    });
+    return new Set(rows.map((r) => r.pro_codigo));
   }
 
   /** Orçamentos abertos deste vendedor (ENVIADO/APROVACAO) — para a bolsa projetada. */

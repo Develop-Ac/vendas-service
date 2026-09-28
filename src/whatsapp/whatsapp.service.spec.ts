@@ -1,6 +1,7 @@
 import { WhatsappService, chaveTelefone } from './whatsapp.service';
 import { WhatsappRepository } from './whatsapp.repository';
 import { ErpApiService } from '../common/erp-api/erp-api.service';
+import { S3Service } from '../storage/s3.service';
 
 describe('chaveTelefone', () => {
   it('normaliza para DDD + últimos 8 dígitos, sobrevivendo ao 9º dígito', () => {
@@ -31,6 +32,7 @@ describe('WhatsappService', () => {
 
   const repo = {
     resolverChave: jest.fn(async (chave: string) => vinculos.get(chave) ?? null),
+    existe: jest.fn(async () => false),
     gravarMensagem: jest.fn(async (row: any) => {
       gravadas.push(row);
       return true;
@@ -55,12 +57,18 @@ describe('WhatsappService', () => {
     ]),
   } as unknown as ErpApiService;
 
-  const service = new WhatsappService(repo, erp);
+  const s3 = {
+    putObject: jest.fn(async () => undefined),
+    getObjectBuffer: jest.fn(async () => Buffer.from('OggS-audio')),
+  } as unknown as S3Service;
+
+  const service = new WhatsappService(repo, erp, s3);
 
   beforeEach(() => {
     gravadas = [];
     acks = [];
     vinculos = new Map([['6588887777', 1]]);
+    delete process.env.WA_CORPO_SESSOES;
     jest.clearAllMocks();
   });
 
@@ -113,6 +121,16 @@ describe('WhatsappService', () => {
     });
     expect(r).toMatchObject({ casada: false });
     expect(gravadas[0].cli_codigo).toBeNull();
+  });
+
+  it('sessão da lista WA_SESSOES_IGNORADAS (padrão: assistente) não é gravada', async () => {
+    const r = await service.processarWebhook({
+      event: 'message',
+      session: 'assistente',
+      payload: { id: 'a1', from: '556588887777@c.us', fromMe: false },
+    });
+    expect(r).toMatchObject({ ignorado: 'sessão fora do sensor' });
+    expect(gravadas).toHaveLength(0);
   });
 
   it('sessão fora da convenção rep-<codigo> registra sem vendedor', async () => {

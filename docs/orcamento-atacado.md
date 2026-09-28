@@ -15,9 +15,9 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 | Pergunta | Fonte | Como |
 |---|---|---|
 | Saldo disponível/reservado **agora** | ERP (Celta) | `erp-firebird-api` → `PRODUTOS.ESTOQUE_DISPONIVEL/RESERVADO`, sem cache |
-| Preço do item **para este cliente** | ERP | `CLIENTES.TABELA_PRECO` ('2' → `PRECO2`, '5' → `PRECO5`, … ) em `PRODUTOS`. Tabela zerada cai para PRECO2 → PRECO5 → PRECO_VENDA e a tela avisa |
+| Preço do item **para este cliente** | ERP | `CLIENTES.TABELA_PRECO` ('2' → `PRECO2`, '5' → `PRECO5`, … ) em `PRODUTOS`. Tabela zerada: cliente do atacado (2/5) cai na outra tabela do canal e depois em PRECO_VENDA; cliente de **qualquer outra tabela** (4 = seguro e frota, revenda…) é varejo — cai direto em PRECO_VENDA, nunca no atacado. A tela avisa de onde veio |
 | Classe, mix e faixa | Régua v3 sobre o custo ao vivo | `PRECO_CUSTO` (reposição) → faixa 1A..3D com os **mesmos cortes do ETL** (`sp_Load_Stage_Produtos_FromDelta`); classe PB = subgrupo 154 (ou descrição P/BRISA) |
-| Markup e desconto máximo | Postgres `ven_regua_atacado` | seed = régua v3 aprovada (GERAL 2,85→1,42 / PB 2,30→1,38; desc. 3→10%) |
+| Markup e desconto máximo | Postgres `ven_regua_atacado` | régua v3 + ajustes da diretoria 09/09/2026: GERAL 2,91→1,538 / PB 2,35→1,538; desc. máx 5% no mix 1 (1A–1D, lista +2,1% para o mínimo ficar igual ao dos 3% antigos), 5–7% no mix 2 e 10→17% (GERAL) / 8→19% (PB) nas faixas no piso 1,538 — SQL `regua_mix1_5pct_postgres.sql` |
 | Itens fora da régua | Postgres `ven_regua_item_excecao` | LANÇAMENTO/EXCLUSIVO e OPORTUNIDADE: markup atual congelado, desconto próprio |
 | Equivalentes | Postgres `com_fifo_completo` (última execução) | mesmo `group_id` **e** mesma descrição **e** mesma `marca_linha` (a regra do worker). Só o `group_id` não basta: grupos mesclados à mão viraram "grupões" |
 | Desconto por volume | Postgres `ven_regua_volume` | o máximo da faixa é o teto; a quantidade libera uma fração dele: 50% até 2 un, 75% de 3 a 5, 100% a partir de 6 (ex.: 1D 3% → 1,5% / 2,25% / 3%). A API devolve `escala_volume` por item. **Só vale sem bolsa**: com saldo (já com o orçamento) ≥ 0 o limite é o máximo inteiro da faixa |
@@ -25,7 +25,7 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 | Bolsa de desconto do vendedor | BI | `vw_analise_vendas` no mês comissional (26→25), canal ATACADO: receita, custo, desconto, MIX1, por cliente |
 | Crédito do cliente | BI + ERP | limite (ERP) − títulos em aberto (`Stage_ContasReceber_Titulos`), bloqueio de crediário |
 | Último preço pago pelo cliente | BI | última nota do cliente com o item |
-| Promoção | ERP `PROMOCOES` + `PROMOCOES_ITENS` | vigente (ATIVA, período) **e com preço na tabela do cliente** (`PROM_VALOR2`/`PROM_VALOR5`; zero = não vale). O preço passa a ser o promocional, sem desconto por cima. `PROM_VALOR` (balcão) nunca vale para cliente 2/5 |
+| Promoção | ERP `PROMOCOES` + `PROMOCOES_ITENS` | vigente (ATIVA, período) **e com preço na tabela do cliente** (`PROM_VALOR2`/`PROM_VALOR5`; zero = não vale). O preço passa a ser o promocional, sem desconto por cima. `PROM_VALOR` (balcão) nunca vale para cliente 2/5; para cliente de outra tabela (varejo) vale quando a tabela dele não tem preço promocional |
 
 ## Regra do preço mínimo (a que o vendedor decide sozinho)
 
@@ -78,6 +78,21 @@ próprio piso** (saldo retido = lucro a mais). A resposta traz `volume` (média,
 próximo degrau e quanto falta). Modo `fixo` (**em uso desde 08/09/2026, piso 1,538**): `ORCAMENTO_BOLSA_PISO`; a linha do prêmio é o próprio
 piso (prêmio = 25% de todo o saldo retido) — `ORCAMENTO_LINHA_4PCT` só se quiser uma marca separada. Demais: `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`.
 
+**Serviço (subtipo fiscal 09)** (22/09/2026): produto de serviço não tem preço de tabela nem saldo.
+Entra no orçamento com quantidade 1 (travada) e o preço que o vendedor digita no unitário; sem
+preço não sai ("Informe o preço"). Fica fora de toda conferência de saldo (grade, decisão ao
+fechar, `conferir`, aviso do PDF) e **fora da bolsa** — nem receita, nem custo, nem neutro, no
+orçamento em edição e no mês — `servico` no produto, lido de `PRODUTOS.SUBTIPO`.
+
+**Promoção: a empresa absorve metade** (22/09/2026). Item em promoção sai pelo preço da campanha, quase
+sempre abaixo de custo × piso; dessa falta só **metade** sai da bolsa do vendedor
+(`absorcaoPromocao()` em regua.ts). Vale na projeção do orçamento (`absorvido` na rota da bolsa /
+`promos` de `montarItens`) e no mês, direto na leitura do BI: a venda tem o flag `PROMOCAO`
+(`vw_analise_vendas`), e `bolsaVendedor` devolve `absorvido` = Σ (custo × piso − líquido) / 2 das
+linhas em promoção com falta. Vale para toda venda do canal, passe ou não pela intranet. O prêmio
+não muda: é sobre o lucro real. **Serviço fica fora da bolsa do mês** (`codigosDeServico()` do ERP
+entra como `NOT IN` na leitura; o `Stage_Produtos` do BI não traz o subtipo real).
+
 **Todo desconto subtrai da bolsa, dentro ou fora do teto da faixa.** O teto da faixa só define a
 alçada, e qual teto vale depende da bolsa (`alcadaDoItem()` em regua.ts, decidido em
 `aplicarAlcada()` depois de conhecer o saldo):
@@ -86,7 +101,11 @@ alçada, e qual teto vale depende da bolsa (`alcadaDoItem()` em regua.ts, decidi
   faixa** — a escala por quantidade não trava; o desconto é decisão do vendedor e sai da bolsa;
 - **sem bolsa** (saldo negativo ou indisponível): vale a escala por quantidade
   (`escala_volume`: 50% / 75% / 100% do máximo);
-- abaixo do limite em vigor, ou abaixo de `preco_piso_bolsa` (custo × 1,25), só com o gestor.
+- abaixo do limite em vigor, ou abaixo de `preco_piso_bolsa` (custo × 1,25), só com o gestor —
+  **salvo quando o orçamento se compensa sozinho** (22/09/2026): se a soma de (preço − custo ×
+  piso) das linhas com custo deste orçamento é ≥ 0, sem contar a bolsa do mês, nenhuma linha vai
+  ao gestor (`compensa` em `alcadaDoItem()`, vindo de `calcularBolsa().orcamento`); a tela mostra
+  "Compensa no orçamento" na linha. Abaixo do custo continua não saindo.
 
 A linha gravada guarda o limite que valeu (`desc_max_pct`, `preco_minimo`) e `acima_alcada`
 por item; `acima_alcada` do cabeçalho = alguma linha abaixo do limite em vigor ou do piso.
@@ -97,6 +116,33 @@ A tela projeta o saldo "depois" com o orçamento em edição (`total`, `desconto
 `sem_custo` — item sem custo é neutro), mostra o semáforo (verde = acima da linha dos 4%,
 amarelo = dentro da bolsa, vermelho = bolsa estourada), o rateio por cliente (`por_cliente`,
 quem gerou o saldo) e a participação MIX1 com o degrau da escada (22/26/30% → ×1,25/×1,5/×2,0).
+
+### Compra de oportunidade: reserva da empresa (25/09/2026)
+
+Num lote comprado muito abaixo do custo normal, com o preço mantido perto do mercado, a sobra
+(preço − custo × piso) cresceria e iria inteira para a bolsa. A gestão registra a nota de compra
+(tela **Compra de oportunidade**, só gestão) e diz quanto da sobra a preço de tabela fica com o
+vendedor; o resto é reserva da empresa. Grava-se por produto, em `ven_bolsa_oportunidade`, o
+**custo para a bolsa** = custo + (1 − %) × sobra ÷ piso, fixo em reais (tabela sobe depois → a
+diferença é do vendedor). Exemplo: custo 210,66, tabela 882,07, piso 1,538, 20% → sobra 558,07,
+vendedor 111,61, reserva 446,46, custo para a bolsa 500,95.
+
+Só a bolsa usa esse custo: no orçamento (`custo_bolsa` do produto → `custo_ref`, custo do
+orçamento, promoção, compensação) e na leitura do mês no BI (`custoBolsaSql`: o custo da venda é
+trocado por custo p/ bolsa × quantidade nos produtos com lote vigente na data). Régua, faixa da
+comissão, "abaixo do custo", piso custo × 1,25, Celta e nota seguem com o custo real.
+
+Vigência por lote: o lote é o que da nota ainda está na prateleira no dia do registro (menor entre
+a quantidade da nota e o estoque de hoje; a tela não edita). Vale das vendas a partir do registro e
+encerra sozinha quando as unidades vendidas desde então (BI, todos os canais, devolução desconta)
+chegam ao lote, ou quando o estoque do produto zera. "Restam" = menor entre lote − vendidas e o
+estoque de hoje. A apuração roda na leitura da bolsa e da lista, no máximo a cada 10 min,
+e grava `vendida`/`encerrado_em`. Registrar de novo o mesmo produto encerra o lote aberto (as
+vendas do dia já vão para o novo). O lote que acaba hoje encerra hoje: as vendas de hoje voltam
+ao custo real. Rotas: `GET /orcamento/oportunidade/nota?numero=&fornecedor=&chave=` (NF-e lançada
+na empresa 1, itens com custo/tabela 2/estoque da empresa 3 e a sobra), `GET/POST
+/orcamento/oportunidade`, `PUT /orcamento/oportunidade/:id` (% do vendedor ou encerrar).
+SQL manual bloco 14. Função pura em `oportunidade.ts` (+ spec).
 
 ## Comissão estimada (ao lado da bolsa)
 
@@ -206,6 +252,22 @@ para a diferença. Depois da decisão o orçamento é regravado pelo caminho nor
 bolsa recalculados). Se não sobrar item, nada é regravado e a tela registra o desfecho PERDIDO
 (motivo SEM_ESTOQUE). Regra pura em `saldo.ts` (testes em `saldo.spec.ts`).
 
+## Venda perdida pela pesquisa (F7) — 26/09/2026
+
+Na pesquisa de produtos o vendedor aperta **F7** (ou o botão "Venda perdida (F7)" no painel do item)
+e registra a venda perdida do item sob o cursor sem pôr o item no orçamento e fechar. Só vale com
+disponível zero e nada aguardando liberação (peça já na loja em conferência conta como saldo);
+serviço fica fora — nesses casos a tela avisa e nada é gravado. Motivo fixo `SEM_SALDO`, quantidade
+1. Similar com saldo → "Similar com saldo: …" e justificativa obrigatória, como no Fechou.
+
+`POST /orcamento/venda-perdida` grava em `ven_venda_perdida` **sem orçamento** (`orcamento_id`
+opcional desde o SQL bloco 15), uma por cliente + produto + dia de Cuiabá (índice parcial): repetir
+só atualiza. Se a pesquisa foi aberta de um orçamento já salvo, o registro nasce amarrado a ele. Se
+depois o mesmo item cair como venda perdida no Fechou do dia, `registrarVendaPerdida` amarra o
+registro da pesquisa ao orçamento em vez de criar outro. A busca (`produtos/pesquisa`) devolve
+`venda_perdida_hoje` por item para o selo na grade. A análise de estoque lê a tabela por produto,
+quantidade e data — registros sem orçamento entram sem mudança lá.
+
 ## Vender fora da promoção ou liquidação
 
 Item com promoção vigente na tabela do cliente entra com o preço promocional fechado. O vendedor
@@ -237,7 +299,9 @@ fechamento; o orçamento fica FECHADO **sem** `celta_orcamento` e a etiqueta "n�
 importado no Celta" (cabeçalho do editor e lista) abre a mesma pergunta depois.
 
 - `importarCelta(id)` monta o corpo com `corpoParaCelta()` (`celta.ts`, puro, +spec):
-  `unitario` = preço de tabela bruto, `perc_descto` = `desc_pct` × 100, uma forma de
+  `unitario` = preço de tabela bruto, `valor_descto` = bruto − total da linha na intranet
+  (em R$; desde 23/09/2026 — em percentual de 2 casas o Celta recalculava e errava 1 centavo:
+  209,90 com 4,72% dava 199,99 contra 200,00), uma forma de
   pagamento para entrada e demais parcelas, observação prefixada com "Intranet ORC-n";
   quantidade inteira (encomenda incluída).
 - Chama a **api-vendas-service** (`OrcamentoCeltaRepository`): `POST /orcamentos/:empresa`
@@ -246,7 +310,9 @@ importado no Celta" (cabeçalho do editor e lista) abre a mesma pergunta depois.
   `desfecho_ref` (se vazio). Já importado → devolve o nº guardado sem chamar a API.
 - Só FECHADO importa; sem vendedor ou sem itens = 400; API fora = 503; recusa do
   Celta = 502 com a mensagem da API.
-- **Observação no Celta = justificativa da alçada** (`justificativaAlcada()` em `celta.ts`), para o
+- **Observação no Celta = justificativa da alçada** (`justificativaAlcada()` em `celta.ts`; orçamento
+  que se compensou sozinho sai como "N itens abaixo do limite, compensado no próprio orçamento", e o
+  item como "compensado" — `compensacaoOrcamento()`, com o piso vigente em `piso_bolsa`), para o
   gerente liberar sem abrir a intranet: vendedor, se está dentro do limite ou abaixo do mínimo
   (com quem aprovou e quando), desconto total, desconto do mês antes/depois e, item a item,
   desconto dado × máximo da faixa (ok / usa a bolsa / abaixo do mínimo). Sem custo nem R$,

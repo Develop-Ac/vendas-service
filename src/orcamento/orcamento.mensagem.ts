@@ -26,7 +26,12 @@ export function mensagemWhatsapp(o: PdfOrcamento): string {
   linhas.push('');
   linhas.push(`Subtotal: ${brl(o.subtotal)}`);
   if (o.desconto > 0) linhas.push(`Desconto: − ${brl(o.desconto)}`);
-  linhas.push(`*Total: ${brl(o.total)}*`);
+  // cliente de outro estado: o imposto vai na nota, então vai na proposta (ST p/ revenda; DIFAL como despesa acessória)
+  const st = o.icms_st ?? 0, difal = o.difal ?? 0;
+  const uf = o.uf_trib ? ` (${o.uf_trib})` : '';
+  if (st > 0) linhas.push(`ICMS-ST${uf}: + ${brl(st)}`);
+  if (difal > 0) linhas.push(`DIFAL${uf}: + ${brl(difal)}`);
+  linhas.push(`*Total: ${brl(o.total + st + difal)}*`);
   if (o.pagamento) linhas.push(`Pagamento: ${o.pagamento}`);
   linhas.push('');
   linhas.push(`Válido até ${o.validade ?? '—'} · detalhes no PDF`);

@@ -56,30 +56,35 @@ export interface RegraFaixa {
   desc_max: number;
 }
 
-/** Régua v3 aprovada em ago/2026 — a mesma do seed de ven_regua_atacado. */
+/**
+ * Régua vigente — espelho do seed de ven_regua_atacado (o banco é a fonte; isto só vale se a
+ * tabela estiver vazia). v3 de ago/2026 com dois ajustes da diretoria (09/09/2026): faixas caras
+ * no piso 1,538 com limites maiores, e mix 1 (1A–1D) com 5% de desconto sobre uma lista ~2,1%
+ * mais alta — o preço mínimo do mix 1 fica onde os 3% antigos deixavam.
+ */
 export const REGUA_PADRAO: RegraFaixa[] = [
-  { classe: 'GERAL', faixa: '1A', markup: 2.85, desc_max: 0.03 },
-  { classe: 'GERAL', faixa: '1B', markup: 2.3, desc_max: 0.03 },
-  { classe: 'GERAL', faixa: '1C', markup: 1.95, desc_max: 0.03 },
-  { classe: 'GERAL', faixa: '1D', markup: 1.85, desc_max: 0.03 },
+  { classe: 'GERAL', faixa: '1A', markup: 2.91, desc_max: 0.05 },
+  { classe: 'GERAL', faixa: '1B', markup: 2.35, desc_max: 0.05 },
+  { classe: 'GERAL', faixa: '1C', markup: 1.99, desc_max: 0.05 },
+  { classe: 'GERAL', faixa: '1D', markup: 1.89, desc_max: 0.05 },
   { classe: 'GERAL', faixa: '2A', markup: 1.7, desc_max: 0.05 },
   { classe: 'GERAL', faixa: '2B', markup: 1.62, desc_max: 0.06 },
   { classe: 'GERAL', faixa: '2C', markup: 1.56, desc_max: 0.07 },
-  { classe: 'GERAL', faixa: '3A', markup: 1.51, desc_max: 0.08 },
-  { classe: 'GERAL', faixa: '3B', markup: 1.47, desc_max: 0.08 },
-  { classe: 'GERAL', faixa: '3C', markup: 1.44, desc_max: 0.09 },
-  { classe: 'GERAL', faixa: '3D', markup: 1.42, desc_max: 0.1 },
-  { classe: 'PB', faixa: '1A', markup: 2.3, desc_max: 0.03 },
-  { classe: 'PB', faixa: '1B', markup: 2.1, desc_max: 0.03 },
-  { classe: 'PB', faixa: '1C', markup: 1.9, desc_max: 0.03 },
-  { classe: 'PB', faixa: '1D', markup: 1.75, desc_max: 0.03 },
+  { classe: 'GERAL', faixa: '3A', markup: 1.538, desc_max: 0.1 },
+  { classe: 'GERAL', faixa: '3B', markup: 1.538, desc_max: 0.12 },
+  { classe: 'GERAL', faixa: '3C', markup: 1.538, desc_max: 0.15 },
+  { classe: 'GERAL', faixa: '3D', markup: 1.538, desc_max: 0.17 },
+  { classe: 'PB', faixa: '1A', markup: 2.35, desc_max: 0.05 },
+  { classe: 'PB', faixa: '1B', markup: 2.14, desc_max: 0.05 },
+  { classe: 'PB', faixa: '1C', markup: 1.94, desc_max: 0.05 },
+  { classe: 'PB', faixa: '1D', markup: 1.79, desc_max: 0.05 },
   { classe: 'PB', faixa: '2A', markup: 1.6, desc_max: 0.05 },
-  { classe: 'PB', faixa: '2B', markup: 1.5, desc_max: 0.06 },
-  { classe: 'PB', faixa: '2C', markup: 1.44, desc_max: 0.07 },
-  { classe: 'PB', faixa: '3A', markup: 1.42, desc_max: 0.08 },
-  { classe: 'PB', faixa: '3B', markup: 1.41, desc_max: 0.08 },
-  { classe: 'PB', faixa: '3C', markup: 1.39, desc_max: 0.09 },
-  { classe: 'PB', faixa: '3D', markup: 1.38, desc_max: 0.1 },
+  { classe: 'PB', faixa: '2B', markup: 1.538, desc_max: 0.08 },
+  { classe: 'PB', faixa: '2C', markup: 1.538, desc_max: 0.13 },
+  { classe: 'PB', faixa: '3A', markup: 1.538, desc_max: 0.15 },
+  { classe: 'PB', faixa: '3B', markup: 1.538, desc_max: 0.16 },
+  { classe: 'PB', faixa: '3C', markup: 1.538, desc_max: 0.18 },
+  { classe: 'PB', faixa: '3D', markup: 1.538, desc_max: 0.19 },
 ];
 
 /** Subgrupo P/BRISA no ERP — a classe "comparável" da régua. */
@@ -111,6 +116,10 @@ export function regraDe(regua: RegraFaixa[], classe: ClasseRegua, faixa: FaixaCh
 
 /* ------------------------------------------------------------------ preço */
 
+/** Tabelas do ATACADO no cadastro do cliente: '2' = atacado especial (base oficial), '5' = atacado. */
+export const TABELAS_ATACADO = ['2', '5'];
+export const ehTabelaAtacado = (tabelaPreco: string | null | undefined) => TABELAS_ATACADO.includes(String(tabelaPreco ?? '').trim());
+
 /** Coluna de preço do produto para a tabela do cliente ('2' -> PRECO2). */
 export function colunaTabela(tabelaPreco: string | null | undefined): string {
   const n = parseInt(String(tabelaPreco ?? '').trim(), 10);
@@ -119,15 +128,17 @@ export function colunaTabela(tabelaPreco: string | null | undefined): string {
 
 /**
  * Preço do item na tabela do cliente. Tabela zerada no cadastro (0,00) não é
- * preço zero: cai para PRECO2 (base oficial do atacado), depois PRECO5, depois
- * o preço de venda — e avisa (`fallback`) para a tela mostrar de onde veio.
+ * preço zero: cliente do ATACADO (2/5) cai para a outra tabela do canal e depois
+ * para o preço de venda; cliente de QUALQUER OUTRA tabela (seguro e frota, revenda
+ * etc.) é varejo — sem preço na tabela dele, vale o preço de venda (varejo), nunca
+ * o do atacado. `fallback` avisa a tela de onde o preço veio.
  */
 export function precoDaTabela(
   produto: Record<string, unknown>,
   tabelaPreco: string | null | undefined,
 ): { coluna: string; preco: number; fallback: boolean } {
   const col = colunaTabela(tabelaPreco);
-  const cadeia = [col, 'PRECO2', 'PRECO5', 'PRECO_VENDA'];
+  const cadeia = ehTabelaAtacado(tabelaPreco) ? [col, 'PRECO2', 'PRECO5', 'PRECO_VENDA'] : [col, 'PRECO_VENDA'];
   for (let i = 0; i < cadeia.length; i++) {
     const v = Number(produto[cadeia[i]]);
     if (v > 0) return { coluna: cadeia[i], preco: round2(v), fallback: i > 0 };
@@ -218,7 +229,7 @@ export interface Avaliacao {
 
 // 13,85 × 2,30 dá 31,854999… em ponto flutuante; sem a folga o meio-centavo cai para baixo.
 export const round2 = (v: number) => Math.round(v * 100 + 1e-7) / 100;
-const round4 = (v: number) => Math.round(v * 10000 + 1e-7) / 10000;
+export const round4 = (v: number) => Math.round(v * 10000 + 1e-7) / 10000;
 
 /**
  * Avalia um item: classe, faixa, desconto máximo e PREÇO MÍNIMO.
@@ -494,6 +505,12 @@ export interface EntradaAlcada {
   piso_bolsa: number;
   /** saldo da bolsa depois deste orçamento; null = bolsa indisponível. */
   saldo_apos: number | null;
+  /**
+   * O ORÇAMENTO se compensa sozinho: a soma de (preço − custo × piso) das linhas com custo é ≥ 0,
+   * sem contar a bolsa do mês. Um item abaixo do limite pago por outro acima não traz prejuízo,
+   * então não vai ao gestor (22/09/2026). Abaixo do custo continua não saindo (montarItens).
+   */
+  compensa?: boolean;
 }
 
 export interface Alcada {
@@ -501,8 +518,10 @@ export interface Alcada {
   bolsa_cobre: boolean;
   /** limite em vigor para o item (mínimo cheio com bolsa; por quantidade sem). */
   minimo_vigente: number;
-  /** abaixo do limite em vigor ou do piso absoluto → gestor. */
+  /** abaixo do limite em vigor ou do piso absoluto → gestor — salvo quando o orçamento se compensa. */
   precisa_aprovacao: boolean;
+  /** o orçamento inteiro fecha ≥ 0 contra custo × piso: nenhuma linha pede aprovação. */
+  compensa: boolean;
   /** abaixo do piso absoluto (custo × 1,25). */
   abaixo_piso: boolean;
   /** passou do limite por quantidade — com bolsa é ela que paga. */
@@ -519,10 +538,12 @@ export function alcadaDoItem(e: EntradaAlcada): Alcada {
   const abaixoPiso = e.piso_bolsa > 0 && e.preco < e.piso_bolsa - 0.005;
   const abaixoQtd = e.minimo_qtd > 0 && e.preco < e.minimo_qtd - 0.005;
   const abaixoVigente = minimo > 0 && e.preco < minimo - 0.005;
+  const compensa = !!e.compensa;
   return {
     bolsa_cobre: cobre,
     minimo_vigente: minimo,
-    precisa_aprovacao: abaixoPiso || abaixoVigente,
+    precisa_aprovacao: !compensa && (abaixoPiso || abaixoVigente),
+    compensa,
     abaixo_piso: abaixoPiso,
     usa_bolsa: cobre && abaixoQtd,
   };
@@ -540,9 +561,24 @@ export interface BolsaEntrada {
   desconto_orc?: number;
   custo_orc?: number;
   sem_custo_orc?: number;
+  /** Promoção: metade do que o item tira da bolsa é da empresa — no mês (orçamentos fechados) e neste orçamento. */
+  absorvido_mtd?: number;
+  absorvido_orc?: number;
   piso?: number;
   linha?: number;
   premio_pct?: number;
+}
+
+/**
+ * PROMOÇÃO — a empresa absorve METADE (22/09/2026). Item em promoção sai pelo preço da campanha,
+ * que costuma ficar abaixo de custo × piso; essa falta tirava a bolsa inteira do vendedor. Agora
+ * só metade sai da bolsa: a outra metade é da empresa. Devolve o que a empresa absorve na linha
+ * (≥ 0). Item sem custo é neutro. Vale para a bolsa e para a alçada, não para o prêmio (que é
+ * sobre o lucro real).
+ */
+export function absorcaoPromocao(preco: number, custo: number | null | undefined, piso: number, qtd = 1): number {
+  if (!custo || custo <= 0 || !(piso > 0)) return 0;
+  return round2((Math.max(0, custo * piso - preco) * qtd) / 2);
 }
 
 export interface Bolsa {
@@ -561,6 +597,11 @@ export interface Bolsa {
   /** O que sobra depois do desconto dado: receita − custo × piso. É o que ainda cabe. */
   saldo: number;
   saldo_apos: number;
+  /** Só ESTE orçamento contra custo × piso (sem custo = neutro, promoção com a metade da empresa): ≥ 0 é orçamento que se compensa sozinho. */
+  orcamento: number;
+  /** o que a empresa absorve das promoções: no mês (orçamentos fechados) e neste orçamento. */
+  absorvido_mtd: number;
+  absorvido_orc: number;
   /** Lucro acima da linha dos 4%: receita − custo × linha (negativo = abaixo da linha). */
   acima_linha: number;
   acima_linha_apos: number;
@@ -586,8 +627,11 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
   const recOrc = Math.max(0, e.receita_orc ?? 0);
   // Item sem custo no cadastro é neutro: conta como vendido exatamente no piso.
   const custoOrc = Math.max(0, e.custo_orc ?? 0) + Math.max(0, e.sem_custo_orc ?? 0) / piso;
-  const saldo = receita - custo * piso;
-  const saldoApos = saldo + (recOrc - custoOrc * piso);
+  // promoção: a metade que a empresa absorve volta para a bolsa (não para a linha do prêmio)
+  const absMtd = Math.max(0, e.absorvido_mtd ?? 0);
+  const absOrc = Math.max(0, e.absorvido_orc ?? 0);
+  const saldo = receita - custo * piso + absMtd;
+  const saldoApos = saldo + (recOrc - custoOrc * piso) + absOrc;
   const acima = receita - custo * linha;
   const acimaApos = acima + (recOrc - custoOrc * linha);
   return {
@@ -603,6 +647,9 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
     gerada: round2(receita + desc - custo * piso),
     saldo: round2(saldo),
     saldo_apos: round2(saldoApos),
+    orcamento: round2(recOrc - custoOrc * piso + absOrc),
+    absorvido_mtd: round2(absMtd),
+    absorvido_orc: round2(absOrc),
     acima_linha: round2(acima),
     acima_linha_apos: round2(acimaApos),
     premio_estimado: round2(premio * Math.max(0, acima)),

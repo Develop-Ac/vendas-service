@@ -76,7 +76,14 @@ export interface PdfOrcamento {
   subtotal: number;
   desconto: number;
   desc_pct: number;
+  /** total da mercadoria (líquido); o cliente paga total + icms_st + difal */
   total: number;
+  /** ICMS-ST da venda a revenda de outro estado, somado ao total (zero quando não se aplica) */
+  icms_st?: number;
+  /** DIFAL da venda a não contribuinte de outro estado, cobrado como despesa acessória (zero quando não se aplica) */
+  difal?: number;
+  /** UF do cliente quando há imposto interestadual — vai no rótulo da linha */
+  uf_trib?: string | null;
   observacao: string | null;
   /** "Condição · forma" copiadas do Celta; nulo = a combinar. */
   pagamento: string | null;
@@ -297,19 +304,33 @@ function totais(doc: PDFKit.PDFDocument, y: number, o: PdfOrcamento, modo: ModoD
     linha('Subtotal:', brl(o.subtotal), y);
     linha(`Desconto (${pct(o.desc_pct)}%):`, brl(o.desconto), y + 12);
     linha('Acréscimo:', brl(0), y + 24);
-    y += 40;
+    y += 36;
   } else {
     linha('Subtotal:', brl(o.total), y);
     linha('Acréscimo:', brl(0), y + 12);
-    y += 28;
+    y += 24;
   }
+  // imposto interestadual (cliente de outro estado): a nota soma ao total — o papel mostra a mesma conta.
+  // ST para revenda; DIFAL cobrado como despesa acessória para não contribuinte.
+  const st = o.icms_st ?? 0;
+  const difal = o.difal ?? 0;
+  const uf = o.uf_trib ? ` (${o.uf_trib})` : '';
+  if (st > 0) {
+    linha(`ICMS-ST${uf}:`, brl(st), y);
+    y += 12;
+  }
+  if (difal > 0) {
+    linha(`DIFAL${uf}:`, brl(difal), y);
+    y += 12;
+  }
+  y += 4;
   doc.moveTo(M - 4, y).lineTo(M + LARG + 4, y).lineWidth(0.8).strokeColor('#999999').stroke();
   y += 6;
   // condição de pagamento à esquerda, Total Líquido em caixa à direita (como no ERP)
   doc.font('Helvetica').fontSize(9.5).fillColor(TEXTO);
   doc.text(`Condição de Pagto.: ${o.pagamento ?? 'A COMBINAR'}`, M, y + 2, { width: LARG - 220, lineBreak: false });
   doc.rect(xVal - 6, y - 3, 106, 17).fill(CINZA).fillColor(TEXTO);
-  linha('Total Líquido:', brl(o.total), y, true);
+  linha('Total Líquido:', brl(o.total + st + difal), y, true);
   y += 22;
   doc.moveTo(M - 4, y).lineTo(M + LARG + 4, y).lineWidth(0.8).strokeColor('#999999').stroke();
   y += 8;

@@ -42,7 +42,7 @@ export const CATALOGO_VENDAS: Catalogo = {
   'orcamento.bloqueado': {
     descricao: 'Comparativo do Celta divergiu: o vendedor ficou com orcamentoBloqueado.',
     titulo: 'Orçamento {numero} divergente — {vendedor} bloqueado',
-    corpo: 'Celta {celta} · {cliente} · confira o que não bateu e libere o vendedor',
+    corpo: 'Celta {celta} · {cliente}\n{diferencas}',
     canais: ['modal'],
     prioridade: 'alta',
     alvo: { tipo: 'setor', valor: 'Gerência' },
@@ -50,6 +50,17 @@ export const CATALOGO_VENDAS: Catalogo = {
     acao_rotulo: 'Liberar vendedor',
     // Não existe "não liberar": ou libera agora, ou fecha o diálogo e o aviso fica pendente.
     acao_permite_nao: false,
+  },
+  'orcamento.aprovacao': {
+    descricao: 'Vendedor mandou orçamento acima do desconto máximo para aprovação da gerência.',
+    titulo: 'Orçamento {numero} aguardando aprovação',
+    corpo: '{vendedor} · {cliente} · {total}',
+    link: '/vendas/orcamento/{id}',
+    canais: ['badge', 'mural', 'desktop'],
+    prioridade: 'alta',
+    alvo: { tipo: 'usuario' },
+    // agrupar = aviso com chave por orçamento: é o que permite tirá-lo de todos quando alguém aprova
+    agrupar: true,
   },
   'orcamento.vencendo': {
     descricao: 'Orçamento enviado vence amanhã sem venda nem desfecho.',
@@ -87,6 +98,16 @@ export const CATALOGO_VENDAS: Catalogo = {
     canais: ['badge'],
     prioridade: 'normal',
     alvo: { tipo: 'usuario' },
+  },
+  'produtos.dia': {
+    descricao: 'Produtos do dia: lotes de oportunidade para o supervisor do atacado empurrar hoje.',
+    titulo: 'Produtos do dia: {total} item(ns) para empurrar',
+    corpo: 'Bolsa potencial de {bolsa} · {fora} lote(s) de fora por estoque',
+    link: '/vendas/produtos-do-dia',
+    canais: ['badge', 'mural'],
+    prioridade: 'normal',
+    alvo: { tipo: 'usuario' },
+    cooldown_min: 60,
   },
   'carteira.mudou': {
     descricao: 'Cliente entrou ou saiu da carteira (carteirização do ERP).',

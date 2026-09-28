@@ -17,6 +17,30 @@ import { colunaTabela } from './regua';
 export const EMPRESA = 3;
 /** Tabelas de preço que definem o universo do atacado (CLIENTES.TABELA_PRECO). */
 export const TABELAS_ATACADO = ['2', '5'];
+/** Empresa que EMITE a nota de venda: os parâmetros fiscais (ST, DIFAL) são lidos dela. */
+export const EMPRESA_FISCAL = 1;
+
+export interface NotaEntrada {
+  nfe: number;
+  nota_fiscal: number;
+  serie: string | null;
+  chave: string | null;
+  for_codigo: number;
+  for_nome: string | null;
+  dt_emissao: string | null;
+  dt_entrada: string | null;
+  total: number;
+}
+
+export interface ItemNotaEntrada {
+  item: number;
+  pro_codigo: number;
+  descricao: string | null;
+  quantidade: number;
+  unitario: number;
+  custo_nota: number | null;
+  total: number;
+}
 
 export interface ProdutoErp {
   PRO_CODIGO: number;
@@ -24,6 +48,8 @@ export interface ProdutoErp {
   REFERENCIA: string | null;
   UNIDADE: string | null;
   APLICACOES: string | null;
+  /** subtipo fiscal do cadastro; '09' = serviço (sem estoque, sem preço de tabela) */
+  SUBTIPO: string | null;
   SUBGRP_CODIGO: number | null;
   MAR_CODIGO: number | null;
   ESTOQUE_DISPONIVEL: number;
@@ -52,7 +78,7 @@ export interface ProdutoErp {
 /** Marca, subgrupo e grupo chegam por JOIN (catálogo: `marca`, `subgrupo`, `grupo` via subgrupo). */
 const CAMPOS_PRODUTO: Array<string | { campo: string; como: string }> = [
   'PRO_CODIGO', 'PRO_DESCRICAO', 'REFERENCIA', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'UNIDADE', 'APLICACOES',
-  'SUBGRP_CODIGO', 'MAR_CODIGO', 'NCM', 'LOCALIZACAO', 'CODIGO_BARRAS', 'COMERCIALIZAVEL',
+  'SUBGRP_CODIGO', 'MAR_CODIGO', 'NCM', 'LOCALIZACAO', 'CODIGO_BARRAS', 'COMERCIALIZAVEL', 'SUBTIPO',
   'ESTOQUE_DISPONIVEL', 'ESTOQUE_RESERVADO', 'ESTOQUE_FORA_ESTABELECIMENTO', 'ESTOQUE_EM_TERCEIROS',
   'PRECO_VENDA', 'PRECO1', 'PRECO2', 'PRECO3', 'PRECO4', 'PRECO5',
   'PRECO6', 'PRECO7', 'PRECO8', 'PRECO9', 'PRECO10',
@@ -129,12 +155,14 @@ export interface ClienteErp {
   BLOQUEAR_VENDA_CREDIARIO: string | null;
   CON_CODIGO: number | null;
   DATA_ULT_COMPRA: string | null;
+  /** Indicador da IE na NF-e: 1 contribuinte, 2 isento, 9 não contribuinte — decide ST × DIFAL fora do estado. */
+  INDICADOR_IE_DESTINATARIO: number | null;
 }
 
 const CAMPOS_CLIENTE = [
   'CLI_CODIGO', 'CLI_NOME', 'CPF_CNPJ', 'UF', 'CIDADE', 'FONE', 'CELULAR', 'CONTATO',
   'REP_CODIGO', 'TABELA_PRECO', 'INATIVO', 'LIMITE_CREDITO', 'BLOQUEAR_VENDA_CREDIARIO',
-  'CON_CODIGO', 'DATA_ULT_COMPRA', 'CP_CODIGO', 'FP_ENTRADA', 'FP_DEMAIS_PARCELAS',
+  'CON_CODIGO', 'DATA_ULT_COMPRA', 'CP_CODIGO', 'FP_ENTRADA', 'FP_DEMAIS_PARCELAS', 'INDICADOR_IE_DESTINATARIO',
 ];
 
 /** Condição de pagamento de VENDA do Celta (CONDICOES_PAGTO), já sem inativas e sem as do contas a pagar. */
@@ -253,7 +281,7 @@ export class OrcamentoErpRepository {
     p.INATIVO = (r.INATIVO ?? '').toString().trim() || null;
     p.COMERCIALIZAVEL = (r.COMERCIALIZAVEL ?? '').toString().trim() || null;
     p.PRO_DESCRICAO = (r.PRO_DESCRICAO ?? '').toString().trim();
-    for (const k of ['MARCA', 'SUBGRUPO', 'GRUPO', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'CODIGO_BARRAS', 'NCM', 'LOCALIZACAO', 'REFERENCIA', 'UNIDADE']) {
+    for (const k of ['MARCA', 'SUBGRUPO', 'GRUPO', 'REF_FABRICANTE', 'REF_FORNECEDOR', 'CODIGO_BARRAS', 'NCM', 'LOCALIZACAO', 'REFERENCIA', 'UNIDADE', 'SUBTIPO']) {
       p[k] = (r[k] ?? '').toString().trim() || null;
     }
     return p as ProdutoErp;
@@ -394,12 +422,71 @@ export class OrcamentoErpRepository {
   }
 
   /**
+   * Notas de compra (NF-e LANÇADAS na empresa 1) pelo número — com ou sem o
+   * fornecedor — ou pela chave. O mesmo número existe em mais de um fornecedor;
+   * sem o fornecedor podem voltar várias e a tela escolhe.
+   */
+  async notasEntrada(f: { numero?: number; fornecedor?: number; chave?: string }): Promise<NotaEntrada[]> {
+    const filtros: FiltroErp[] = [
+      { campo: 'MODELO_NOTA', op: 'igual', valor: 55 },
+      { campo: 'STATUS', op: 'igual', valor: 1 },
+      { campo: 'DT_CANCELAMENTO', op: 'nulo' },
+    ];
+    if (f.chave) filtros.push({ campo: 'CHAVE_NFE', op: 'igual', valor: f.chave });
+    else {
+      filtros.push({ campo: 'NOTA_FISCAL', op: 'igual', valor: f.numero });
+      if (f.fornecedor) filtros.push({ campo: 'FOR_CODIGO', op: 'igual', valor: f.fornecedor });
+    }
+    const r = await this.erp.consultar<Record<string, any>>('nf-entrada', {
+      empresa: EMPRESA_FISCAL,
+      campos: ['NFE', 'NOTA_FISCAL', 'SERIE', 'CHAVE_NFE', 'FOR_CODIGO', 'DT_EMISSAO', 'DT_ENTRADA', 'TOTAL_NOTA', { campo: 'fornecedor.FOR_NOME', como: 'FOR_NOME' }],
+      filtros,
+      ordenar: [{ campo: 'DT_ENTRADA', dir: 'desc' }],
+      limite: 20,
+      semCache: true,
+    });
+    return r.map((x) => ({
+      nfe: Number(x.NFE),
+      nota_fiscal: Number(x.NOTA_FISCAL),
+      serie: x.SERIE == null ? null : String(x.SERIE).trim(),
+      chave: x.CHAVE_NFE == null ? null : String(x.CHAVE_NFE),
+      for_codigo: Number(x.FOR_CODIGO),
+      for_nome: x.FOR_NOME == null ? null : String(x.FOR_NOME).trim(),
+      dt_emissao: x.DT_EMISSAO == null ? null : String(x.DT_EMISSAO).slice(0, 10),
+      dt_entrada: x.DT_ENTRADA == null ? null : String(x.DT_ENTRADA).slice(0, 10),
+      total: Number(x.TOTAL_NOTA ?? 0),
+    }));
+  }
+
+  /** Itens de uma nota de compra (empresa 1) com o custo calculado no lançamento. */
+  async itensNotaEntrada(nfe: number): Promise<ItemNotaEntrada[]> {
+    const r = await this.erp.consultar<Record<string, any>>('nfe-itens', {
+      empresa: EMPRESA_FISCAL,
+      campos: ['ITEM', 'PRO_CODIGO', 'QUANTIDADE', 'UNITARIO', 'CUSTO_NOTA', 'TOTAL', { campo: 'produto.PRO_DESCRICAO', como: 'PRO_DESCRICAO' }],
+      filtros: [{ campo: 'NFE', op: 'igual', valor: nfe }],
+      ordenar: [{ campo: 'ITEM', dir: 'asc' }],
+      limite: 2000,
+      semCache: true,
+    });
+    return r.map((x) => ({
+      item: Number(x.ITEM),
+      pro_codigo: Number(x.PRO_CODIGO),
+      descricao: x.PRO_DESCRICAO == null ? null : String(x.PRO_DESCRICAO).trim(),
+      quantidade: Number(x.QUANTIDADE ?? 0),
+      unitario: Number(x.UNITARIO ?? 0),
+      custo_nota: x.CUSTO_NOTA == null ? null : Number(x.CUSTO_NOTA),
+      total: Number(x.TOTAL ?? 0),
+    }));
+  }
+
+  /**
    * Promoções VIGENTES (ATIVA = 'S' e hoje dentro do período) que valem para a
    * TABELA DO CLIENTE: o preço promocional é por tabela (PROM_VALOR2 para a 2,
    * PROM_VALOR5 para a 5…) e coluna zerada significa "não vale para esta
    * tabela". Quase toda promoção do Celta é do balcão (PROM_VALOR); a do
    * atacado é exceção — por isso PROM_VALOR nunca é usado para cliente 2/5.
-   * Produto em mais de uma promoção: fica a de menor preço.
+   * Cliente de outra tabela é varejo: para ele o service aplica o balcão quando
+   * a tabela dele não tem preço. Produto em mais de uma promoção: fica a de menor preço.
    */
   async promocoesVigentes(codigos: number[], tabelaPreco: string | null): Promise<Map<number, PromocaoItem>> {
     const saida = new Map<number, PromocaoItem>();
@@ -438,8 +525,8 @@ export class OrcamentoErpRepository {
       itens.push(...r);
     }
     // Prioridade: promoção com preço NA TABELA DO CLIENTE (menor preço). Sem
-    // nenhuma, fica a do balcão só como informação (a EST012 mostra "de/por"
-    // do varejo mesmo para cliente de atacado) — nunca aplicada ao preço.
+    // nenhuma, fica a do balcão: informação para cliente do atacado (a EST012
+    // mostra "de/por" do varejo mesmo para ele) e preço válido para os demais.
     for (const it of itens) {
       const valor = num(it[colPromo]);
       const balcao = num(it.PROM_VALOR);
@@ -612,6 +699,24 @@ export class OrcamentoErpRepository {
     return mapa;
   }
 
+  /**
+   * Códigos dos produtos de SERVIÇO (subtipo fiscal 09) da empresa 3, em cache por 10 minutos:
+   * ficam fora da bolsa do mês (o BI não traz o subtipo real do cadastro).
+   */
+  async codigosDeServico(): Promise<number[]> {
+    if (this.servicoCache && Date.now() - this.servicoCache.em < 10 * 60_000) return this.servicoCache.codigos;
+    const r = await this.erp.consultar<Record<string, any>>('produtos', {
+      empresa: EMPRESA,
+      campos: ['PRO_CODIGO'],
+      filtros: [{ campo: 'SUBTIPO', op: 'em', valor: ['09', '9'] }],
+      limite: 5000,
+    });
+    const codigos = r.map((x) => Number(x.PRO_CODIGO)).filter((c) => Number.isFinite(c));
+    this.servicoCache = { em: Date.now(), codigos };
+    return codigos;
+  }
+  private servicoCache: { em: number; codigos: number[] } | null = null;
+
   /** Nome do representante, ou null se o código não existe ou o ERP não respondeu. */
   async nomeRepresentante(rep: number | null | undefined): Promise<string | null> {
     if (rep == null) return null;
@@ -693,7 +798,49 @@ export class OrcamentoErpRepository {
       CP_CODIGO: r.CP_CODIGO == null ? null : Number(r.CP_CODIGO),
       FP_ENTRADA: (r.FP_ENTRADA ?? '').toString().trim() || null,
       FP_DEMAIS_PARCELAS: (r.FP_DEMAIS_PARCELAS ?? '').toString().trim() || null,
+      INDICADOR_IE_DESTINATARIO: r.INDICADOR_IE_DESTINATARIO == null ? null : Number(r.INDICADOR_IE_DESTINATARIO),
     };
+  }
+
+  /* ------------------------------------------ tributação fora do estado */
+
+  /**
+   * Situação tributária do ICMS-ST (a 010 = revenda PA): MVA, alíquota interna do
+   * destino e alíquota interestadual, em FRAÇÃO. Lida da empresa que emite a nota
+   * (1), com o cache curto da API — a MVA muda no Celta e o próximo orçamento acompanha.
+   */
+  async situacaoTributariaSt(codigo: string): Promise<{ mva: number; aliq_interna: number; aliq_interestadual: number; descricao: string } | null> {
+    const r = await this.erp.consultar<Record<string, any>>('situacao-tributaria', {
+      empresa: EMPRESA_FISCAL,
+      campos: ['ST_CODIGO', 'ST_DESCRICAO', 'ALIQ_FORA', 'ICMS_MARGEM_ST_FORA', 'ICMS_ALIQ_ST_FORA', 'INATIVO'],
+      filtros: [{ campo: 'ST_CODIGO', op: 'igual', valor: codigo }],
+      limite: 1 + FOLGA,
+    });
+    const st = r[0];
+    if (!st || String(st.INATIVO ?? '').trim() === 'S') return null;
+    return {
+      mva: Number(st.ICMS_MARGEM_ST_FORA ?? 0) / 100,
+      aliq_interna: Number(st.ICMS_ALIQ_ST_FORA ?? 0) / 100,
+      aliq_interestadual: Number(st.ALIQ_FORA ?? 0) / 100,
+      descricao: String(st.ST_DESCRICAO ?? '').trim(),
+    };
+  }
+
+  /** Percentual do DIFAL (fração) por produto para a UF, empresa que emite a nota. Produto sem linha fica fora do mapa. */
+  async aliquotasDifal(codigos: number[], uf: string): Promise<Map<number, number>> {
+    const out = new Map<number, number>();
+    const unicos = [...new Set(codigos)];
+    for (let i = 0; i < unicos.length; i += 500) {
+      const lote = unicos.slice(i, i + 500);
+      const r = await this.erp.consultar<Record<string, any>>('aliquotas-icms-uf-destino', {
+        empresa: EMPRESA_FISCAL,
+        campos: ['PRO_CODIGO', 'ALIQUOTA'],
+        filtros: [{ campo: 'UF', op: 'igual', valor: uf }, { campo: 'PRO_CODIGO', op: 'em', valor: lote }],
+        limite: lote.length + FOLGA,
+      });
+      for (const x of r) out.set(Number(x.PRO_CODIGO), Number(x.ALIQUOTA ?? 0) / 100);
+    }
+    return out;
   }
 
   /**

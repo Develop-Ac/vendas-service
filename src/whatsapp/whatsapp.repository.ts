@@ -1,5 +1,4 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface ContatoSeedRow {
@@ -21,7 +20,15 @@ export interface MensagemRow {
   tipo: string | null;
   timestamp: Date;
   ack: number | null;
+  // Conteúdo — só preenchido para sessões em WA_CORPO_SESSOES.
+  corpo?: string | null;
+  midia_chave?: string | null;
+  midia_mime?: string | null;
+  /** PENDENTE entra junto com o áudio; OK/ERRO vêm do processador. */
+  transcricao_status?: 'PENDENTE' | 'OK' | 'ERRO' | null;
 }
+
+export const TRANSCRICAO_MAX_TENTATIVAS = 3;
 
 @Injectable()
 export class WhatsappRepository {
@@ -100,17 +107,23 @@ export class WhatsappRepository {
   }
 
   // ------------------------------------------------------------ mensagens
-  /** Grava um evento; reentrega do mesmo id (sessao+message_id) é ignorada. */
+  /** Já existe (sessao+message_id)? Consulta barata antes de baixar mídia no histórico. */
+  async existe(sessao: string, message_id: string): Promise<boolean> {
+    const m = await this.prisma.ven_wa_mensagem.findUnique({
+      where: { sessao_message_id: { sessao, message_id } },
+      select: { id: true },
+    });
+    return m != null;
+  }
+
+  /**
+   * Grava um evento; reentrega do mesmo id (sessao+message_id) é ignorada SEM erro
+   * (skipDuplicates) — o webhook do WAHA reentrega e o histórico repete mensagens
+   * que o webhook já pegou; um create com P2002 enchia o log de prisma:error.
+   */
   async gravarMensagem(row: MensagemRow): Promise<boolean> {
-    try {
-      await this.prisma.ven_wa_mensagem.create({ data: row });
-      return true;
-    } catch (e) {
-      if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === 'P2002') {
-        return false; // duplicata — o webhook do WAHA pode reentregar
-      }
-      throw e;
-    }
+    const r = await this.prisma.ven_wa_mensagem.createMany({ data: [row], skipDuplicates: true });
+    return r.count > 0;
   }
 
   async atualizarAck(sessao: string, message_id: string, ack: number) {
@@ -185,9 +198,42 @@ export class WhatsappRepository {
     }
   }
 
+  // ---------------------------------------------------------- transcrição
+  /** O áudio mais antigo ainda pendente (menos tentativas primeiro). */
+  async proximoAudioPendente(soRecebidas: boolean) {
+    return this.prisma.ven_wa_mensagem.findFirst({
+      where: {
+        transcricao_status: 'PENDENTE',
+        midia_chave: { not: null },
+        ...(soRecebidas ? { direcao: 'RECEBIDA' } : {}),
+      },
+      orderBy: [{ transcricao_tentativas: 'asc' }, { timestamp: 'asc' }],
+      select: { id: true, midia_chave: true, midia_mime: true, transcricao_tentativas: true },
+    });
+  }
+
+  async gravarTranscricao(id: string, texto: string) {
+    return this.prisma.ven_wa_mensagem.update({
+      where: { id },
+      data: { transcricao: texto, transcricao_status: 'OK' },
+    });
+  }
+
+  /** Conta a tentativa; na última vira ERRO e sai da fila (o áudio fica no MinIO). */
+  async falharTranscricao(id: string, tentativasAtuais: number) {
+    const n = tentativasAtuais + 1;
+    return this.prisma.ven_wa_mensagem.update({
+      where: { id },
+      data: {
+        transcricao_tentativas: n,
+        transcricao_status: n >= TRANSCRICAO_MAX_TENTATIVAS ? 'ERRO' : 'PENDENTE',
+      },
+    });
+  }
+
   /** Medições do piloto: volumes, taxa de casamento e atividade por sessão. */
   async medicoes() {
-    const [total, casadas, porSessao] = await Promise.all([
+    const [total, casadas, porSessao, comCorpo, comMidia, audios] = await Promise.all([
       this.prisma.ven_wa_mensagem.count(),
       this.prisma.ven_wa_mensagem.count({ where: { cli_codigo: { not: null } } }),
       this.prisma.ven_wa_mensagem.groupBy({
@@ -195,7 +241,14 @@ export class WhatsappRepository {
         _count: { _all: true },
         _max: { timestamp: true },
       }),
+      this.prisma.ven_wa_mensagem.count({ where: { corpo: { not: null } } }),
+      this.prisma.ven_wa_mensagem.count({ where: { midia_chave: { not: null } } }),
+      this.prisma.ven_wa_mensagem.groupBy({
+        by: ['transcricao_status'],
+        where: { transcricao_status: { not: null } },
+        _count: { _all: true },
+      }),
     ]);
-    return { total, casadas, porSessao };
+    return { total, casadas, porSessao, comCorpo, comMidia, audios };
   }
 }

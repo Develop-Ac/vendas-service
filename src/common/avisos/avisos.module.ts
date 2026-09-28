@@ -2,7 +2,7 @@ import { DynamicModule, Global, Inject, Injectable, Logger, Module, OnModuleInit
 import { AvisosClient, Catalogo, EmitirOpcoes, configDoAmbiente } from './avisos-client';
 
 /**
- * avisos-client v1.2.0 — módulo Nest.
+ * avisos-client v1.3.0 — módulo Nest.
  *
  *   // app.module.ts
  *   AvisosModule.forRoot({ servico: 'vendas', catalogo: CATALOGO })
@@ -47,6 +47,11 @@ export class AvisosService implements OnModuleInit {
   /** Fire-and-forget. Não aguardar; não chamar dentro de transação. */
   emitir(evento: string, o: EmitirOpcoes = {}): void {
     this.cliente.emitir(evento, o);
+  }
+
+  /** O fato deixou de valer: o aviso some de todos. Fire-and-forget. */
+  resolver(evento: string, ref: string | number): void {
+    this.cliente.resolver(evento, ref);
   }
 }
 

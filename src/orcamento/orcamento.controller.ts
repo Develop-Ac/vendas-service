@@ -16,13 +16,19 @@ import {
 import type { FastifyReply } from 'fastify';
 import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { OrcamentoService } from './orcamento.service';
+import { ProdutosDiaService } from './produtos-dia.service';
 import {
   AcaoOrcamentoDto,
+  AlterarOportunidadeDto,
   DecisaoSaldoDto,
+  RegistrarOportunidadeDto,
   EntregueOrcamentoDto,
   DesfechoOrcamentoDto,
   ExcecaoReguaDto,
   SalvarOrcamentoDto,
+  TributacaoDto,
+  VendaPerdidaPesquisaDto,
+  RegenerarProdutosDiaDto,
 } from './dto/orcamento.dto';
 
 const toNum = (v?: string) => (v == null || v === '' ? undefined : Number(v));
@@ -38,7 +44,10 @@ const toNum = (v?: string) => (v == null || v === '' ? undefined : Number(v));
 @Controller('orcamento')
 @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
 export class OrcamentoController {
-  constructor(private readonly service: OrcamentoService) {}
+  constructor(
+    private readonly service: OrcamentoService,
+    private readonly produtosDia: ProdutosDiaService,
+  ) {}
 
   /* ------------------------------------------------------------- régua */
 
@@ -58,6 +67,63 @@ export class OrcamentoController {
   @ApiOperation({ summary: 'Cria/atualiza/remove a exceção de um item.' })
   salvarExcecao(@Param('pro_codigo', ParseIntPipe) pro: number, @Body() dto: ExcecaoReguaDto) {
     return this.service.salvarExcecao(pro, dto);
+  }
+
+  /* ------------------------------------------------- compra de oportunidade */
+
+  @Get('oportunidade/nota')
+  @ApiOperation({ summary: 'Nota de compra (NF-e lançada na empresa 1) com os itens, custo, tabela 2 e sobra — pelo número (+ fornecedor) ou pela chave.' })
+  @ApiQuery({ name: 'numero', required: false })
+  @ApiQuery({ name: 'fornecedor', required: false })
+  @ApiQuery({ name: 'chave', required: false })
+  notaCompra(@Query('numero') numero?: string, @Query('fornecedor') fornecedor?: string, @Query('chave') chave?: string) {
+    return this.service.notaCompra({ numero: toNum(numero), fornecedor: toNum(fornecedor), chave: chave?.trim() || undefined });
+  }
+
+  @Get('oportunidade')
+  @ApiOperation({ summary: 'Lotes de compra de oportunidade registrados (vigentes primeiro), com vendidas e restantes.' })
+  oportunidades() {
+    return this.service.listarOportunidades();
+  }
+
+  @Post('oportunidade')
+  @ApiOperation({ summary: 'Registra os itens de uma nota de compra com a parte da sobra que fica com o vendedor.' })
+  registrarOportunidades(@Body() dto: RegistrarOportunidadeDto) {
+    return this.service.registrarOportunidades(dto);
+  }
+
+  @Put('oportunidade/:id')
+  @ApiOperation({ summary: 'Muda a parte do vendedor de um lote aberto, ou encerra.' })
+  alterarOportunidade(@Param('id', ParseIntPipe) id: number, @Body() dto: AlterarOportunidadeDto) {
+    return this.service.alterarOportunidade(id, dto);
+  }
+
+  /* ----------------------------------------------------- produtos do dia */
+
+  @Get('produtos-dia')
+  @ApiOperation({ summary: 'Produtos do dia para o supervisor do atacado: lotes de oportunidade ordenados por bolsa × demanda esperada, com os clientes devidos; e os lotes de fora por estoque.' })
+  @ApiQuery({ name: 'data', required: false, description: 'YYYY-MM-DD (padrão hoje, Cuiabá)' })
+  produtosDoDia(@Query('data') data?: string) {
+    if (data && !/^\d{4}-\d{2}-\d{2}$/.test(data)) throw new BadRequestException('data: YYYY-MM-DD');
+    return this.produtosDia.listar(data);
+  }
+
+  @Get('produtos-dia/datas')
+  @ApiOperation({ summary: 'Dias com lista de produtos do dia gerada (mais recente primeiro).' })
+  produtosDoDiaDatas() {
+    return this.produtosDia.datas();
+  }
+
+  @Post('produtos-dia/regenerar')
+  @ApiOperation({ summary: 'Refaz a lista de hoje (gestão): substitui a lista do dia, não duplica.' })
+  produtosDoDiaRegenerar(@Body() dto: RegenerarProdutosDiaDto) {
+    return this.produtosDia.regenerar(dto.gerado_por?.trim() || null);
+  }
+
+  @Post('venda-perdida')
+  @ApiOperation({ summary: 'Venda perdida pela pesquisa (F7): item sem saldo, quantidade 1, sem precisar do orçamento; similar com saldo exige justificativa.' })
+  vendaPerdidaPesquisa(@Body() dto: VendaPerdidaPesquisaDto) {
+    return this.service.vendaPerdidaPesquisa(dto);
   }
 
   @Get('vendedores')
@@ -126,6 +192,7 @@ export class OrcamentoController {
   @ApiQuery({ name: 'sem_custo', required: false, description: 'Total dos itens SEM custo no cadastro (entram neutros)' })
   @ApiQuery({ name: 'm1a', required: false, description: 'Total líquido dos itens MIX 1 faixa A (idem m1b, m1c, m1d) — projeção da comissão' })
   @ApiQuery({ name: 'm23', required: false, description: 'Total líquido dos itens MIX 2/3 (e sem faixa) — projeção da comissão' })
+  @ApiQuery({ name: 'absorvido', required: false, description: 'Promoção: o que a empresa absorve neste orçamento (metade da falta contra custo × piso nas linhas em promoção)' })
   bolsa(
     @Param('rep', ParseIntPipe) rep: number,
     @Query('total') total?: string,
@@ -137,6 +204,7 @@ export class OrcamentoController {
     @Query('m1c') m1c?: string,
     @Query('m1d') m1d?: string,
     @Query('m23') m23?: string,
+    @Query('absorvido') absorvido?: string,
   ) {
     const t = toNum(total);
     return this.service.bolsa(
@@ -145,6 +213,7 @@ export class OrcamentoController {
         ? {
             receita: t, desconto: toNum(desconto) ?? 0, custo: toNum(custo) ?? 0, sem_custo: toNum(semCusto) ?? 0,
             m1a: toNum(m1a), m1b: toNum(m1b), m1c: toNum(m1c), m1d: toNum(m1d), m23: toNum(m23),
+            absorvido: toNum(absorvido) ?? 0,
           }
         : undefined,
     );
@@ -237,7 +306,7 @@ export class OrcamentoController {
       inativos: on(inativos, false),
       comercializavel: on(comercializavel, true),
       equivalentes: on(equivalentes, true),
-      limite: Math.min(200, toNum(limite) ?? 60),
+      limite: Math.min(1000, toNum(limite) ?? 60), // a tela pagina de 200 em 200 ("Mostrar mais")
     });
   }
 
@@ -316,6 +385,24 @@ export class OrcamentoController {
     return this.service.criar(dto);
   }
 
+  @Post('proposta')
+  @ApiOperation({
+    summary: 'Proposta SEM salvar: mesmo corpo do POST /orcamento; devolve texto do WhatsApp, PDF (base64) e alçada.',
+    description: 'Para quem monta a proposta fora da tela e a encaminha a um vendedor. Nada é gravado.',
+  })
+  proposta(@Body() dto: SalvarOrcamentoDto) {
+    return this.service.proposta(dto);
+  }
+
+  @Post('tributacao')
+  @ApiOperation({
+    summary: 'Imposto interestadual do orçamento em edição (prévia): ICMS-ST ou DIFAL por item, somados ao total ao cliente (o DIFAL vai como despesa acessória).',
+    description: 'Regime pela UF e pelo indicador de IE do cliente no Celta e pela presença da venda; MVA, alíquotas e percentual do DIFAL lidos do ERP na hora. Nada é gravado — ao salvar, o serviço recalcula.',
+  })
+  tributacao(@Body() dto: TributacaoDto) {
+    return this.service.tributacaoPrevia(dto);
+  }
+
   @Get('trava/:rep_codigo')
   @ApiOperation({
     summary: 'Trava de orçamento NOVO do vendedor.',
@@ -384,6 +471,9 @@ export class OrcamentoController {
     res.header('Content-Type', 'application/pdf');
     res.header('Content-Disposition', `inline; filename="${nome}"`);
     res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+    // A URL é a mesma a cada abertura e o conteúdo muda (itens, imposto, modo do desconto): sem
+    // isto o navegador reabre o PDF antigo do cache em vez de pedir o atual.
+    res.header('Cache-Control', 'no-store');
     return res.send(dados);
   }
 

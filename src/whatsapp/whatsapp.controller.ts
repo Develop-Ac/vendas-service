@@ -50,10 +50,29 @@ export class WhatsappController {
     return this.service.vincular(dto ?? ({} as any));
   }
 
-  // As medições que o piloto valida: taxa de casamento e atividade por sessão.
+  // As medições que o piloto valida: taxa de casamento e atividade por sessão
+  // (+ conteúdo: mensagens com corpo/mídia e áudios por status de transcrição).
   @Get('medicoes')
   medicoes() {
     return this.service.medicoes();
+  }
+
+  // Importa as conversas de uma sessão desde uma data (padrão 01/09/2026),
+  // em segundo plano. Só sessões em WA_CORPO_SESSOES; repetir não duplica.
+  @Post('historico')
+  historico(@Body() dto: { sessao: string; desde?: string }) {
+    return this.service.importarHistorico(dto?.sessao ?? '', dto?.desde);
+  }
+
+  @Get('historico')
+  historicoStatus() {
+    return this.service.statusHistorico();
+  }
+
+  // Dispara o processador da fila de áudios fora do cron (teste/apuro manual).
+  @Post('transcricao/processar')
+  processarTranscricao() {
+    return this.service.processarAudiosPendentes();
   }
 
   // A conversa em pauta da sessão do vendedor — o cabeçalho da estação segue

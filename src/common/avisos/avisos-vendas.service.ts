@@ -87,11 +87,92 @@ export class AvisosVendasService {
   }
 
   /**
+   * Quem APROVA orçamento acima da alçada — a mesma regra de `aprovaOrcamento()`
+   * da tela: hub GERENCIA ou setor Admin/Administrador/Diretoria (cache de 10 min).
+   */
+  async aprovadores(): Promise<string[]> {
+    if (this.cacheAprovadores && Date.now() - this.cacheAprovadores.em < 600_000) return this.cacheAprovadores.ids;
+    let ids: string[] = [];
+    try {
+      const rows = await this.prisma.sis_usuarios.findMany({
+        where: {
+          trash: 0,
+          OR: [
+            { vendas_hub_inicial: { equals: 'GERENCIA', mode: 'insensitive' } },
+            { setor: { in: ['Admin', 'Administrador', 'Diretoria'], mode: 'insensitive' } },
+          ],
+        },
+        select: { id: true },
+      });
+      ids = rows.map((r) => r.id);
+    } catch (e) {
+      this.logger.warn(`aprovadores de orçamento: ${(e as Error).message}`);
+    }
+    this.cacheAprovadores = { ids, em: Date.now() };
+    return ids;
+  }
+  private cacheAprovadores: { ids: string[]; em: number } | null = null;
+
+  /** Supervisão do atacado e gerência (hub do cadastro): quem recebe os produtos do dia. */
+  async gestaoAtacado(): Promise<string[]> {
+    if (this.cacheGestao && Date.now() - this.cacheGestao.em < 600_000) return this.cacheGestao.ids;
+    let ids: string[] = [];
+    try {
+      const rows = await this.prisma.sis_usuarios.findMany({
+        where: { trash: 0, vendas_hub_inicial: { in: ['SUPERVISAO_ATACADO', 'GERENCIA'], mode: 'insensitive' } },
+        select: { id: true },
+      });
+      ids = rows.map((r) => r.id);
+    } catch (e) {
+      this.logger.warn(`gestão do atacado: ${(e as Error).message}`);
+    }
+    this.cacheGestao = { ids, em: Date.now() };
+    return ids;
+  }
+  private cacheGestao: { ids: string[]; em: number } | null = null;
+
+  /** Lista de produtos do dia pronta (ref = data: regenerar no mesmo dia não avisa de novo). */
+  async produtosDia(data: string, resumo: { total: number; bolsa: number; fora: number }) {
+    if (!resumo.total) return;
+    const usuarios = await this.gestaoAtacado();
+    if (!usuarios.length) return;
+    this.avisos.emitir('produtos.dia', { ref: data, vars: { total: resumo.total, bolsa: brl(resumo.bolsa), fora: resumo.fora }, usuarios });
+  }
+
+  /** Vendedor mandou orçamento acima do desconto máximo para a gerência aprovar. */
+  async orcamentoAprovacao(o: { id: string; numero: number; cli_codigo: number; cli_nome: string | null; rep_codigo: number | null; rep_nome: string | null; total: unknown }) {
+    const usuarios = await this.aprovadores();
+    if (!usuarios.length) return;
+    this.avisos.emitir('orcamento.aprovacao', {
+      ref: o.id,
+      vars: {
+        numero: String(o.numero).padStart(6, '0'),
+        cliente: o.cli_nome ?? `Cliente ${o.cli_codigo}`,
+        vendedor: o.rep_nome ?? (o.rep_codigo != null ? `Rep ${o.rep_codigo}` : 'Vendedor'),
+        total: brl(o.total),
+        id: o.id,
+      },
+      usuarios,
+    });
+  }
+
+  /**
+   * O orçamento saiu de APROVAÇÃO (aprovado, editado, perdido, cancelado): o aviso
+   * some da caixa de toda a gerência — o primeiro que resolve limpa para os outros.
+   */
+  aprovacaoEncerrada(id: string) {
+    this.avisos.resolver('orcamento.aprovacao', id);
+  }
+
+  /**
    * Comparativo do Celta divergiu e o vendedor ficou bloqueado: modal para a
    * gestão. Um alvo por emissão, então vai uma por setor (modal nunca agrupa).
    * O OK do modal dá POST em .../orcamentoBloqueado/{rep}, que libera o vendedor.
+   * `diferencas` = o que não bateu, item a item (texto de `diferencasComparativo`): vai no
+   * corpo para a gerência decidir sem abrir o comparativo. O corpo segue por override
+   * porque a regra já gravada no avisos-service não é sobrescrita pelo catálogo.
    */
-  orcamentoBloqueado(o: { id: string; numero: number; cli_codigo: number; cli_nome: string | null; rep_codigo: number | null; rep_nome: string | null; celta_orcamento: number | null }) {
+  orcamentoBloqueado(o: { id: string; numero: number; cli_codigo: number; cli_nome: string | null; rep_codigo: number | null; rep_nome: string | null; celta_orcamento: number | null }, diferencas?: string) {
     if (o.rep_codigo == null) return;
     const vars = {
       numero: o.numero,
@@ -99,9 +180,11 @@ export class AvisosVendasService {
       cliente: o.cli_nome ?? `Cliente ${o.cli_codigo}`,
       vendedor: o.rep_nome ?? `Rep ${o.rep_codigo}`,
       rep: o.rep_codigo,
+      diferencas: diferencas ?? '',
     };
+    const corpo = diferencas ? `Celta ${vars.celta} · ${vars.cliente}\n${diferencas}` : undefined;
     for (const setor of SETORES_GESTAO) {
-      this.avisos.emitir('orcamento.bloqueado', { ref: o.id, vars, setor });
+      this.avisos.emitir('orcamento.bloqueado', { ref: o.id, vars, setor, corpo });
     }
   }
 }

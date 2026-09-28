@@ -21,14 +21,16 @@ import {
   degrauMix1,
   FAIXAS,
   FaixaVolume,
-  precoDaTabela,
+  absorcaoPromocao, colunaTabela, ehTabelaAtacado, precoDaTabela,
   RegraFaixa,
   round2,
 } from './regua';
-import { DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, SalvarOrcamentoDto } from './dto/orcamento.dto';
+import { AlterarOportunidadeDto, DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, RegistrarOportunidadeDto, SalvarOrcamentoDto, TributacaoDto, VendaPerdidaPesquisaDto } from './dto/orcamento.dto';
+import { custoParaBolsa, PCT_VENDEDOR_PADRAO } from './oportunidade';
+import { calcularDifal, calcularSt, descricaoIndicadorIe, regimeInterestadual, seloTributacao, type ParametrosSt, type RegimeInterestadual } from './tributacao';
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
-import { OrcamentoCeltaRepository } from './orcamento.celta.repository';
-import { chaveIdempotencia, corpoParaCelta } from './celta';
+import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
+import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, type LinhaComparativo } from './celta';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
@@ -63,12 +65,18 @@ export interface ProdutoOrcamento {
   subgrupo: string | null;
   subgrp_codigo: number | null;
   inativo: boolean;
+  /** subtipo 09 (serviço): não tem preço de tabela nem saldo — entra com quantidade 1 e o preço informado no orçamento */
+  servico: boolean;
   comercializavel: boolean;
   estoque_disponivel: number;
   estoque_reservado: number;
   estoque_fora: number;
   estoque_terceiros: number;
   custo: number | null;
+  /** compra de oportunidade: custo que a BOLSA usa no lugar de `custo` (reserva da empresa); nulo = sem lote vigente */
+  custo_bolsa: number | null;
+  /** pesquisa: já há venda perdida registrada hoje deste item para o cliente (selo na grade) */
+  venda_perdida_hoje?: boolean;
   preco_tabela: number;
   /** Preço da tabela do cliente ANTES da promoção (o "de:" da EST012). */
   preco_original: number;
@@ -121,6 +129,19 @@ export interface ClienteOrcamento {
   fp_entrada: string | null;
   /** Venda líquida dos últimos 12 meses (BI) — só na busca; ausente se o BI não respondeu. */
   compras_12m?: number;
+  /** Indicador da IE na NF-e (1 contribuinte, 2 isento, 9 não contribuinte) — decide ST × DIFAL fora do estado. */
+  indicador_ie: number | null;
+}
+
+/** Como o imposto interestadual se aplica a este cliente/orçamento. */
+export interface ResumoTributacao {
+  regime: RegimeInterestadual;
+  uf: string | null;
+  indicador_ie: number | null;
+  indicador_ie_descricao: string | null;
+  presencial: boolean;
+  /** Texto curto para o selo do cliente; nulo quando nada muda (mesmo estado). */
+  selo: string | null;
 }
 
 /** Quantos candidatos a busca de cliente pede ao ERP antes de ordenar por canal/compras e cortar. */
@@ -164,6 +185,13 @@ export class OrcamentoService {
       premio_pct: num('ORCAMENTO_PREMIO_PCT', PREMIO_PADRAO),
       piso_item: num('ORCAMENTO_ITEM_PISO', PISO_ITEM_PADRAO),
       validade_dias: num('ORCAMENTO_VALIDADE_DIAS', 7),
+      // ICMS fora do estado: UFs liberadas (a situação 010 é do Pará; outro estado entra quando o
+      // fiscal cadastrar a situação dele) e a situação tributária do ST no Celta.
+      tributacao_ufs: (process.env.ORCAMENTO_TRIBUTACAO_UFS ?? 'PA').split(',').map((u) => u.trim().toUpperCase()).filter(Boolean),
+      st_situacao: (process.env.ORCAMENTO_ST_SITUACAO ?? '010').trim(),
+      // Mandar regime e DIFAL/ST por item na importação ao Celta: só quando a api-vendas-service
+      // que os aceita (plano v3, seção 11) estiver no ar — a atual recusa campo desconhecido.
+      celta_tributacao: ['1', 'true', 'sim'].includes((process.env.ORCAMENTO_CELTA_TRIBUTACAO ?? '').trim().toLowerCase()),
     };
   }
 
@@ -197,7 +225,7 @@ export class OrcamentoService {
       rep_codigo: c.REP_CODIGO,
       tabela_preco: tabela,
       tabela_coluna: precoDaTabela({}, tabela).coluna,
-      atacado: ['2', '5'].includes(tabela ?? ''),
+      atacado: ehTabelaAtacado(tabela),
       inativo: c.INATIVO === 'S',
       con_codigo: c.CON_CODIGO,
       limite_credito: Number(c.LIMITE_CREDITO ?? 0),
@@ -205,6 +233,20 @@ export class OrcamentoService {
       data_ult_compra: c.DATA_ULT_COMPRA,
       cp_codigo: c.CP_CODIGO == null ? null : Number(c.CP_CODIGO),
       fp_entrada: c.FP_ENTRADA ? String(c.FP_ENTRADA).trim() || null : null,
+      indicador_ie: c.INDICADOR_IE_DESTINATARIO,
+    };
+  }
+
+  /** Regime do imposto interestadual do cliente para a presença informada (padrão: não presencial). */
+  resumoTributacao(c: { UF: string | null; INDICADOR_IE_DESTINATARIO: number | null }, presencial = false): ResumoTributacao {
+    const regime = regimeInterestadual({ uf: c.UF, indicador_ie: c.INDICADOR_IE_DESTINATARIO }, presencial, this.parametros().tributacao_ufs);
+    return {
+      regime,
+      uf: c.UF ? String(c.UF).trim().toUpperCase() : null,
+      indicador_ie: c.INDICADOR_IE_DESTINATARIO,
+      indicador_ie_descricao: descricaoIndicadorIe(c.INDICADOR_IE_DESTINATARIO),
+      presencial,
+      selo: seloTributacao(regime, c.UF),
     };
   }
 
@@ -291,6 +333,8 @@ export class OrcamentoService {
       dias_sem_compra: dias,
       desconto_padrao_erp: resumo?.desconto_padrao ?? null,
       bi_disponivel: resumo != null,
+      // imposto fora do estado, na presença padrão (não presencial); a tela reavalia ao marcar presencial
+      tributacao: this.resumoTributacao(c),
     };
   }
 
@@ -327,7 +371,8 @@ export class OrcamentoService {
     const soma = (cod: number) => (aguardando.get(cod) ?? []).reduce((s, a) => s + Number(a.quantidade), 0);
     return {
       aguardando: soma,
-      saldoPor: new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, Math.max(0, p.estoque_disponivel) + soma(p.pro_codigo)])),
+      // serviço não controla estoque: saldo infinito, nunca é pendência
+      saldoPor: new Map<number, number | undefined>(produtos.map((p) => [p.pro_codigo, p.servico ? Number.POSITIVE_INFINITY : Math.max(0, p.estoque_disponivel) + soma(p.pro_codigo)])),
     };
   }
 
@@ -382,17 +427,30 @@ export class OrcamentoService {
    */
   async bolsa(
     rep: number,
-    orc?: { receita: number; desconto: number; custo: number; sem_custo: number; m1a?: number; m1b?: number; m1c?: number; m1d?: number; m23?: number },
+    orc?: {
+      receita: number; desconto: number; custo: number; sem_custo: number; m1a?: number; m1b?: number; m1c?: number; m1d?: number; m23?: number;
+      /** promoção: o que a empresa absorve neste orçamento — já somado pela tela, ou as linhas para somar aqui com o piso */
+      absorvido?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>;
+    },
   ) {
     const p = this.parametros();
     const periodo = mesComissional();
-    const [v, clientes, { piso, linha, pisoDre, degrau, vol }, celulas, cfgComissao] = await Promise.all([
-      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes),
-      this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes).catch((e) => {
+    // o piso entra na leitura do mês (metade da promoção) — por isso vem antes; serviços ficam fora da bolsa
+    const [{ piso, linha, pisoDre, degrau, vol }, servicos] = await Promise.all([
+      this.pisoVigente(periodo),
+      this.erp.codigosDeServico().catch((e) => {
+        this.logger.warn(`Serviços do ERP indisponíveis (ficam na bolsa): ${(e as Error).message}`);
+        return [] as number[];
+      }),
+    ]);
+    // compra de oportunidade: lotes que cobrem vendas do mês (vigentes ou encerrados há pouco)
+    const lotes = await this.oportunidadesParaBolsa(2);
+    const [v, clientes, celulas, cfgComissao] = await Promise.all([
+      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
+      this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
         return [];
       }),
-      this.pisoVigente(periodo),
       this.bi.celulasComissao(rep, periodo.ano, periodo.mes).catch((e) => {
         this.logger.warn(`Células da comissão indisponíveis (rep ${rep}): ${(e as Error).message}`);
         return null;
@@ -402,6 +460,8 @@ export class OrcamentoService {
         return null;
       }),
     ]);
+    // promoção: metade do que o item tira da bolsa é da empresa — no mês vem do BI (flag PROMOCAO da venda); aqui, o orçamento em edição
+    const absorvidoOrc = orc?.absorvido ?? (orc?.promos ? orc.promos.reduce((s, x) => s + absorcaoPromocao(x.preco, x.custo, piso, x.qtd), 0) : 0);
     // Comissão do mês como está e como fica com o orçamento (mesma regra do fechamento;
     // sem abatimentos manuais e média de férias — é estimativa para decidir na hora).
     const comissao = celulas && cfgComissao ? comissaoComOrcamento(celulas, celulasDoOrcamento(orc ?? {}), cfgComissao) : null;
@@ -413,6 +473,8 @@ export class OrcamentoService {
       desconto_orc: orc?.desconto ?? 0,
       custo_orc: orc?.custo ?? 0,
       sem_custo_orc: orc?.sem_custo ?? 0,
+      absorvido_mtd: v.absorvido,
+      absorvido_orc: absorvidoOrc,
       piso,
       linha,
       premio_pct: p.premio_pct,
@@ -506,7 +568,7 @@ export class OrcamentoService {
     const periodo = mesComissional();
     const chaves = mesesAnteriores(periodo.ano, periodo.mes, meses);
     const [rows, { piso }] = await Promise.all([
-      this.bi.bolsaClienteMensal(rep, cli, chaves[chaves.length - 1], chaves[0]),
+      this.oportunidadesParaBolsa(meses + 1).then((lotes) => this.bi.bolsaClienteMensal(rep, cli, chaves[chaves.length - 1], chaves[0], lotes)),
       this.pisoVigente(periodo),
     ]);
     const linhas = chaves.map(({ ano, mes }) => {
@@ -527,13 +589,204 @@ export class OrcamentoService {
     };
   }
 
+  /* --------------------------------------------- venda perdida pela pesquisa */
+
+  /**
+   * F7 na pesquisa: venda perdida do item sem saldo, quantidade 1, sem precisar do orçamento.
+   * Só vale com disponível zero e nada aguardando liberação (peça já na loja em conferência
+   * conta como saldo); serviço não tem saldo. Similar com saldo exige justificativa, como no Fechou.
+   */
+  async vendaPerdidaPesquisa(dto: VendaPerdidaPesquisaDto) {
+    const [p] = await this.erp.produtosPorCodigo([dto.pro_codigo]);
+    if (!p) throw new NotFoundException(`Produto ${dto.pro_codigo} não encontrado na empresa 3.`);
+    if (ehServico(p.SUBTIPO)) throw new BadRequestException('Serviço não tem saldo: não é venda perdida.');
+    const { saldoPor } = await this.saldoComLiberacao([p.PRO_CODIGO], await this.enriquecer([p], null, dto.cli_codigo));
+    if ((saldoPor.get(p.PRO_CODIGO) ?? 0) > 0) throw new BadRequestException(p.ESTOQUE_DISPONIVEL > 0 ? 'Item tem saldo.' : 'Item chega em breve (aguardando liberação).');
+    const similar = dto.similar_disponivel?.trim() || null;
+    const justificativa = dto.justificativa?.trim() || null;
+    if (similar && !justificativa) throw new BadRequestException('Há similar com saldo: justifique a venda perdida.');
+    const usuario = { usuario_id: dto.usuario_id ?? null, usuario_nome: dto.usuario_nome ?? null };
+    if (dto.orcamento_id) {
+      const o = await this.db.obter(dto.orcamento_id).catch(() => null);
+      if (o) {
+        await this.db.registrarVendaPerdida(o, [{ pro_codigo: p.PRO_CODIGO, descricao: p.PRO_DESCRICAO, quantidade: 1, similar_disponivel: similar, justificativa }], dto);
+        return { pro_codigo: p.PRO_CODIGO, orcamento_id: o.id };
+      }
+    }
+    const r = await this.db.registrarVendaPerdidaPesquisa({ cli_codigo: dto.cli_codigo, rep_codigo: dto.rep_codigo ?? null, pro_codigo: p.PRO_CODIGO, descricao: p.PRO_DESCRICAO, similar_disponivel: similar, justificativa, ...usuario });
+    return { pro_codigo: p.PRO_CODIGO, orcamento_id: null, id: r.id };
+  }
+
+  /* ------------------------------------------------- compra de oportunidade */
+
+  private apuracaoOportunidadeEm = 0;
+
+  /**
+   * Conta as unidades vendidas de cada lote aberto (BI: todos os canais, devolução
+   * desconta) e encerra o lote que chegou à quantidade. Roda no máximo a cada 10 min,
+   * puxado pela leitura da bolsa e da lista — não há job. Falha do BI não derruba a
+   * bolsa: o lote segue como estava.
+   * ponytail: o lote que acaba hoje encerra hoje, e as vendas de hoje voltam ao custo
+   * real; para dar o dia inteiro ao lote seria preciso encerrar amanhã.
+   */
+  private async apurarOportunidades() {
+    if (Date.now() - this.apuracaoOportunidadeEm < 10 * 60_000) return;
+    this.apuracaoOportunidadeEm = Date.now();
+    try {
+      const abertas = await this.db.oportunidadesAbertas();
+      if (!abertas.length) return;
+      // o lote é o que ainda está na prateleira: acaba pela contagem de vendas OU quando o estoque zera
+      const [vendidas, produtos] = await Promise.all([
+        this.bi.unidadesVendidasDesde(abertas.map((o) => ({ pro_codigo: o.pro_codigo, desde: o.vigente_de.toISOString().slice(0, 10).replace(/-/g, '') }))),
+        this.erp.produtosPorCodigo(abertas.map((o) => o.pro_codigo)),
+      ]);
+      const estoque = new Map<number, number>(produtos.map((p) => [p.PRO_CODIGO, p.ESTOQUE_DISPONIVEL]));
+      await this.db.apurarOportunidades(
+        abertas.map((o) => {
+          const v = vendidas.get(o.pro_codigo) ?? 0;
+          const e = estoque.get(o.pro_codigo);
+          return { id: o.id, vendida: v, encerrar: v >= o.quantidade - 1e-6 || (e != null && e <= 0) };
+        }),
+      );
+    } catch (e) {
+      this.logger.warn(`Apuração dos lotes de oportunidade falhou: ${(e as Error).message}`);
+    }
+  }
+
+  /** Lotes que cobrem vendas dos últimos `meses` meses — o que a bolsa lê do BI precisa para trocar o custo. */
+  private async oportunidadesParaBolsa(meses: number) {
+    await this.apurarOportunidades();
+    const desde = new Date();
+    desde.setMonth(desde.getMonth() - meses);
+    return this.db.oportunidadesDesde(desde).catch((e) => {
+      this.logger.warn(`Lotes de oportunidade indisponíveis (bolsa usa o custo real): ${(e as Error).message}`);
+      return [];
+    });
+  }
+
+  /**
+   * Nota de compra para a tela: itens da nota (empresa 1) com custo de reposição,
+   * preço de tabela 2 e estoque da empresa 3, a sobra a preço de tabela e o lote
+   * vigente do produto, se houver. Mais de uma nota com o número → a tela escolhe.
+   */
+  async notaCompra(f: { numero?: number; fornecedor?: number; chave?: string }) {
+    if (!f.numero && !f.chave) throw new BadRequestException('Informe o número da nota (e o fornecedor) ou a chave de 44 dígitos.');
+    const notas = await this.erp.notasEntrada(f);
+    if (!notas.length) throw new NotFoundException('Nota de compra não encontrada: só NF-e lançada na empresa 1.');
+    if (notas.length > 1) return { notas, nota: null, piso: null, itens: [] };
+    const nota = notas[0];
+    const [itens, { piso }] = await Promise.all([this.erp.itensNotaEntrada(nota.nfe), this.pisoVigente(mesComissional())]);
+    const codigos = itens.map((i) => i.pro_codigo);
+    const [produtos, vigentes] = await Promise.all([this.erp.produtosPorCodigo(codigos), this.db.oportunidadesVigentes(codigos)]);
+    const porCodigo = new Map(produtos.map((p) => [p.PRO_CODIGO, p]));
+    return {
+      notas,
+      nota,
+      piso,
+      pct_padrao: PCT_VENDEDOR_PADRAO,
+      itens: itens.map((i) => {
+        const p = porCodigo.get(i.pro_codigo);
+        const custo = p && p.PRECO_CUSTO > 0 ? p.PRECO_CUSTO : null;
+        const preco_tabela = p?.PRECO2 ?? 0;
+        const sobra = custo != null && preco_tabela > 0 ? custoParaBolsa(custo, preco_tabela, piso, PCT_VENDEDOR_PADRAO).sobra : null;
+        const estoque_disponivel = p?.ESTOQUE_DISPONIVEL ?? 0;
+        return {
+          ...i,
+          descricao: p?.PRO_DESCRICAO ?? i.descricao,
+          na_empresa_3: !!p,
+          custo,
+          preco_tabela,
+          estoque_disponivel,
+          // o lote coberto é o que ainda está na prateleira: nunca mais do que a nota trouxe
+          lote: Math.max(0, Math.min(i.quantidade, estoque_disponivel)),
+          sobra,
+          vigente: vigentes.get(i.pro_codigo) ?? null,
+        };
+      }),
+    };
+  }
+
+  /** Registra o lote de cada item com o custo/tabela/piso de HOJE; lote aberto do mesmo produto encerra. */
+  async registrarOportunidades(dto: RegistrarOportunidadeDto) {
+    const codigos = dto.itens.map((i) => i.pro_codigo);
+    const [produtos, { piso }] = await Promise.all([this.erp.produtosPorCodigo(codigos), this.pisoVigente(mesComissional())]);
+    const porCodigo = new Map(produtos.map((p) => [p.PRO_CODIGO, p]));
+    const erros: string[] = [];
+    const linhas: Parameters<OrcamentoPrismaRepository['registrarOportunidades']>[0] = [];
+    for (const i of dto.itens) {
+      const p = porCodigo.get(i.pro_codigo);
+      const pct = Number(i.pct_vendedor);
+      if (!p) { erros.push(`Produto ${i.pro_codigo} não existe na empresa 3.`); continue; }
+      if (!(pct >= 0 && pct <= 1)) { erros.push(`${p.PRO_DESCRICAO}: a parte do vendedor deve ficar entre 0 e 100%.`); continue; }
+      if (!(p.PRECO_CUSTO > 0) || !(p.PRECO2 > 0)) { erros.push(`${p.PRO_DESCRICAO}: sem custo ou sem preço na tabela 2 — não há sobra a repartir.`); continue; }
+      // lote = o que da nota ainda está em estoque hoje (a tela não edita isso)
+      const quantidade = Math.min(Number(i.quantidade), p.ESTOQUE_DISPONIVEL);
+      if (!(quantidade > 0)) { erros.push(`${p.PRO_DESCRICAO}: sem estoque hoje — não há lote a cobrir.`); continue; }
+      const c = custoParaBolsa(p.PRECO_CUSTO, p.PRECO2, piso, pct);
+      linhas.push({
+        pro_codigo: i.pro_codigo,
+        descricao: p.PRO_DESCRICAO ?? null,
+        nfe: dto.nfe ?? null,
+        nota_fiscal: dto.nota_fiscal ?? null,
+        for_codigo: dto.for_codigo ?? null,
+        for_nome: dto.for_nome ?? null,
+        quantidade,
+        custo_nota: i.custo_nota ?? null,
+        custo: p.PRECO_CUSTO,
+        preco_tabela: p.PRECO2,
+        piso,
+        pct_vendedor: pct,
+        custo_bolsa: c.custo_bolsa,
+        criado_por: dto.criado_por ?? null,
+      });
+    }
+    if (erros.length) throw new BadRequestException(erros);
+    if (!linhas.length) throw new BadRequestException('Nenhum item para registrar.');
+    const r = await this.db.registrarOportunidades(linhas);
+    this.apuracaoOportunidadeEm = 0;
+    return r;
+  }
+
+  /** Lotes registrados (vigentes primeiro) com vendidas, restantes, estoque atual e a repartição da sobra. */
+  async listarOportunidades() {
+    await this.apurarOportunidades();
+    const rows = await this.db.listarOportunidades();
+    const abertos = rows.filter((r) => !r.encerrado_em).map((r) => r.pro_codigo);
+    const produtos = abertos.length ? await this.erp.produtosPorCodigo(abertos).catch(() => [] as ProdutoErp[]) : [];
+    const estoque = new Map<number, number>(produtos.map((p) => [p.PRO_CODIGO, p.ESTOQUE_DISPONIVEL]));
+    return rows.map((r) => {
+      const c = custoParaBolsa(r.custo, r.preco_tabela, r.piso, r.pct_vendedor);
+      const e = estoque.get(r.pro_codigo) ?? null;
+      // o que resta do lote é o que ainda está na prateleira, nunca mais do que a nota menos o vendido
+      const restante = r.encerrado_em ? 0 : Math.max(0, Math.min(r.quantidade - r.vendida, e ?? Infinity));
+      return { ...r, sobra: c.sobra, vendedor: c.vendedor, reserva: c.reserva, restante, estoque_disponivel: e };
+    });
+  }
+
+  /** Muda a parte do vendedor do lote aberto (custo/tabela/piso do registro ficam), ou encerra. */
+  async alterarOportunidade(id: number, dto: AlterarOportunidadeDto) {
+    const atual = await this.db.oportunidade(id);
+    if (!atual) throw new NotFoundException('Registro não encontrado.');
+    if (atual.encerrado_em) throw new BadRequestException('Lote encerrado: para voltar a valer, registre a nota de novo.');
+    if (dto.encerrar) {
+      const d = new Date();
+      return this.db.alterarOportunidade(id, { encerrado_em: new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())) });
+    }
+    const pct = dto.pct_vendedor ?? atual.pct_vendedor;
+    if (!(pct >= 0 && pct <= 1)) throw new BadRequestException('A parte do vendedor deve ficar entre 0 e 100%.');
+    const c = custoParaBolsa(atual.custo, atual.preco_tabela, atual.piso, pct);
+    const r = await this.db.alterarOportunidade(id, { pct_vendedor: pct, custo_bolsa: c.custo_bolsa });
+    this.apuracaoOportunidadeEm = 0;
+    return r;
+  }
+
   /* ------------------------------------------------------------ produtos */
 
   /** Enriquecimento comum: régua, exceção, giro, último preço do cliente, equivalente. */
   private async enriquecer(produtos: ProdutoErp[], tabelaPreco: string | null, cli?: number): Promise<ProdutoOrcamento[]> {
     if (!produtos.length) return [];
     const codigos = produtos.map((p) => p.PRO_CODIGO);
-    const [regua, volume, excecoes, giro, ultimos, comGrupo, promos] = await Promise.all([
+    const [regua, volume, excecoes, giro, ultimos, comGrupo, promos, oportunidades] = await Promise.all([
       this.db.regua(),
       this.db.volume(),
       this.db.excecoes(codigos),
@@ -549,10 +802,14 @@ export class OrcamentoService {
         this.logger.warn(`Promoções indisponíveis: ${(e as Error).message}`);
         return new Map<number, PromocaoItem>();
       }),
+      this.db.oportunidadesVigentes(codigos).catch((e) => {
+        this.logger.warn(`Lotes de oportunidade indisponíveis (bolsa usa o custo real): ${(e as Error).message}`);
+        return new Map<number, { custo_bolsa: number }>();
+      }),
     ]);
     const ultimoPor = new Map(ultimos.map((u) => [u.pro_codigo, u]));
     return produtos.map((p) =>
-      this.montarProduto(p, tabelaPreco, regua, volume, excecoes.get(p.PRO_CODIGO) ?? null, giro.get(p.PRO_CODIGO) ?? null, ultimoPor.get(p.PRO_CODIGO) ?? null, comGrupo.has(p.PRO_CODIGO), promos.get(p.PRO_CODIGO) ?? null),
+      this.montarProduto(p, tabelaPreco, regua, volume, excecoes.get(p.PRO_CODIGO) ?? null, giro.get(p.PRO_CODIGO) ?? null, ultimoPor.get(p.PRO_CODIGO) ?? null, comGrupo.has(p.PRO_CODIGO), promos.get(p.PRO_CODIGO) ?? null, oportunidades.get(p.PRO_CODIGO) ?? null),
     );
   }
 
@@ -566,12 +823,16 @@ export class OrcamentoService {
     ultimo: { dt_emissao: string; unitario: number; quantidade: number } | null,
     temEquivalente: boolean,
     promo: PromocaoItem | null,
+    oportunidade: { custo_bolsa: number } | null,
   ): ProdutoOrcamento {
-    const tabela = precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
+    // Serviço (subtipo 09) não traz preço de tabela: o vendedor informa o valor no orçamento.
+    const tabela = ehServico(p.SUBTIPO) ? { coluna: colunaTabela(tabelaPreco), preco: 0, fallback: false } : precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
     // Item em promoção vigente na tabela do cliente: o preço É o promocional e
-    // não há desconto por cima dele — o mínimo é o próprio preço.
-    const aplica = promo != null && promo.valor != null;
-    const preco = aplica ? { coluna: 'PROMOCAO', preco: promo!.valor as number, fallback: false } : tabela;
+    // não há desconto por cima dele — o mínimo é o próprio preço. Cliente fora do
+    // atacado é varejo: sem preço na tabela dele, a promoção do balcão VALE.
+    const precoPromo = promo == null ? null : promo.valor ?? (!ehTabelaAtacado(tabelaPreco) ? promo.valor_balcao : null);
+    const aplica = precoPromo != null;
+    const preco = aplica ? { coluna: 'PROMOCAO', preco: precoPromo as number, fallback: false } : tabela;
     const custo = p.PRECO_CUSTO > 0 ? p.PRECO_CUSTO : null;
     // Avaliação da régua sobre a tabela NORMAL do cliente: é a que vale sem
     // promoção e a que volta quando o vendedor escolhe vender fora dela.
@@ -592,9 +853,9 @@ export class OrcamentoService {
         ...avaliacaoNormal,
         desc_max_pct: 0,
         desc_max_efetivo_pct: 0,
-        preco_minimo: promo.valor as number,
+        preco_minimo: precoPromo as number,
         fracao_volume: 0,
-        escala_volume: avaliacao.escala_volume.map((d) => ({ ...d, desc_max_pct: 0, desc_max_efetivo_pct: 0, preco_minimo: promo.valor as number })),
+        escala_volume: avaliacao.escala_volume.map((d) => ({ ...d, desc_max_pct: 0, desc_max_efetivo_pct: 0, preco_minimo: precoPromo as number })),
         motivo: `Promoção "${promo.descricao}" até ${fim}: preço fechado, sem desconto.`,
       };
     }
@@ -613,12 +874,14 @@ export class OrcamentoService {
       subgrupo: p.SUBGRUPO,
       subgrp_codigo: p.SUBGRP_CODIGO,
       inativo: p.INATIVO === 'S',
+      servico: ehServico(p.SUBTIPO),
       comercializavel: p.COMERCIALIZAVEL !== 'N',
       estoque_disponivel: p.ESTOQUE_DISPONIVEL,
       estoque_reservado: p.ESTOQUE_RESERVADO,
       estoque_fora: p.ESTOQUE_FORA_ESTABELECIMENTO,
       estoque_terceiros: p.ESTOQUE_EM_TERCEIROS,
       custo,
+      custo_bolsa: oportunidade && custo != null ? oportunidade.custo_bolsa : null,
       preco_tabela: preco.preco,
       preco_original: tabela.preco,
       tabela_coluna: preco.coluna,
@@ -630,7 +893,7 @@ export class OrcamentoService {
       principal: false,
       avaliacao,
       excecao_motivo: excecao?.motivo ?? null,
-      giro: giro ? { curva_abc: giro.curva_abc, categoria_saldo_atual: giro.categoria_saldo_atual, tempo_medio_saldo_atual: giro.tempo_medio_saldo_atual, tendencia_label: giro.tendencia_label, group_id: giro.group_id } : null,
+      giro: giro ? { curva_abc: giro.curva_abc, categoria_saldo_atual: giro.categoria_saldo_atual, tempo_medio_saldo_atual: giro.tempo_medio_saldo_atual, tendencia_label: giro.tendencia_label, group_id: giro.group_id, grupo_chave: giro.grupo_chave, demanda_media_dia: giro.demanda_media_dia, estoque_min_sugerido: giro.estoque_min_sugerido } : null,
       ultimo_preco_cliente: ultimo ? { dt_emissao: ultimo.dt_emissao, unitario: ultimo.unitario, quantidade: ultimo.quantidade } : null,
       tem_equivalente: temEquivalente,
       promocao: aplica && promo ? { codigo: promo.prom_codigo, descricao: promo.descricao, data_final: promo.data_final, somente_avista: promo.somente_avista } : null,
@@ -670,6 +933,11 @@ export class OrcamentoService {
     const extrasOk = extrasErp.filter((p) => (o.inativos || p.INATIVO !== 'S') && (!o.comEstoque || p.ESTOQUE_DISPONIVEL > 0) && (!o.comercializavel || p.COMERCIALIZAVEL !== 'N'));
     const todos = await this.enriquecer([...achados, ...extrasOk], tabelaPreco, cli);
     for (const p of todos) p.grupo_chave = chavePor.get(p.pro_codigo) ?? `solo:${p.pro_codigo}`;
+    // selo "venda perdida hoje": o vendedor não registra a mesma perda duas vezes sem querer
+    if (cli) {
+      const perdidas = await this.db.vendasPerdidasHoje(cli, todos.map((p) => p.pro_codigo)).catch(() => new Set<number>());
+      for (const p of todos) p.venda_perdida_hoje = perdidas.has(p.pro_codigo);
+    }
 
     // Ordem: grupos na ordem em que apareceram na busca; dentro do grupo, o
     // principal (maior saldo; empate = menor código) e depois os similares por saldo.
@@ -928,15 +1196,18 @@ export class OrcamentoService {
    * na hora de salvar — o que a tela mostrou pode ter mudado. O preço negociado
    * é do vendedor; o resto é fotografia.
    */
-  private async montarItens(itens: ItemOrcamentoDto[], tabelaPreco: string | null, cli: number) {
+  private async montarItens(itens: ItemOrcamentoDto[], cliente: ClienteErp, presencial = false, meiaNota = false) {
     if (!itens.length) throw new BadRequestException('Orçamento sem itens.');
+    const tabelaPreco = cliente.TABELA_PRECO, cli = cliente.CLI_CODIGO;
     const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), tabelaPreco, cli);
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
     const erros: string[] = [];
     const linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[] = [];
     // Insumos da alçada de cada linha; a decisão fica para depois de conhecer a bolsa (aplicarAlcada).
     const alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> = [];
-    let subtotal = 0, total = 0, custoOrc = 0, semCusto = 0;
+    let subtotal = 0, total = 0, custoOrc = 0, semCusto = 0, servicos = 0;
+    // linhas em promoção (preço fechado da campanha): a bolsa absorve só metade da falta contra o piso
+    const promos: Array<{ preco: number; custo: number | null; qtd: number }> = [];
 
     itens.forEach((i, idx) => {
       const p = porCodigo.get(i.pro_codigo);
@@ -952,6 +1223,8 @@ export class OrcamentoService {
       // em centavos. Abaixo da tabela é desconto (a régua e a bolsa avaliam esse preço);
       // acima é acréscimo — desconto zero e a diferença gravada em `acrescimo`.
       const descPedido = Math.min(1, Math.max(0, Number(i.desc_pct ?? 0)));
+      // compra de oportunidade: a bolsa (e só ela) vê o custo com a reserva da empresa
+      const custoBolsa = p.custo_bolsa ?? p.custo;
       const unitFechado = Number(i.preco_unit ?? 0);
       let preco =
         tabela > 0
@@ -984,8 +1257,11 @@ export class OrcamentoService {
         desc_max_cheio: cheio?.desc_max_efetivo_pct ?? av.desc_max_efetivo_pct,
       });
       const linhaTotal = round2(preco * qtd);
-      if (p.custo != null && p.custo > 0) custoOrc += p.custo * qtd;
+      // serviço não conta para a bolsa (nem como neutro): a bolsa é de mercadoria
+      if (p.servico) servicos += linhaTotal; // fora da bolsa (nem como neutro): a bolsa é de mercadoria
+      else if (custoBolsa != null && custoBolsa > 0) custoOrc += custoBolsa * qtd;
       else semCusto += linhaTotal;
+      if (!fora && p.promocao) promos.push({ preco, custo: custoBolsa, qtd });
       // linha com acréscimo entra no subtotal pelo próprio preço: o acréscimo não abate o desconto das outras
       subtotal += round2(Math.max(tabela, preco) * qtd);
       total += linhaTotal;
@@ -1004,7 +1280,7 @@ export class OrcamentoService {
         total: linhaTotal,
         // R$ cobrados acima da tabela na linha inteira; só no banco (relatório), nenhuma tela mostra
         acrescimo: tabela > 0 && preco > tabela ? round2((preco - tabela) * qtd) : 0,
-        custo_ref: p.custo,
+        custo_ref: custoBolsa,
         classe: av.classe,
         mix: av.mix,
         faixa: av.faixa,
@@ -1020,11 +1296,22 @@ export class OrcamentoService {
         // parte sem saldo que o cliente aceitou receber depois (decidida ao concluir)
         qtd_encomenda: Math.min(qtd, Math.max(0, Number(i.qtd_encomenda ?? 0))),
         fora_promocao: fora,
+        icms_st: 0,
+        difal: 0,
+        difal_pct: null,
       });
     });
     if (erros.length) throw new BadRequestException(erros);
     subtotal = round2(subtotal); total = round2(total);
     const desconto = round2(subtotal - total);
+    // imposto da venda para fora do estado, por linha (serviço fica fora do ICMS)
+    const trib = await this.tributar(
+      linhas.map((l) => ({ pro_codigo: Number(l.pro_codigo), total: Number(l.total), servico: !!porCodigo.get(Number(l.pro_codigo))?.servico })),
+      cliente,
+      presencial,
+      meiaNota,
+    );
+    linhas.forEach((l, i) => { l.icms_st = trib.itens[i].icms_st; l.difal = trib.itens[i].difal; l.difal_pct = trib.itens[i].difal_pct; });
     return {
       linhas,
       subtotal,
@@ -1034,7 +1321,61 @@ export class OrcamentoService {
       alcadas,
       custo: round2(custoOrc),
       sem_custo: round2(semCusto),
+      servicos: round2(servicos),
+      promos,
       produtos,
+      tributacao: trib.resumo,
+      icms_st: trib.icms_st,
+      difal: trib.difal,
+      sem_aliquota: trib.sem_aliquota,
+    };
+  }
+
+  /**
+   * ICMS da venda para fora do estado, linha a linha, como a nota vai sair:
+   * ST (contribuinte) ou DIFAL (não contribuinte/isento, venda não presencial), os
+   * dois somados ao total ao cliente — o DIFAL vai como despesa acessória, por acordo
+   * com os clientes do atacado. MVA, alíquotas e percentual do DIFAL por produto
+   * vêm do Celta na hora; produto sem alíquota de DIFAL cadastrada fica com zero e
+   * `difal_pct` nulo — a lista `sem_aliquota` é o aviso para o fiscal cadastrar.
+   */
+  private async tributar(itens: Array<{ pro_codigo: number; total: number; servico: boolean }>, cliente: { UF: string | null; INDICADOR_IE_DESTINATARIO: number | null }, presencial: boolean, meiaNota = false) {
+    const resumo = this.resumoTributacao(cliente, presencial);
+    // meia nota: metade do valor sai em serviço, então o imposto é estimado sobre a outra metade
+    const baseDe = (i: { total: number }) => (meiaNota ? round2(i.total / 2) : i.total);
+    const zero = itens.map(() => ({ icms_st: 0, difal: 0, difal_pct: null as number | null }));
+    const base = { resumo, itens: zero, icms_st: 0, difal: 0, sem_aliquota: [] as number[] };
+    if (resumo.regime === 'ST') {
+      const st: ParametrosSt | null = await this.erp.situacaoTributariaSt(this.parametros().st_situacao);
+      if (!st) throw new BadRequestException(`Situação tributária ${this.parametros().st_situacao} do ICMS-ST não encontrada (ou inativa) no Celta.`);
+      const linhas = itens.map((i) => ({ icms_st: i.servico ? 0 : calcularSt(baseDe(i), st), difal: 0, difal_pct: null }));
+      return { ...base, itens: linhas, icms_st: round2(linhas.reduce((s, l) => s + l.icms_st, 0)) };
+    }
+    if (resumo.regime === 'DIFAL') {
+      const aliq = await this.erp.aliquotasDifal(itens.filter((i) => !i.servico).map((i) => i.pro_codigo), resumo.uf as string);
+      const semAliquota: number[] = [];
+      const linhas = itens.map((i) => {
+        if (i.servico) return { icms_st: 0, difal: 0, difal_pct: null };
+        const a = aliq.get(i.pro_codigo);
+        if (a == null) { semAliquota.push(i.pro_codigo); return { icms_st: 0, difal: 0, difal_pct: null }; }
+        return { icms_st: 0, difal: calcularDifal(baseDe(i), a), difal_pct: a };
+      });
+      return { ...base, itens: linhas, difal: round2(linhas.reduce((s, l) => s + l.difal, 0)), sem_aliquota: [...new Set(semAliquota)] };
+    }
+    return base;
+  }
+
+  /** Prévia para a tela: o mesmo cálculo de `montarItens`, sem régua, sem bolsa e sem gravar. */
+  async tributacaoPrevia(dto: TributacaoDto) {
+    const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
+    if (!cliente) throw new NotFoundException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
+    const t = await this.tributar(dto.itens.map((i) => ({ pro_codigo: i.pro_codigo, total: Number(i.total), servico: !!i.servico })), cliente, !!dto.presencial, !!dto.meia_nota);
+    return {
+      ...t.resumo,
+      icms_st: t.icms_st,
+      difal: t.difal,
+      sem_aliquota: t.sem_aliquota,
+      itens: dto.itens.map((i, k) => ({ pro_codigo: i.pro_codigo, ...t.itens[k] })),
     };
   }
 
@@ -1059,18 +1400,20 @@ export class OrcamentoService {
    * Fotografia da bolsa ao salvar: % de desconto do mês antes/depois (colunas
    * bolsa_pct_*) e o saldo depois deste orçamento — quem decide a alçada.
    */
-  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number }) {
+  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }> }) {
     try {
-      const b = await this.bolsa(rep, { receita: m.total, desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo });
+      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos });
       const brutoDepois = b.bolsa.bruto_mtd + m.subtotal;
       return {
         antes: b.bolsa.pct_desconto,
         depois: brutoDepois > 0 ? Math.round(((b.bolsa.desconto_mtd + m.desconto_total) / brutoDepois) * 10000) / 10000 : 0,
         saldo_apos: b.bolsa.saldo_apos as number | null,
+        // o orçamento sozinho fecha ≥ 0 contra custo × piso: se compensa, ninguém vai ao gestor
+        compensa: b.bolsa.orcamento >= -0.005,
       };
     } catch (e) {
       this.logger.warn(`Bolsa indisponível ao salvar (rep ${rep}): ${(e as Error).message}`);
-      return { antes: null, depois: null, saldo_apos: null };
+      return { antes: null, depois: null, saldo_apos: null, compensa: false };
     }
   }
 
@@ -1079,17 +1422,19 @@ export class OrcamentoService {
    * este orçamento) ≥ 0 vale o máximo inteiro da faixa; sem saldo vale a escala
    * por quantidade. Grava na linha o limite que valeu (desc_max_pct / preco_minimo)
    * e devolve se o orçamento precisa do gestor (alguma linha abaixo do limite em
-   * vigor ou do piso absoluto).
+   * vigor ou do piso absoluto). Orçamento que se compensa sozinho (`compensa`) não
+   * precisa: o que um item perde outro paga, e o resultado contra o piso é ≥ 0.
    */
   private aplicarAlcada(
     m: { linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[]; alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> },
     saldoApos: number | null,
+    compensa = false,
   ) {
     let precisa = false;
     m.linhas.forEach((l, i) => {
       const e = m.alcadas[i];
       if (!e) return;
-      const a = alcadaDoItem({ preco: e.preco, minimo_qtd: e.minimo_qtd, minimo_cheio: e.minimo_cheio, piso_bolsa: e.piso_bolsa, saldo_apos: saldoApos });
+      const a = alcadaDoItem({ preco: e.preco, minimo_qtd: e.minimo_qtd, minimo_cheio: e.minimo_cheio, piso_bolsa: e.piso_bolsa, saldo_apos: saldoApos, compensa });
       l.acima_alcada = a.precisa_aprovacao;
       l.preco_minimo = a.minimo_vigente;
       l.desc_max_pct = a.bolsa_cobre ? e.desc_max_cheio : e.desc_max_qtd;
@@ -1107,7 +1452,7 @@ export class OrcamentoService {
     }
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const pag = await this.pagamentoDe(dto);
     return this.db.criar(
@@ -1125,9 +1470,14 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos),
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
+        presencial: !!dto.presencial,
+        meia_nota: !!dto.meia_nota,
+        tributacao: m.tributacao.regime,
+        icms_st: m.icms_st,
+        difal: m.difal,
         usuario_id: dto.usuario_id ?? null,
         usuario_nome: dto.usuario_nome ?? null,
       },
@@ -1142,7 +1492,7 @@ export class OrcamentoService {
     }
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente.TABELA_PRECO, dto.cli_codigo);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const pag = await this.pagamentoDe(dto);
     // Editar os ITENS de um orçamento já enviado o devolve ao rascunho e derruba a aprovação:
@@ -1153,6 +1503,7 @@ export class OrcamentoService {
     const antes = (atual.itens ?? []).map(chave).sort().join(';');
     const depois = m.linhas.map(chave).sort().join(';');
     const mesmosItens = atual.cli_codigo === dto.cli_codigo && antes === depois;
+    if (atual.status === 'APROVACAO' && !mesmosItens) this.avisos.aprovacaoEncerrada(id);
     return this.db.atualizar(
       id,
       {
@@ -1170,9 +1521,14 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos),
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
+        presencial: !!dto.presencial,
+        meia_nota: !!dto.meia_nota,
+        tributacao: m.tributacao.regime,
+        icms_st: m.icms_st,
+        difal: m.difal,
         aprovado_por: mesmosItens ? atual.aprovado_por : null,
         aprovado_em: mesmosItens ? atual.aprovado_em : null,
         enviado_em: mesmosItens ? atual.enviado_em : null,
@@ -1193,12 +1549,15 @@ export class OrcamentoService {
     // Item sem saldo NÃO trava o envio: a proposta vai ao cliente com o aviso na linha
     // ("sem estoque" / "aguardando liberação"); a decisão de saldo é só no FECHOU (tela).
     const precisaAprovar = o.acima_alcada && !o.aprovado_em;
-    return this.db.atualizar(id, {
+    const r = await this.db.atualizar(id, {
       status: precisaAprovar ? 'APROVACAO' : 'ENVIADO',
       enviado_em: precisaAprovar ? null : new Date(),
       usuario_id: usuario?.usuario_id ?? o.usuario_id,
       usuario_nome: usuario?.usuario_nome ?? o.usuario_nome,
     });
+    // Aviso à gerência só na entrada em APROVAÇÃO (reenviar o que já está lá não repete).
+    if (precisaAprovar && o.status !== 'APROVACAO') void this.avisos.orcamentoAprovacao(o);
+    return r;
   }
 
   /** O cliente RECEBEU a proposta (mensagem + PDF pelo WhatsApp da Estação). */
@@ -1208,6 +1567,78 @@ export class OrcamentoService {
       throw new BadRequestException(`Orçamento ${o.status}: só proposta ENVIADA pode ser entregue ao cliente.`);
     }
     return this.db.atualizar(id, { entregue_canal: canal, entregue_em: new Date() });
+  }
+
+  /**
+   * PROPOSTA SEM SALVAR — mesma precificação, alçada e papel do orçamento, mas
+   * nada vai ao banco. Serve a quem monta a proposta fora da tela (assistente do
+   * WhatsApp) e a encaminha a um vendedor, que a registra e segue com a venda.
+   * Devolve o texto do WhatsApp, o PDF em base64 e o que exigiria aprovação.
+   */
+  async proposta(dto: SalvarOrcamentoDto) {
+    const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
+    if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
+    const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
+    const acimaAlcada = this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa);
+    const [pag, cli, repNome] = await Promise.all([
+      this.pagamentoDe(dto),
+      this.erp.clienteParaPdf(dto.cli_codigo).catch(() => null),
+      dto.rep_nome ? Promise.resolve(dto.rep_nome) : this.erp.nomeRepresentante(dto.rep_codigo),
+    ]);
+    const porCodigo = new Map(m.produtos.map((p) => [p.pro_codigo, p]));
+    const n = (v: unknown) => Number(v ?? 0);
+    const itens: PdfItem[] = m.linhas.map((l) => {
+      const p = porCodigo.get(Number(l.pro_codigo));
+      const promoFim = dmy(l.promocao_fim as Date | null);
+      const qtd = n(l.quantidade);
+      const enc = n(l.qtd_encomenda);
+      return {
+        pro_codigo: Number(l.pro_codigo),
+        descricao: String(l.descricao ?? ''),
+        marca: p?.marca ?? null,
+        unidade: String(l.unidade ?? 'UN'),
+        quantidade: qtd,
+        preco_tabela: n(l.preco_tabela),
+        desc_pct: n(l.desc_pct),
+        preco_unit: n(l.preco_unit),
+        total: n(l.total),
+        promocao_fim: promoFim,
+        preco_original: promoFim && p && p.preco_original > n(l.preco_tabela) ? p.preco_original : null,
+        qtd_encomenda: enc,
+        ...faltaSaldo(qtd - enc, p?.servico ? Number.POSITIVE_INFINITY : p?.estoque_disponivel, 0),
+      };
+    });
+    const dados: PdfOrcamento = {
+      numero: 'PRÉVIA',
+      emissao: dmy(hojeYmd()) ?? '',
+      validade: dmy(this.validade(m.linhas)),
+      vendedor: `${repNome} (${dto.rep_codigo})`,
+      cliente: this.clientePdf(cli, dto.cli_codigo, cliente.CLI_NOME, cliente.TABELA_PRECO),
+      itens,
+      subtotal: m.subtotal,
+      desconto: m.desconto_total,
+      desc_pct: m.desc_pct,
+      total: m.total,
+      icms_st: m.icms_st,
+      difal: m.difal,
+      uf_trib: m.icms_st > 0 || m.difal > 0 ? m.tributacao.uf : null,
+      observacao: dto.observacao ?? null,
+      pagamento: [pag.cp_descricao, pag.fp_descricao].filter(Boolean).join(' · ') || null,
+    };
+    const pdf = await gerarPdfOrcamento(dados);
+    return {
+      texto: mensagemWhatsapp(dados),
+      tributacao: { ...m.tributacao, icms_st: m.icms_st, difal: m.difal, sem_aliquota: m.sem_aliquota },
+      acima_alcada: acimaAlcada,
+      itens_acima_alcada: m.linhas.filter((l) => l.acima_alcada).map((l) => ({ pro_codigo: l.pro_codigo, descricao: l.descricao, preco_unit: l.preco_unit, preco_minimo: l.preco_minimo })),
+      bolsa: { pct_antes: bolsa.antes, pct_depois: bolsa.depois, saldo_apos: bolsa.saldo_apos },
+      subtotal: m.subtotal,
+      desconto: m.desconto_total,
+      total: m.total,
+      validade: dados.validade,
+      arquivo: { nome: `proposta-${dto.cli_codigo}-${hojeYmd()}.pdf`, mime: 'application/pdf', base64: pdf.toString('base64') },
+    };
   }
 
   /** Texto da mensagem + PDF em base64 — o que a Estação manda no chat ativo. */
@@ -1242,12 +1673,6 @@ export class OrcamentoService {
     ]);
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
     const { aguardando } = produtos.length ? await this.saldoComLiberacao(produtos.map((p) => p.pro_codigo), produtos) : { aguardando: () => 0 };
-    const dmy = (v: Date | string | null | undefined) => {
-      if (!v) return null;
-      const s = v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
-      const [a, m, d] = s.split('-');
-      return a && m && d ? `${d}/${m}/${a}` : null;
-    };
     const n = (v: unknown) => Number(v ?? 0);
     const linhas = itens.map((i: any) => {
       const p = porCodigo.get(Number(i.pro_codigo));
@@ -1265,36 +1690,44 @@ export class OrcamentoService {
         promocao_fim: promoFim,
         preco_original: promoFim && p && p.preco_original > n(i.preco_tabela) ? p.preco_original : null,
         qtd_encomenda: n(i.qtd_encomenda),
-        ...faltaSaldo(n(i.quantidade) - n(i.qtd_encomenda), p?.estoque_disponivel, aguardando(Number(i.pro_codigo))),
+        ...faltaSaldo(n(i.quantidade) - n(i.qtd_encomenda), p?.servico ? Number.POSITIVE_INFINITY : p?.estoque_disponivel, aguardando(Number(i.pro_codigo))),
       };
     });
     const numero = String(o.numero).padStart(6, '0');
-    const endereco = cli ? [cli.ENDERECO, cli.NUMERO].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(', ') : null;
     return {
       numero,
       emissao: dmy(o.created_at) ?? '',
       validade: dmy(o.validade),
       vendedor: o.rep_nome ? `${o.rep_nome}${o.rep_codigo != null ? ` (${o.rep_codigo})` : ''}` : o.rep_codigo != null ? String(o.rep_codigo) : '—',
-      cliente: {
-        codigo: o.cli_codigo,
-        nome: String(o.cli_nome ?? cli?.CLI_NOME ?? ''),
-        cpf_cnpj: cli?.CPF_CNPJ ?? null,
-        rg_ie: cli?.RG_IE ? String(cli.RG_IE).trim() || null : null,
-        fone: [cli?.FONE, cli?.CELULAR].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(' ') || null,
-        endereco: endereco || null,
-        bairro: cli?.BAIRRO ? String(cli.BAIRRO).trim() : null,
-        cep: cli?.CEP ? String(cli.CEP).trim() : null,
-        cidade: cli?.CIDADE ?? null,
-        uf: cli?.UF ?? null,
-        tabela_nome: nomeTabelaCliente(o.tabela_preco),
-      },
+      cliente: this.clientePdf(cli, o.cli_codigo, o.cli_nome, o.tabela_preco),
       itens: linhas,
       subtotal: n(o.subtotal),
       desconto: n(o.desconto_total),
       desc_pct: n(o.desc_pct),
       total: n(o.total),
+      icms_st: n(o.icms_st),
+      difal: n(o.difal),
+      uf_trib: n(o.icms_st) > 0 || n(o.difal) > 0 ? cli?.UF ?? null : null,
       observacao: o.observacao ?? null,
       pagamento: [o.cp_descricao, o.fp_descricao].filter(Boolean).join(' · ') || null,
+    };
+  }
+
+  /** Bloco do cliente no papel: cadastro do ERP (pode faltar) + nome/tabela do orçamento. */
+  private clientePdf(cli: Awaited<ReturnType<OrcamentoErpRepository['clienteParaPdf']>> | null, codigo: number, nome: unknown, tabela: string | null | undefined): PdfOrcamento['cliente'] {
+    const endereco = cli ? [cli.ENDERECO, cli.NUMERO].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(', ') : null;
+    return {
+      codigo,
+      nome: String(nome ?? cli?.CLI_NOME ?? ''),
+      cpf_cnpj: cli?.CPF_CNPJ ?? null,
+      rg_ie: cli?.RG_IE ? String(cli.RG_IE).trim() || null : null,
+      fone: [cli?.FONE, cli?.CELULAR].filter((x) => x && String(x).trim()).map((x) => String(x).trim()).join(' ') || null,
+      endereco: endereco || null,
+      bairro: cli?.BAIRRO ? String(cli.BAIRRO).trim() : null,
+      cep: cli?.CEP ? String(cli.CEP).trim() : null,
+      cidade: cli?.CIDADE ?? null,
+      uf: cli?.UF ?? null,
+      tabela_nome: nomeTabelaCliente(tabela),
     };
   }
 
@@ -1302,12 +1735,14 @@ export class OrcamentoService {
   async aprovar(id: string, usuario?: { usuario_id?: string; usuario_nome?: string }) {
     const o = await this.obter(id);
     if (o.status !== 'APROVACAO') throw new BadRequestException('Só orçamento em APROVAÇÃO pode ser aprovado.');
-    return this.db.atualizar(id, {
+    const r = await this.db.atualizar(id, {
       status: 'ENVIADO',
       aprovado_por: usuario?.usuario_nome ?? usuario?.usuario_id ?? 'supervisor',
       aprovado_em: new Date(),
       enviado_em: new Date(),
     });
+    this.avisos.aprovacaoEncerrada(id);
+    return r;
   }
 
   async desfecho(id: string, dto: DesfechoOrcamentoDto) {
@@ -1316,6 +1751,7 @@ export class OrcamentoService {
       throw new BadRequestException(`Orçamento já está ${o.status}.`);
     }
     if (dto.resultado === 'PERDIDO' && !dto.motivo) throw new BadRequestException('Informe o motivo da perda.');
+    if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
     return this.db.atualizar(id, {
       status: dto.resultado,
       desfecho_em: new Date(),
@@ -1335,9 +1771,11 @@ export class OrcamentoService {
     if (o.celta_orcamento) return { orcamento: o, celta_orcamento: o.celta_orcamento, repetido: true };
     if (o.status !== 'FECHADO') throw new BadRequestException('Só orçamento fechado vai ao Celta.');
     if (!o.rep_codigo) throw new BadRequestException('Orçamento sem vendedor não pode ir ao Celta.');
+    // piso da bolsa de hoje: a observação diz quanto o orçamento se compensou contra ele
+    const piso = await this.pisoVigente(mesComissional()).then((x) => x.piso).catch(() => this.parametros().bolsa_piso);
     let corpo;
     try {
-      corpo = corpoParaCelta(o);
+      corpo = corpoParaCelta({ ...o, piso_bolsa: piso }, this.parametros().celta_tributacao);
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     }
@@ -1369,7 +1807,7 @@ export class OrcamentoService {
     await this.db.gravarComparacao(id, bateu, o.rep_codigo, liberado);
     if (!bateu && !liberado) {
       this.logger.warn(`Orçamento ${o.numero} (Celta ${o.celta_orcamento}) divergiu no comparativo; vendedor ${o.rep_codigo ?? '-'} bloqueado.`);
-      this.avisos.orcamentoBloqueado(o);
+      this.avisos.orcamentoBloqueado(o, this.diferencas(lista, o.empresa));
     }
     return lista;
   }
@@ -1388,12 +1826,22 @@ export class OrcamentoService {
    *  - quantidade_sku, quantidade_unitaria, valor e ok todos true → OK;
    *  - qualquer um false → DIVERGENTE.
    */
-  private vereditoComparativo(lista: Array<{ empresa: number; condicional?: number | null; quantidade_sku: boolean; quantidade_unitaria: boolean; valor: boolean; ok: boolean }>, empresa: number): 'SEM_CONDICIONAL' | 'OK' | 'DIVERGENTE' {
-    const daEmpresa = lista.filter((c) => c.empresa === empresa);
-    const alvo = (daEmpresa.length ? daEmpresa : lista).filter((c) => c.condicional != null);
+  private vereditoComparativo(lista: ComparativoCelta[], empresa: number): 'SEM_CONDICIONAL' | 'OK' | 'DIVERGENTE' {
+    const alvo = this.comparadas(lista, empresa);
     if (!alvo.length) return 'SEM_CONDICIONAL';
     const bateu = alvo.every((c) => c.quantidade_sku === true && c.quantidade_unitaria === true && c.valor === true && c.ok === true);
     return bateu ? 'OK' : 'DIVERGENTE';
+  }
+
+  /** Linhas do comparativo que valem para o orçamento: a da empresa dele, com condicional. */
+  private comparadas(lista: ComparativoCelta[], empresa: number) {
+    const daEmpresa = lista.filter((c) => c.empresa === empresa);
+    return (daEmpresa.length ? daEmpresa : lista).filter((c) => c.condicional != null);
+  }
+
+  /** O que não bateu, em texto, para o aviso da gerência não ter de abrir o comparativo. */
+  private diferencas(lista: ComparativoCelta[], empresa: number): string {
+    return this.comparadas(lista, empresa).map((c) => diferencasComparativo(c as LinhaComparativo)).join('\n');
   }
 
   /**
@@ -1435,7 +1883,7 @@ export class OrcamentoService {
           if (mudou > 0) {
             r.bloqueios++;
             this.logger.warn(`Comparativo: orçamento ${o.numero} (Celta ${o.celta_orcamento}) divergiu; vendedor ${o.rep_codigo} bloqueado.`);
-            this.avisos.orcamentoBloqueado(o);
+            this.avisos.orcamentoBloqueado(o, this.diferencas(lista, o.empresa));
           }
         }
       } catch (e) {
@@ -1462,6 +1910,7 @@ export class OrcamentoService {
   async cancelar(id: string) {
     const o = await this.obter(id);
     if (['FECHADO', 'PERDIDO'].includes(o.status)) throw new BadRequestException(`Orçamento ${o.status} não pode ser cancelado.`);
+    if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
     return this.db.atualizar(id, { status: 'CANCELADO' });
   }
 
@@ -1477,7 +1926,7 @@ export class OrcamentoService {
       const p = porCodigo.get(i.pro_codigo);
       if (!p) return [`${i.pro_codigo}: produto não encontrado no ERP.`];
       const a: string[] = [];
-      if (p.estoque_disponivel < i.quantidade) a.push(`${i.pro_codigo} ${i.descricao}: saldo ${p.estoque_disponivel} < ${i.quantidade} orçados.`);
+      if (!p.servico && p.estoque_disponivel < i.quantidade) a.push(`${i.pro_codigo} ${i.descricao}: saldo ${p.estoque_disponivel} < ${i.quantidade} orçados.`);
       if (Math.abs(p.preco_tabela - i.preco_tabela) > 0.005) a.push(`${i.pro_codigo} ${i.descricao}: tabela mudou de ${i.preco_tabela.toFixed(2)} para ${p.preco_tabela.toFixed(2)}.`);
       return a;
     });
@@ -1563,11 +2012,22 @@ function faltaSaldo(aEntregar: number, disponivel: number | undefined, aguardand
   return { falta_saldo: falta, saldo_situacao: aguardando >= falta ? 'AGUARDANDO' : 'INDISPONIVEL' };
 }
 
+/** Data em dd/mm/aaaa a partir de Date ou 'aaaa-mm-dd…'; null quando vazia. */
+function dmy(v: Date | string | null | undefined): string | null {
+  if (!v) return null;
+  const s = v instanceof Date ? v.toISOString().slice(0, 10) : String(v).slice(0, 10);
+  const [a, m, d] = s.split('-');
+  return a && m && d ? `${d}/${m}/${a}` : null;
+}
+
+/** Subtipo fiscal '09' = serviço (o ERP grava com zero à esquerda; '9' também vale). */
+const ehServico = (subtipo: string | null | undefined) => String(subtipo ?? '').trim().replace(/^0+/, '') === '9';
+
 /** Mesmo vocabulário da tela: nada de "tabela 2" para o cliente. */
 function nomeTabelaCliente(t: string | null | undefined): string | null {
   const v = (t ?? '').trim();
-  if (v === '2') return 'Cliente atacado';
-  if (v === '5') return 'Cliente atacado especial';
+  if (v === '2') return 'Cliente atacado especial';
+  if (v === '5') return 'Cliente atacado';
   if (v === '1' || v === '') return v ? 'Cliente varejo' : null;
   return `Tabela ${v}`;
 }
