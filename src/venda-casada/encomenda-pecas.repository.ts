@@ -15,11 +15,24 @@ export const ANEXO_TIPO_CARRO = 'carro';
 export const ANEXO_TIPO_COMPROVANTE = 'comprovante';
 export type AnexoTipo = typeof ANEXO_TIPO_CARRO | typeof ANEXO_TIPO_COMPROVANTE;
 
+/** Colunas com a hora de entrada em cada etapa (ver ETAPA_COLUNA no service). */
+export type ColunaEtapa =
+  | 'aguardando_cotacao'
+  | 'em_cotacao'
+  | 'aguardando_sup_compras_1'
+  | 'aguardando_vendedor'
+  | 'aguardando_sup_compras_2'
+  | 'liberado_para_comprar'
+  | 'comprado'
+  | 'chegou'
+  | 'cancelado';
+
 /**
  * Campos escalares da encomenda (sem o id autoincrement). `created_at` vai
  * explícito, na hora de Cuiabá: o default now() do Prisma gravaria em UTC.
  */
-export type CreateEncomendaPecasInput = Omit<ven_encomenda_pecas, 'id'>;
+export type CreateEncomendaPecasInput = Omit<ven_encomenda_pecas, 'id' | ColunaEtapa> &
+  Partial<Pick<ven_encomenda_pecas, ColunaEtapa>>;
 
 /** Item encomendado; o id é uuid gerado pelo banco e o vínculo vem do create aninhado. */
 export type CreateItemEncomendadoInput = Omit<
@@ -133,7 +146,7 @@ export class EncomendaPecasRepository {
       motivoCancelamento: string | null;
       motivoDenaoCotar?: string | null;
       prazo?: Date | null;
-    },
+    } & Partial<Record<ColunaEtapa, Date>>,
   ): Promise<VendaCasadaComItens> {
     const encomenda = await this.prisma.ven_encomenda_pecas.update({
       where: { id },

@@ -2025,6 +2025,15 @@ model ven_encomenda_pecas {
   prazo                                  DateTime?                                @db.Date
   oficina                                Boolean?
   os                                     String?
+  aguardando_cotacao                     DateTime?                                @db.Timestamp(6)
+  em_cotacao                             DateTime?                                @db.Timestamp(6)
+  aguardando_sup_compras_1               DateTime?                                @db.Timestamp(6)
+  aguardando_vendedor                    DateTime?                                @db.Timestamp(6)
+  aguardando_sup_compras_2               DateTime?                                @db.Timestamp(6)
+  liberado_para_comprar                  DateTime?                                @db.Timestamp(6)
+  comprado                               DateTime?                                @db.Timestamp(6)
+  chegou                                 DateTime?                                @db.Timestamp(6)
+  cancelado                              DateTime?                                @db.Timestamp(6)
   ven_encomenda_pecas_anexos             ven_encomenda_pecas_anexos[]
   ven_encomenda_pecas_itens_cotados      ven_encomenda_pecas_itens_cotados[]
   ven_encomenda_pecas_itens_encomendados ven_encomenda_pecas_itens_encomendados[]

@@ -222,7 +222,10 @@ export class EncomendaPecasController {
       'gravado em `motivoCancelamento` (retornado no GET e GET /:id). Em qualquer outro status ' +
       'o `motivoCancelamento` é limpo. `motivoDenaoCotar` é opcional e grava na coluna de mesmo ' +
       'nome (se não vier, mantém o valor atual). `prazo` (YYYY-MM-DD) também é opcional e grava ' +
-      'na coluna `prazo` com a mesma regra; vazio ou null limpa.',
+      'na coluna `prazo` com a mesma regra; vazio ou null limpa. Sem `prazo`, o servidor aplica ' +
+      'hoje (Cuiabá) + 7 dias ao sair de "Em cotação" ou "Aguardando Sup. Compras 2" para ' +
+      '"Aguardando Sup. Compras 1"/"Aguardando Vendedor". Grava a hora de entrada na nova etapa ' +
+      'e devolve a encomenda como no GET /:id (com `etapas` e `prazo_vencido`).',
   })
   @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
   @ApiBody({ type: UpdateStatusDto })

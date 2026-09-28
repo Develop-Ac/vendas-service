@@ -3,6 +3,7 @@ import {
   ANEXO_TIPO_CARRO,
   ANEXO_TIPO_COMPROVANTE,
   AnexoTipo,
+  ColunaEtapa,
   CreateItemEncomendadoInput,
   CreateVendaCasadaItemInput,
   EncomendaPecasRepository,
@@ -48,6 +49,93 @@ const FUSO_CUIABA_MS = 4 * 3_600_000;
 function agoraCuiaba(): Date {
   return new Date(Date.now() - FUSO_CUIABA_MS);
 }
+
+/** Dias que o vendedor tem para concluir a escolha dos itens. */
+const PRAZO_PADRAO_DIAS = 7;
+
+/** Hoje em Cuiabá + PRAZO_PADRAO_DIAS, à meia-noite UTC (como o Prisma grava @db.Date). */
+function prazoPadrao(): Date {
+  const hoje = agoraCuiaba();
+  return new Date(
+    Date.UTC(hoje.getUTCFullYear(), hoje.getUTCMonth(), hoje.getUTCDate() + PRAZO_PADRAO_DIAS),
+  );
+}
+
+/**
+ * O prazo padrão começa a contar quando a encomenda vai para o vendedor (direto
+ * ou passando pelo Sup. Compras 1) saindo da cotação, ou quando o Sup. Compras 2
+ * devolve para ele. Liberar do Sup. Compras 1 para o vendedor mantém o prazo.
+ */
+const ORIGENS_QUE_DEFINEM_PRAZO = ['em cotação', 'aguardando sup. compras 2'];
+const DESTINOS_QUE_DEFINEM_PRAZO = ['aguardando sup. compras 1', 'aguardando vendedor'];
+
+/** Vencido o prazo nessas etapas, a encomenda conta como cancelada (ver intranet). */
+const STATUS_SUJEITOS_AO_PRAZO = [
+  'aguardando cotação',
+  'em aberto',
+  'em cotação',
+  'em andamento',
+  'aguardando sup. compras 1',
+  'aguardando vendedor',
+];
+
+/** Etapas em que o relógio para: não contam "até agora". */
+const ETAPAS_FINAIS: ColunaEtapa[] = ['chegou', 'cancelado'];
+
+export type TempoEtapa = {
+  coluna: ColunaEtapa;
+  /** Hora de entrada, como gravada (hora de Cuiabá). */
+  entrada: Date;
+  /** Minutos na etapa: até a próxima entrada ou, na etapa atual, até agora. */
+  duracao_min: number | null;
+  atual: boolean;
+};
+
+/**
+ * Etapas pelas quais a encomenda passou, em ordem de entrada. Se voltou para
+ * uma etapa, vale a entrada mais recente. "Agora" é o relógio do servidor.
+ */
+function tempoPorEtapa(venda: VendaCasadaComItens, agora: Date): TempoEtapa[] {
+  const passadas = Object.values(ETAPA_COLUNA)
+    .map((coluna) => ({ coluna, entrada: venda[coluna] }))
+    .filter((e): e is { coluna: ColunaEtapa; entrada: Date } => e.entrada instanceof Date)
+    .sort((a, b) => a.entrada.getTime() - b.entrada.getTime());
+
+  return passadas.map((e, i) => {
+    const proxima = passadas[i + 1];
+    const atual = !proxima && !ETAPAS_FINAIS.includes(e.coluna);
+    const fim = proxima ? proxima.entrada : atual ? agora : null;
+    return {
+      ...e,
+      atual,
+      duracao_min:
+        fim === null ? null : Math.max(0, Math.floor((fim.getTime() - e.entrada.getTime()) / 60_000)),
+    };
+  });
+}
+
+/** O prazo vale até o fim do dia (em Cuiabá): vence a partir do dia seguinte. */
+function prazoVencido(venda: VendaCasadaComItens, agora: Date): boolean {
+  if (!venda.prazo) return false;
+  if (!STATUS_SUJEITOS_AO_PRAZO.includes((venda.status ?? '').trim().toLowerCase())) return false;
+  return formatDateOnly(venda.prazo)! < agora.toISOString().slice(0, 10);
+}
+
+/**
+ * Status -> coluna que guarda quando a encomenda entrou nele. A comparação é sem
+ * caixa ("cancelado" e "Cancelado" coexistem). Status fora da lista não grava hora.
+ */
+const ETAPA_COLUNA: Record<string, ColunaEtapa> = {
+  'aguardando cotação': 'aguardando_cotacao',
+  'em cotação': 'em_cotacao',
+  'aguardando sup. compras 1': 'aguardando_sup_compras_1',
+  'aguardando vendedor': 'aguardando_vendedor',
+  'aguardando sup. compras 2': 'aguardando_sup_compras_2',
+  'liberado para comprar': 'liberado_para_comprar',
+  comprado: 'comprado',
+  chegou: 'chegou',
+  cancelado: 'cancelado',
+};
 
 const ANO_MINIMO = 1900;
 const ANO_MAXIMO = 2100;
@@ -142,6 +230,9 @@ export type AnexoComUrl = ven_encomenda_pecas_anexos & { url: string | null };
 export type VendaCasadaComUrls = Omit<VendaCasadaComItens, 'anexos' | 'prazo'> & {
   anexos: AnexoComUrl[];
   prazo: string | null;
+  /** Calculado no servidor para não depender do relógio do cliente. */
+  prazo_vencido: boolean;
+  etapas: TempoEtapa[];
 };
 
 @Injectable()
@@ -184,7 +275,15 @@ export class EncomendaPecasService {
       venda.imagem ? this.gerarUrlAnexo(venda.imagem, this.BUCKET) : null,
     ]);
 
-    return { ...venda, anexos, imagem, prazo: formatDateOnly(venda.prazo) };
+    const agora = agoraCuiaba();
+    return {
+      ...venda,
+      anexos,
+      imagem,
+      prazo: formatDateOnly(venda.prazo),
+      prazo_vencido: prazoVencido(venda, agora),
+      etapas: tempoPorEtapa(venda, agora),
+    };
   }
 
   /** Se o objeto não existir mais no bucket, devolve null em vez de quebrar o GET. */
@@ -217,9 +316,11 @@ export class EncomendaPecasService {
     const itensCotados = this.normalizarPecasCotadas(dto.pecas_cotadas);
     const oficina = await this.oficinaPelaOs(dto.os);
 
+    const agora = agoraCuiaba();
     const encomenda = await this.repository.create(
       {
-        created_at: agoraCuiaba(),
+        created_at: agora,
+        aguardando_cotacao: agora,
         nome_vendedor: dto.nome_vendedor ?? null,
         carro: dto.carro ?? null,
         ano,
@@ -423,7 +524,7 @@ export class EncomendaPecasService {
     return this.repository.addPecasCotadas(id, itens);
   }
 
-  async updateStatus(id: number, dto: UpdateStatusDto): Promise<VendaCasadaComItens> {
+  async updateStatus(id: number, dto: UpdateStatusDto): Promise<VendaCasadaComUrls> {
     const venda = await this.repository.findById(id);
     if (!venda) {
       throw new NotFoundException(`Venda casada com id ${id} não encontrada`);
@@ -447,15 +548,29 @@ export class EncomendaPecasService {
         ? undefined
         : toStringOrNull(String(dto.motivoDenaoCotar ?? '').trim());
 
-    // Mesma regra: ausente mantém; vazio/null limpa.
-    const prazo = dto.prazo === undefined ? undefined : toDateOnlyOrNull(dto.prazo, 'prazo');
+    // Hora de entrada na etapa; repetir o mesmo status não reinicia o relógio
+    const statusAnterior = (venda.status ?? '').trim().toLowerCase();
+    const coluna = ETAPA_COLUNA[status.toLowerCase()];
+    const mudouDeEtapa = statusAnterior !== status.toLowerCase();
 
-    return this.repository.updateStatus(id, {
+    // Prazo explícito continua aceito (ausente mantém; vazio/null limpa). Sem ele,
+    // o servidor aplica o prazo padrão nas transições que o reiniciam.
+    const prazo =
+      dto.prazo !== undefined
+        ? toDateOnlyOrNull(dto.prazo, 'prazo')
+        : ORIGENS_QUE_DEFINEM_PRAZO.includes(statusAnterior) &&
+            DESTINOS_QUE_DEFINEM_PRAZO.includes(status.toLowerCase())
+          ? prazoPadrao()
+          : undefined;
+
+    await this.repository.updateStatus(id, {
       status,
       motivoCancelamento: cancelado ? motivo : null,
       motivoDenaoCotar,
       prazo,
+      ...(coluna && mudouDeEtapa ? { [coluna]: agoraCuiaba() } : {}),
     });
+    return this.findById(id);
   }
 
   /** Grava a NF-e da encomenda; vazio ou null limpa a coluna. */
