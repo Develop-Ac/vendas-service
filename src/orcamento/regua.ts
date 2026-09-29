@@ -507,9 +507,9 @@ export interface EntradaAlcada {
   saldo_apos: number | null;
   /**
    * O ORÇAMENTO se compensa sozinho: a soma de (preço − custo × piso) das linhas com custo é ≥ 0,
-   * sem contar a bolsa do mês. Um item abaixo do limite pago por outro acima não traz prejuízo,
-   * então não vai ao gestor — mas só até o desconto máximo da faixa (mínimo cheio): passou dele,
-   * vai ao gestor mesmo compensando. Abaixo do custo continua não saindo (montarItens).
+   * sem contar a bolsa do mês. Aí um item abaixo do piso absoluto (custo × 1,25) pago por outro
+   * não vai ao gestor. O limite de desconto em vigor NÃO se compensa: a escala por quantidade (sem
+   * bolsa) e o máximo da faixa (com bolsa) valem igual. Abaixo do custo não sai (montarItens).
    */
   compensa?: boolean;
 }
@@ -519,10 +519,9 @@ export interface Alcada {
   bolsa_cobre: boolean;
   /** limite em vigor para o item (mínimo cheio com bolsa; por quantidade sem). */
   minimo_vigente: number;
-  /** abaixo do limite em vigor ou do piso absoluto → gestor — salvo quando o orçamento se compensa
-   *  e o item não passa do desconto máximo da faixa. */
+  /** abaixo do limite em vigor → gestor; abaixo do piso absoluto → gestor, salvo quando o orçamento se compensa. */
   precisa_aprovacao: boolean;
-  /** o orçamento inteiro fecha ≥ 0 contra custo × piso: nenhuma linha pede aprovação. */
+  /** o orçamento inteiro fecha ≥ 0 contra custo × piso: o piso absoluto não pede aprovação. */
   compensa: boolean;
   /** abaixo do piso absoluto (custo × 1,25). */
   abaixo_piso: boolean;
@@ -540,12 +539,11 @@ export function alcadaDoItem(e: EntradaAlcada): Alcada {
   const abaixoPiso = e.piso_bolsa > 0 && e.preco < e.piso_bolsa - 0.005;
   const abaixoQtd = e.minimo_qtd > 0 && e.preco < e.minimo_qtd - 0.005;
   const abaixoVigente = minimo > 0 && e.preco < minimo - 0.005;
-  const acimaDoMaximo = e.minimo_cheio > 0 && e.preco < e.minimo_cheio - 0.005;
   const compensa = !!e.compensa;
   return {
     bolsa_cobre: cobre,
     minimo_vigente: minimo,
-    precisa_aprovacao: acimaDoMaximo || (!compensa && (abaixoPiso || abaixoVigente)),
+    precisa_aprovacao: abaixoVigente || (!compensa && abaixoPiso),
     compensa,
     abaixo_piso: abaixoPiso,
     usa_bolsa: cobre && abaixoQtd,

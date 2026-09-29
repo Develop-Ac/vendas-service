@@ -179,19 +179,21 @@ describe('alcadaDoItem', () => {
     expect(alcadaDoItem({ ...base, preco: 930, saldo_apos: -10 }).precisa_aprovacao).toBe(false);
     expect(alcadaDoItem({ ...base, preco: 860, saldo_apos: null }).precisa_aprovacao).toBe(true);
   });
-  it('orçamento que se compensa sozinho não vai ao gestor até o desconto máximo da faixa', () => {
-    const semBolsa = alcadaDoItem({ ...base, preco: 860, saldo_apos: -10, compensa: true });
+  it('orçamento que se compensa sozinho dispensa só o piso absoluto', () => {
+    // piso absoluto acima do limite em vigor: dentro da escala, a compensação cobre o piso
+    const semBolsa = alcadaDoItem({ ...base, piso_bolsa: 950, preco: 930, saldo_apos: -10, compensa: true });
+    expect(semBolsa.abaixo_piso).toBe(true);
     expect(semBolsa.precisa_aprovacao).toBe(false);
     expect(semBolsa.compensa).toBe(true);
-    expect(semBolsa.minimo_vigente).toBe(925); // o limite informado continua o da escala; só a aprovação cai
-    // piso absoluto acima do mínimo cheio: dentro do máximo da faixa, a compensação cobre
-    const piso = alcadaDoItem({ ...base, piso_bolsa: 900, preco: 860, saldo_apos: 9999, compensa: true });
-    expect(piso.abaixo_piso).toBe(true);
-    expect(piso.precisa_aprovacao).toBe(false);
+    const comBolsa = alcadaDoItem({ ...base, piso_bolsa: 900, preco: 860, saldo_apos: 9999, compensa: true });
+    expect(comBolsa.precisa_aprovacao).toBe(false);
   });
-  it('compensar não libera desconto acima do máximo da faixa', () => {
-    expect(alcadaDoItem({ ...base, preco: 800, saldo_apos: 9999, compensa: true }).precisa_aprovacao).toBe(true);
+  it('compensar não libera desconto acima da escala por quantidade nem do máximo da faixa', () => {
+    // sem bolsa: 1 unidade vale 925 (escala); 860 está dentro do máximo da faixa, mas fora da escala
+    expect(alcadaDoItem({ ...base, preco: 860, saldo_apos: -10, compensa: true }).precisa_aprovacao).toBe(true);
     expect(alcadaDoItem({ ...base, preco: 849, saldo_apos: -10, compensa: true }).precisa_aprovacao).toBe(true);
+    // com bolsa: o máximo da faixa (850) continua valendo
+    expect(alcadaDoItem({ ...base, preco: 800, saldo_apos: 9999, compensa: true }).precisa_aprovacao).toBe(true);
   });
   it('promoção: a empresa absorve metade da falta contra o piso', () => {
     expect(absorcaoPromocao(120, 100, 1.5, 2)).toBe(30); // falta 30 por un × 2 un / 2
