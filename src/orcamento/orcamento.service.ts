@@ -199,7 +199,8 @@ export class OrcamentoService {
       st_situacao: (process.env.ORCAMENTO_ST_SITUACAO ?? '010').trim(),
       // Mandar regime e DIFAL/ST por item na importação ao Celta: só quando a api-vendas-service
       // que os aceita (plano v3, seção 11) estiver no ar — a atual recusa campo desconhecido.
-      celta_tributacao: ['1', 'true', 'sim'].includes((process.env.ORCAMENTO_CELTA_TRIBUTACAO ?? '').trim().toLowerCase()),
+      // painel sem dotenv entrega o valor cru: aceita aspas em volta e comentário depois
+      celta_tributacao: ['1', 'true', 'sim'].includes((process.env.ORCAMENTO_CELTA_TRIBUTACAO ?? '').replace(/#.*$/, '').replace(/["']/g, '').trim().toLowerCase()),
       /** USUARIOS.USU_CODIGO do Celta (INTRANET-ORÇ) que libera o bloqueio de orçamento dentro da alçada do vendedor */
       celta_usuario_alcada: num('ORCAMENTO_CELTA_USUARIO_ALCADA', 258),
     };
