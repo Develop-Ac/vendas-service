@@ -92,8 +92,54 @@ export type TempoEtapa = {
 };
 
 /**
+ * Próximas etapas que o fluxo realmente faz a partir de cada uma. Só com essas
+ * transições o tempo entre duas horas gravadas é o tempo real na etapa. Outra
+ * combinação é buraco no registro (ex.: encomenda antiga, com só
+ * `aguardando_cotacao` preenchido pelo SQL, que andou antes de as horas serem
+ * gravadas) e a duração fica desconhecida.
+ */
+const TRANSICOES: Record<ColunaEtapa, ColunaEtapa[]> = {
+  aguardando_cotacao: ['em_cotacao', 'cancelado'],
+  em_cotacao: ['aguardando_sup_compras_1', 'aguardando_vendedor', 'cancelado'],
+  aguardando_sup_compras_1: ['aguardando_vendedor', 'em_cotacao', 'cancelado'],
+  aguardando_vendedor: ['aguardando_sup_compras_2', 'cancelado'],
+  aguardando_sup_compras_2: ['liberado_para_comprar', 'aguardando_vendedor', 'cancelado'],
+  liberado_para_comprar: ['comprado', 'cancelado'],
+  comprado: ['chegou', 'cancelado'],
+  chegou: [],
+  cancelado: [],
+};
+
+/**
+ * Início do registro das horas por etapa (hora de Cuiabá, "YYYY-MM-DDTHH:mm").
+ * Entradas anteriores não foram gravadas ao vivo: nas encomendas antigas,
+ * `aguardando_cotacao` é cópia do `created_at` feita pelo SQL. O tempo de uma
+ * etapa só conta se a entrada nela for a partir daqui.
+ */
+const INICIO_REGISTRO_ETAPAS_PADRAO = '2026-09-28T12:00';
+
+function inicioRegistroEtapas(): Date {
+  // As horas gravadas são hora de Cuiabá nos campos UTC do Date: lê do mesmo jeito
+  const ler = (valor: string) => new Date(`${valor.trim()}Z`);
+  const doEnv = ler(process.env.ENCOMENDA_ETAPAS_DESDE || INICIO_REGISTRO_ETAPAS_PADRAO);
+  return Number.isNaN(doEnv.getTime()) ? ler(INICIO_REGISTRO_ETAPAS_PADRAO) : doEnv;
+}
+
+const INICIO_REGISTRO_ETAPAS = inicioRegistroEtapas();
+
+/** Status legados que equivalem a uma etapa atual (não gravam hora, só leitura). */
+const STATUS_LEGADO_COLUNA: Record<string, ColunaEtapa> = {
+  'em aberto': 'aguardando_cotacao',
+  'em andamento': 'em_cotacao',
+  'aguardando sup. compras': 'aguardando_sup_compras_2',
+};
+
+/**
  * Etapas pelas quais a encomenda passou, em ordem de entrada. Se voltou para
  * uma etapa, vale a entrada mais recente. "Agora" é o relógio do servidor.
+ * `duracao_min` fica null quando não dá para confiar no tempo (entrada antes de
+ * INICIO_REGISTRO_ETAPAS ou transição fora de TRANSICOES);
+ * a etapa só é `atual` se for a do status atual da encomenda.
  */
 function tempoPorEtapa(venda: VendaCasadaComItens, agora: Date): TempoEtapa[] {
   const passadas = Object.values(ETAPA_COLUNA)
@@ -101,10 +147,22 @@ function tempoPorEtapa(venda: VendaCasadaComItens, agora: Date): TempoEtapa[] {
     .filter((e): e is { coluna: ColunaEtapa; entrada: Date } => e.entrada instanceof Date)
     .sort((a, b) => a.entrada.getTime() - b.entrada.getTime());
 
+  const status = (venda.status ?? '').trim().toLowerCase();
+  const colunaAtual = ETAPA_COLUNA[status] ?? STATUS_LEGADO_COLUNA[status] ?? null;
+
   return passadas.map((e, i) => {
     const proxima = passadas[i + 1];
-    const atual = !proxima && !ETAPAS_FINAIS.includes(e.coluna);
-    const fim = proxima ? proxima.entrada : atual ? agora : null;
+    const registrada = e.entrada.getTime() >= INICIO_REGISTRO_ETAPAS.getTime();
+    const atual = !proxima && e.coluna === colunaAtual && !ETAPAS_FINAIS.includes(e.coluna);
+    const fim = !registrada
+      ? null
+      : proxima
+      ? TRANSICOES[e.coluna].includes(proxima.coluna)
+        ? proxima.entrada
+        : null
+      : atual
+        ? agora
+        : null;
     return {
       ...e,
       atual,
