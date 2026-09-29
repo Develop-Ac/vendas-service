@@ -146,7 +146,8 @@ export class OrcamentoBiRepository {
    * produto de serviço (subtipo 09 no ERP), que ficam fora da bolsa — o Stage_Produtos do BI
    * não traz o subtipo real, por isso a lista vem do ERP.
    */
-  async bolsaVendedor(rep: number, ano: number, mes: number, piso = 0, servicos: number[] = [], lotes: OportunidadeBolsa[] = []): Promise<BolsaVendedorRow> {
+  /** `rep` null = o canal ATACADO inteiro (todos os vendedores), para a bolsa do canal. */
+  async bolsaVendedor(rep: number | null, ano: number, mes: number, piso = 0, servicos: number[] = [], lotes: OportunidadeBolsa[] = []): Promise<BolsaVendedorRow> {
     const semServico = servicos.length ? `AND v.PRO_CODIGO NOT IN (${servicos.map((c) => Math.trunc(c)).join(',')})` : '';
     const ob = custoBolsaSql(lotes);
     const rows = await this.mssql.query<BolsaVendedorRow>(
@@ -160,11 +161,11 @@ export class OrcamentoBiRepository {
                                 THEN (v.custo_produto * @piso - v.liquido_produto) / 2 END), 0) AS absorvido
       FROM dbo.vw_analise_vendas v
       ${ob.join}
-      WHERE v.vendedor_venda = @rep
-        AND v.mes_comissional = @mes
+      WHERE v.mes_comissional = @mes
         AND v.ano_comissional = @ano
         AND v.local_venda = 'ATACADO'
         AND v.DT_CANCELAMENTO IS NULL
+        ${rep == null ? '' : 'AND v.vendedor_venda = @rep'}
         ${semServico}
       `,
       { rep, mes, ano, piso },

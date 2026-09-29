@@ -195,6 +195,21 @@ describe('alcadaDoItem', () => {
     // com bolsa: o máximo da faixa (850) continua valendo
     expect(alcadaDoItem({ ...base, preco: 800, saldo_apos: 9999, compensa: true }).precisa_aprovacao).toBe(true);
   });
+  it('vendedor sem bolsa: canal ≥ 0 com o orçamento mantém a escala; canal negativo, qualquer desconto é gestor', () => {
+    const semBolsa = { ...base, tabela: 1000, saldo_apos: -10 };
+    // canal positivo depois do desconto: escala por quantidade, como sempre
+    expect(alcadaDoItem({ ...semBolsa, preco: 930, canal_apos: 500 }).precisa_aprovacao).toBe(false);
+    // canal negativo: 930 (dentro da escala) já pede aprovação; o limite vira a tabela
+    const neg = alcadaDoItem({ ...semBolsa, preco: 930, canal_apos: -1 });
+    expect(neg.canal_negativo).toBe(true);
+    expect(neg.minimo_vigente).toBe(1000);
+    expect(neg.precisa_aprovacao).toBe(true);
+    // pelo preço de tabela não é desconto: preço da empresa, segue
+    expect(alcadaDoItem({ ...semBolsa, preco: 1000, canal_apos: -1 }).precisa_aprovacao).toBe(false);
+    // com bolsa do vendedor o canal não entra; canal desconhecido não trava
+    expect(alcadaDoItem({ ...base, tabela: 1000, preco: 860, saldo_apos: 120, canal_apos: -1 }).precisa_aprovacao).toBe(false);
+    expect(alcadaDoItem({ ...semBolsa, preco: 930, canal_apos: null }).precisa_aprovacao).toBe(false);
+  });
   it('promoção: a empresa absorve metade da falta contra o piso', () => {
     expect(absorcaoPromocao(120, 100, 1.5, 2)).toBe(30); // falta 30 por un × 2 un / 2
     expect(absorcaoPromocao(160, 100, 1.5, 2)).toBe(0); // acima do piso: nada a absorver

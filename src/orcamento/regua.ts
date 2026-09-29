@@ -492,8 +492,10 @@ export const PISO_ITEM_PADRAO = 1.25;
    Com BOLSA (saldo do mês, já com este orçamento, ≥ 0) o limite é o máximo
    inteiro da faixa — a escala por quantidade não vale; o desconto sai da bolsa
    e é decisão do vendedor. Sem bolsa (saldo negativo ou desconhecido) vale a
-   escala por quantidade (50% / 75% / 100% do máximo). Abaixo do limite em
-   vigor, ou abaixo do piso absoluto (custo × 1,25), só com o gestor.
+   escala por quantidade (50% / 75% / 100% do máximo) — desde que a bolsa do
+   CANAL atacado continue ≥ 0 com este orçamento; com o canal negativo, o vendedor
+   sem bolsa não dá desconto nenhum sem o gestor. Abaixo do limite em vigor, ou
+   abaixo do piso absoluto (custo × 1,25), só com o gestor.
    --------------------------------------------------------------------------- */
 export interface EntradaAlcada {
   preco: number;
@@ -512,12 +514,22 @@ export interface EntradaAlcada {
    * bolsa) e o máximo da faixa (com bolsa) valem igual. Abaixo do custo não sai (montarItens).
    */
   compensa?: boolean;
+  /** preço de tabela da linha: com o canal negativo, é o limite (qualquer desconto vai ao gestor). */
+  tabela?: number;
+  /**
+   * Saldo da bolsa do CANAL atacado (todos os vendedores) depois deste orçamento; null =
+   * indisponível. Vendedor sem bolsa só usa a escala por quantidade se o canal fica ≥ 0; com o
+   * canal negativo, ou ficando negativo com este orçamento, qualquer desconto pede aprovação.
+   */
+  canal_apos?: number | null;
 }
 
 export interface Alcada {
   /** o saldo cobre: vale o máximo inteiro da faixa. */
   bolsa_cobre: boolean;
-  /** limite em vigor para o item (mínimo cheio com bolsa; por quantidade sem). */
+  /** vendedor sem bolsa e canal negativo (com este orçamento): o limite é a tabela. */
+  canal_negativo: boolean;
+  /** limite em vigor para o item (mínimo cheio com bolsa; por quantidade sem; tabela com o canal negativo). */
   minimo_vigente: number;
   /** abaixo do limite em vigor → gestor; abaixo do piso absoluto → gestor, salvo quando o orçamento se compensa. */
   precisa_aprovacao: boolean;
@@ -535,13 +547,16 @@ export function bolsaCobre(saldoApos: number | null | undefined): boolean {
 
 export function alcadaDoItem(e: EntradaAlcada): Alcada {
   const cobre = bolsaCobre(e.saldo_apos);
-  const minimo = cobre ? e.minimo_cheio : e.minimo_qtd;
+  // canal desconhecido (BI fora) não trava: fica a escala por quantidade
+  const canalNegativo = !cobre && e.canal_apos != null && e.canal_apos < -0.005 && (e.tabela ?? 0) > 0;
+  const minimo = cobre ? e.minimo_cheio : canalNegativo ? (e.tabela as number) : e.minimo_qtd;
   const abaixoPiso = e.piso_bolsa > 0 && e.preco < e.piso_bolsa - 0.005;
   const abaixoQtd = e.minimo_qtd > 0 && e.preco < e.minimo_qtd - 0.005;
   const abaixoVigente = minimo > 0 && e.preco < minimo - 0.005;
   const compensa = !!e.compensa;
   return {
     bolsa_cobre: cobre,
+    canal_negativo: canalNegativo,
     minimo_vigente: minimo,
     precisa_aprovacao: abaixoVigente || (!compensa && abaixoPiso),
     compensa,

@@ -456,7 +456,7 @@ export class OrcamentoService {
     ]);
     // compra de oportunidade: lotes que cobrem vendas do mês (vigentes ou encerrados há pouco)
     const lotes = await this.oportunidadesParaBolsa(2);
-    const [v, clientes, celulas, cfgComissao] = await Promise.all([
+    const [v, clientes, celulas, cfgComissao, canalMtd] = await Promise.all([
       this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
@@ -470,7 +470,17 @@ export class OrcamentoService {
         this.logger.warn(`Parâmetros da comissão indisponíveis: ${(e as Error).message}`);
         return null;
       }),
+      this.canalMtd(periodo, piso, servicos, lotes).catch((e) => {
+        this.logger.warn(`Bolsa do canal indisponível: ${(e as Error).message}`);
+        return null;
+      }),
     ]);
+    // Bolsa do CANAL atacado (todos os vendedores) no mês. Com este orçamento conta só o desconto
+    // em R$ que ele dá: preço de tabela abaixo do piso é preço da empresa, não entra na regra.
+    const canalSaldo = canalMtd
+      ? calcularBolsa({ receita_mtd: canalMtd.venda_liquida, custo_mtd: canalMtd.custo, desconto_mtd: canalMtd.desconto, absorvido_mtd: canalMtd.absorvido, piso, linha }).saldo
+      : null;
+    const canal = canalSaldo == null ? null : { saldo: canalSaldo, saldo_apos: round2(canalSaldo - Math.max(0, orc?.desconto ?? 0)) };
     // promoção: metade do que o item tira da bolsa é da empresa — no mês vem do BI (flag PROMOCAO da venda); aqui, o orçamento em edição
     const absorvidoOrc = orc?.absorvido ?? (orc?.promos ? orc.promos.reduce((s, x) => s + absorcaoPromocao(x.preco, x.custo, piso, x.qtd), 0) : 0);
     // Comissão do mês como está e como fica com o orçamento (mesma regra do fechamento;
@@ -522,6 +532,7 @@ export class OrcamentoService {
         saldo_se_fechar_tudo: round2(bolsa.saldo + saldoAbertos),
       },
       por_cliente: porCliente,
+      canal,
       comissao,
       // De onde veio o piso: o degrau do canal (e quanto falta para o próximo) ou o valor fixo.
       volume: pisoDre
@@ -539,6 +550,17 @@ export class OrcamentoService {
           }
         : { modo: 'fixo' as const, piso, linha },
     };
+  }
+
+  private canalCache: { chave: string; em: number; v: Awaited<ReturnType<OrcamentoBiRepository['bolsaVendedor']>> } | null = null;
+
+  /** Venda do canal atacado no mês (mesma leitura da bolsa do vendedor, sem filtro de vendedor), com cache de 1 minuto. */
+  private async canalMtd(periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5]) {
+    const chave = `${periodo.ano}-${periodo.mes}-${piso}`;
+    if (this.canalCache?.chave === chave && Date.now() - this.canalCache.em < 60_000) return this.canalCache.v;
+    const v = await this.bi.bolsaVendedor(null, periodo.ano, periodo.mes, piso, servicos, lotes);
+    this.canalCache = { chave, em: Date.now(), v };
+    return v;
   }
 
   /**
@@ -1215,7 +1237,7 @@ export class OrcamentoService {
     const erros: string[] = [];
     const linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[] = [];
     // Insumos da alçada de cada linha; a decisão fica para depois de conhecer a bolsa (aplicarAlcada).
-    const alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> = [];
+    const alcadas: Array<{ preco: number; tabela: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> = [];
     let subtotal = 0, total = 0, custoOrc = 0, semCusto = 0, servicos = 0;
     // linhas em promoção (preço fechado da campanha): a bolsa absorve só metade da falta contra o piso
     const promos: Array<{ preco: number; custo: number | null; qtd: number }> = [];
@@ -1261,6 +1283,7 @@ export class OrcamentoService {
       const descMaxQtd = degrau?.desc_max_efetivo_pct ?? av.desc_max_efetivo_pct;
       alcadas.push({
         preco,
+        tabela,
         minimo_qtd: minimo,
         minimo_cheio: cheio?.preco_minimo ?? av.preco_minimo,
         piso_bolsa: av.preco_piso_bolsa ?? 0,
@@ -1419,12 +1442,14 @@ export class OrcamentoService {
         antes: b.bolsa.pct_desconto,
         depois: brutoDepois > 0 ? Math.round(((b.bolsa.desconto_mtd + m.desconto_total) / brutoDepois) * 10000) / 10000 : 0,
         saldo_apos: b.bolsa.saldo_apos as number | null,
-        // o orçamento sozinho fecha ≥ 0 contra custo × piso: se compensa, ninguém vai ao gestor
+        // o orçamento sozinho fecha ≥ 0 contra custo × piso: se compensa, o piso absoluto não vai ao gestor
         compensa: b.bolsa.orcamento >= -0.005,
+        // bolsa do canal atacado com este orçamento: vendedor sem bolsa só dá desconto com o canal ≥ 0
+        canal_apos: (b.canal?.saldo_apos ?? null) as number | null,
       };
     } catch (e) {
       this.logger.warn(`Bolsa indisponível ao salvar (rep ${rep}): ${(e as Error).message}`);
-      return { antes: null, depois: null, saldo_apos: null, compensa: false };
+      return { antes: null, depois: null, saldo_apos: null, compensa: false, canal_apos: null };
     }
   }
 
@@ -1437,18 +1462,19 @@ export class OrcamentoService {
    * precisa: o que um item perde outro paga, e o resultado contra o piso é ≥ 0.
    */
   private aplicarAlcada(
-    m: { linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[]; alcadas: Array<{ preco: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> },
+    m: { linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[]; alcadas: Array<{ preco: number; tabela: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> },
     saldoApos: number | null,
     compensa = false,
+    canalApos: number | null = null,
   ) {
     let precisa = false;
     m.linhas.forEach((l, i) => {
       const e = m.alcadas[i];
       if (!e) return;
-      const a = alcadaDoItem({ preco: e.preco, minimo_qtd: e.minimo_qtd, minimo_cheio: e.minimo_cheio, piso_bolsa: e.piso_bolsa, saldo_apos: saldoApos, compensa });
+      const a = alcadaDoItem({ preco: e.preco, tabela: e.tabela, minimo_qtd: e.minimo_qtd, minimo_cheio: e.minimo_cheio, piso_bolsa: e.piso_bolsa, saldo_apos: saldoApos, compensa, canal_apos: canalApos });
       l.acima_alcada = a.precisa_aprovacao;
       l.preco_minimo = a.minimo_vigente;
-      l.desc_max_pct = a.bolsa_cobre ? e.desc_max_cheio : e.desc_max_qtd;
+      l.desc_max_pct = a.bolsa_cobre ? e.desc_max_cheio : a.canal_negativo ? 0 : e.desc_max_qtd;
       precisa = precisa || a.precisa_aprovacao;
     });
     return precisa;
@@ -1481,7 +1507,7 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa),
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa, bolsa.canal_apos),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         presencial: !!dto.presencial,
@@ -1532,7 +1558,7 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa),
+        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa, bolsa.canal_apos),
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         presencial: !!dto.presencial,
@@ -1594,7 +1620,7 @@ export class OrcamentoService {
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
     const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
-    const acimaAlcada = this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa);
+    const acimaAlcada = this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa, bolsa.canal_apos);
     const [pag, cli, repNome] = await Promise.all([
       this.pagamentoDe(dto),
       this.erp.clienteParaPdf(dto.cli_codigo).catch(() => null),
