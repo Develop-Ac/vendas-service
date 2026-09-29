@@ -2142,6 +2142,7 @@ model ven_orcamento {
   bolsa_pct_depois   Decimal?             @db.Decimal(6, 4)
   aprovado_por       String?
   aprovado_em        DateTime?            @db.Timestamptz(6)
+  aprovado_codigo    Int?
   enviado_em         DateTime?            @db.Timestamptz(6)
   desfecho_em        DateTime?            @db.Timestamptz(6)
   desfecho_motivo    String?
@@ -2165,7 +2166,6 @@ model ven_orcamento {
   icms_st            Decimal              @default(0) @db.Decimal(15, 2)
   difal              Decimal              @default(0) @db.Decimal(15, 2)
   meia_nota          Boolean              @default(false)
-  aprovado_codigo    Int?
   itens              ven_orcamento_item[]
   ven_venda_perdida  ven_venda_perdida[]
 
