@@ -31,7 +31,7 @@ import { calcularDifal, calcularSt, descricaoIndicadorIe, regimeInterestadual, s
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
 import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, justificativaAlcada, soAscii, type LinhaComparativo } from './celta';
-import { assinarComprovante } from './comprovante';
+import { assinarComprovante, liberadorDoBloqueio } from './comprovante';
 
 /**
  * As duas permissões (sis_permissoes.tela, com editar ou criar) que o Celta exige de quem libera
@@ -201,6 +201,8 @@ export class OrcamentoService {
       celta_tributacao: ['1', 'true', 'sim'].includes((process.env.ORCAMENTO_CELTA_TRIBUTACAO ?? '').trim().toLowerCase()),
       /** chave privada (PEM Ed25519) que assina o comprovante de aprovação enviado ao Celta */
       aprovacao_chave_privada: (process.env.ORCAMENTO_APROVACAO_CHAVE_PRIVADA ?? '').trim() || null,
+      /** USUARIOS.USU_CODIGO do Celta (INTRANET-ORÇ) que libera o bloqueio de orçamento dentro da alçada do vendedor */
+      celta_usuario_alcada: num('ORCAMENTO_CELTA_USUARIO_ALCADA', 258),
     };
   }
 
@@ -1557,14 +1559,12 @@ export class OrcamentoService {
     if (o.cp_codigo == null) throw new BadRequestException('Informe a condição de pagamento antes de enviar.');
     // Item sem saldo NÃO trava o envio: a proposta vai ao cliente com o aviso na linha
     // ("sem estoque" / "aguardando liberação"); a decisão de saldo é só no FECHOU (tela).
-    // Acima da alçada da intranet OU acima do desconto máximo do Celta (prévia da API): os dois
-    // pedem a gerência antes de a proposta ir ao cliente — no segundo caso a importação exigiria o
-    // comprovante e travaria o vendedor no fechamento.
-    let precisaAprovar = o.acima_alcada && !o.aprovado_em;
-    if (!precisaAprovar && !o.aprovado_em && (await this.itensAcimaDoTetoCelta(o)).length > 0) precisaAprovar = true;
+    // Só a alçada da intranet (bolsa e régua) pede a gerência. Item acima do desconto máximo do
+    // Celta mas dentro da alçada não para aqui: na importação o bloqueio sai liberado pelo usuário
+    // INTRANET-ORÇ (comprovanteParaCelta).
+    const precisaAprovar = o.acima_alcada && !o.aprovado_em;
     const r = await this.db.atualizar(id, {
       status: precisaAprovar ? 'APROVACAO' : 'ENVIADO',
-      acima_alcada: precisaAprovar || o.acima_alcada,
       enviado_em: precisaAprovar ? null : new Date(),
       usuario_id: usuario?.usuario_id ?? o.usuario_id,
       usuario_nome: usuario?.usuario_nome ?? o.usuario_nome,
@@ -1745,12 +1745,11 @@ export class OrcamentoService {
     };
   }
 
-  /** Supervisor libera o que está abaixo do mínimo; o orçamento segue como ENVIADO. */
   /**
-   * Gestor libera o desconto. Vale para o orçamento em APROVAÇÃO e também para o FECHADO que o
-   * Celta recusou na importação por item acima do teto do ERP (a aprovação fica registrada e o
-   * vendedor importa de novo). Quem aprova precisa das duas permissões que o Celta exige; o código
-   * ERP do aprovador vai no bloqueio gravado lá (USU_LIBEROU).
+   * Gestor libera o que passa da alçada do vendedor. Vale para o orçamento em APROVAÇÃO e também
+   * para o FECHADO acima da alçada que a importação recusou por falta de aprovação (a aprovação
+   * fica registrada e o vendedor importa de novo). Quem aprova precisa das duas permissões que o
+   * Celta exige; o código ERP do aprovador vai no bloqueio gravado lá (USU_LIBEROU).
    */
   async aprovar(id: string, usuario?: { usuario_id?: string; usuario_nome?: string }) {
     const o = await this.obter(id);
@@ -1775,39 +1774,20 @@ export class OrcamentoService {
   }
 
   /**
-   * Itens do orçamento acima do desconto máximo do Celta, pela prévia da api-vendas-service
-   * (o mesmo cálculo que a importação vai exigir). Sem integração configurada, ou com a API fora
-   * do ar, devolve vazio: a importação refaz a conferência de qualquer jeito.
+   * Comprovante de aprovação para a importação: o conjunto exato de itens acima do teto do Celta
+   * (prévia da API), assinado com a chave privada da intranet, com quem liberou e quem pediu em
+   * código ERP. Sem item acima do teto não há comprovante. Quem libera no bloqueio:
+   * - orçamento aprovado pela gerência na intranet → o gestor que aprovou;
+   * - dentro da alçada do vendedor (sem aprovação) → o usuário INTRANET-ORÇ, exclusivo deste caso;
+   * - acima da alçada sem aprovação → a importação para aqui e a gerência aprova.
    */
-  private async itensAcimaDoTetoCelta(o: Awaited<ReturnType<OrcamentoService['obter']>>) {
-    if (!this.celta.configurado() || !o.itens?.length || !o.rep_codigo) return [];
-    try {
-      const corpo = corpoParaCelta(o, this.parametros().celta_tributacao);
-      return (await this.celta.excedentes(o.empresa, corpo)).itens;
-    } catch (e) {
-      this.logger.warn(`Prévia do teto do Celta indisponível para o orçamento ${o.numero}: ${(e as Error).message}`);
-      return [];
-    }
-  }
-
-  /**
-   * Comprovante de aprovação para a importação: o conjunto exato de itens acima do teto (prévia
-   * da API), assinado com a chave privada da intranet, com quem aprovou e quem pediu em código
-   * ERP. Sem item acima do teto não há comprovante. Sem aprovação registrada, a importação para
-   * aqui — e o orçamento fica marcado para a gerência aprovar.
-   */
-  private async comprovanteParaCelta(id: string, o: Awaited<ReturnType<OrcamentoService['obter']>>, corpo: ReturnType<typeof corpoParaCelta>) {
+  private async comprovanteParaCelta(o: Awaited<ReturnType<OrcamentoService['obter']>>, corpo: ReturnType<typeof corpoParaCelta>) {
     const previa = await this.celta.excedentes(o.empresa, corpo);
     if (!previa.itens.length) return undefined;
-    if (!o.aprovado_em) {
-      await this.db.atualizar(id, { acima_alcada: true });
-      const lista = previa.itens.map((i) => `${i.pro_codigo} ${i.efetivo}% (máx ${i.permitido}%)`).join('; ');
-      throw new BadRequestException(`Item acima do desconto máximo do Celta: ${lista}. Peça a aprovação da gerência e importe de novo.`);
-    }
-    const aprovador = o.aprovado_codigo ?? Number((await this.db.usuarioPorNome(o.aprovado_por))?.codigo);
-    if (!Number.isFinite(aprovador) || !(aprovador > 0)) {
-      throw new BadRequestException('A aprovação deste orçamento é anterior à liberação por comprovante: peça nova aprovação da gerência.');
-    }
+    const codigoGestor = o.aprovado_em ? (o.aprovado_codigo ?? Number((await this.db.usuarioPorNome(o.aprovado_por))?.codigo)) : undefined;
+    const liberador = liberadorDoBloqueio(!!o.aprovado_em, !!o.acima_alcada, codigoGestor, this.parametros().celta_usuario_alcada);
+    if ('erro' in liberador) throw new BadRequestException(liberador.erro);
+    const aprovador = liberador.codigo;
     const quemPediu = (await this.db.usuarioPorRef(o.usuario_id))?.codigo ?? (await this.db.usuarioDoRep(o.rep_codigo))?.codigo;
     const solicitante = Number(quemPediu);
     return assinarComprovante(
@@ -1858,7 +1838,7 @@ export class OrcamentoService {
     } catch (e) {
       throw new BadRequestException((e as Error).message);
     }
-    const comprovante = await this.comprovanteParaCelta(id, o, corpo);
+    const comprovante = await this.comprovanteParaCelta(o, corpo);
     if (comprovante) corpo = { ...corpo, comprovante };
     const r = await this.celta.criar(o.empresa, corpo, chaveIdempotencia(o));
     const salvo = await this.db.atualizar(id, {

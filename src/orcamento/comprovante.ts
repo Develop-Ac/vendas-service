@@ -55,6 +55,26 @@ export function chavePrivada(pem: string | undefined) {
   return createPrivateKey(s.replace(/\\n/g, '\n'));
 }
 
+/**
+ * Quem libera o bloqueio no Celta (USU_LIBEROU): o gestor que aprovou na intranet; sem aprovação e
+ * dentro da alçada do vendedor, o usuário exclusivo desse caso (INTRANET-ORÇ); acima da alçada sem
+ * aprovação, ninguém — a gerência precisa aprovar antes.
+ */
+export function liberadorDoBloqueio(
+  aprovado: boolean,
+  acimaAlcada: boolean,
+  codigoGestor: number | undefined,
+  usuarioAlcada: number,
+): { codigo: number } | { erro: string } {
+  if (aprovado) {
+    return codigoGestor != null && Number.isFinite(codigoGestor) && codigoGestor > 0
+      ? { codigo: codigoGestor }
+      : { erro: 'A aprovação deste orçamento é anterior à liberação por comprovante: peça nova aprovação da gerência.' };
+  }
+  if (acimaAlcada) return { erro: 'Orçamento acima da alçada do vendedor sem aprovação: peça a aprovação da gerência e importe de novo.' };
+  return { codigo: usuarioAlcada };
+}
+
 export function assinarComprovante(dados: Omit<Aprovacao, 'id' | 'iat' | 'exp'>, pem: string | undefined): string {
   const chave = chavePrivada(pem);
   if (!chave) throw new Error('ORCAMENTO_APROVACAO_CHAVE_PRIVADA não configurada.');

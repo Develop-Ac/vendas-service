@@ -1,5 +1,5 @@
 import { generateKeyPairSync, verify } from 'node:crypto';
-import { assinarComprovante, chavePrivada, VALIDADE_S } from './comprovante';
+import { assinarComprovante, chavePrivada, liberadorDoBloqueio, VALIDADE_S } from './comprovante';
 
 describe('comprovante de aprovação', () => {
   const par = generateKeyPairSync('ed25519');
@@ -32,5 +32,13 @@ describe('comprovante de aprovação', () => {
     expect(chavePrivada(`"${escapado}"`)).not.toBeNull();
     expect(chavePrivada(undefined)).toBeNull();
     expect(() => assinarComprovante(dados, '')).toThrow(/ORCAMENTO_APROVACAO_CHAVE_PRIVADA/);
+  });
+
+  it('libera com o gestor que aprovou; sem aprovação, com INTRANET-ORÇ só dentro da alçada', () => {
+    expect(liberadorDoBloqueio(true, true, 19, 258)).toEqual({ codigo: 19 });
+    expect(liberadorDoBloqueio(true, false, 19, 258)).toEqual({ codigo: 19 });
+    expect(liberadorDoBloqueio(false, false, undefined, 258)).toEqual({ codigo: 258 });
+    expect(liberadorDoBloqueio(false, true, undefined, 258)).toEqual({ erro: expect.stringMatching(/acima da alçada/) });
+    expect(liberadorDoBloqueio(true, true, NaN, 258)).toEqual({ erro: expect.stringMatching(/anterior/) });
   });
 });
