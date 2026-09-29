@@ -41,6 +41,24 @@ export class WhatsappController {
     return this.service.pendentes(Number.isFinite(n) && n > 0 ? n : undefined);
   }
 
+  // Lista de vínculo com sugestão: números sem cliente por volume, cada um com
+  // o cliente provável e a evidência (orçamento + produto citado, entrega, agenda).
+  @Get('contatos/sugestoes')
+  sugestoes(@Query('limite') limite?: string, @Query('dias') dias?: string) {
+    const l = Number(limite);
+    const d = Number(dias);
+    return this.service.sugestoesVinculo(
+      Number.isInteger(l) && l > 0 && l <= 200 ? l : 50,
+      Number.isInteger(d) && d > 0 && d <= 120 ? d : 30,
+    );
+  }
+
+  // "Não é cliente" (colega, transportadora, fornecedor): sai da lista de vínculo.
+  @Post('contatos/ignorar')
+  ignorar(@Body() dto: { telefone: string; motivo?: string; usuario_nome?: string }) {
+    return this.service.ignorar(dto ?? ({} as any));
+  }
+
   // 1 toque que aprende para sempre (corrige o histórico da chave junto).
   @Post('contatos/vincular')
   vincular(

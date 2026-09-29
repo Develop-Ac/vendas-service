@@ -1137,7 +1137,7 @@ export class OrcamentoService {
     for (const s of sugestoes) {
       let p = porCodigo.get(s.pro_codigo);
       if (!p || p.inativo || p.estoque_disponivel <= 0) {
-        const eq = await this.equivalentes(s.pro_codigo, tabelaPreco, cli).catch(() => []);
+        const eq = await this.equivalentes(s.pro_codigo, tabelaPreco, cli).catch(() => [] as typeof lista);
         p = eq.find((e) => e.estoque_disponivel > 0 && !naTela.has(e.pro_codigo));
       }
       if (!p || naTela.has(p.pro_codigo)) continue;

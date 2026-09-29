@@ -24,6 +24,16 @@ CREATE INDEX IF NOT EXISTS idx_ven_wa_msg_updated ON ven_wa_mensagem (updated_at
 
 -- Bucket no MinIO local (criar pelo console/mc): whatsapp-atacado
 
+-- Números que NÃO são cliente (colega, transportadora, fornecedor): saem da
+-- lista de vínculo para não voltarem todo dia. Vincular depois apaga a marca.
+CREATE TABLE IF NOT EXISTS ven_wa_contato_ignorado (
+  chave       TEXT PRIMARY KEY,                  -- mesma chave de ven_wa_contato (DDD + 8, ou dígitos do LID)
+  telefone    TEXT NOT NULL,
+  motivo      TEXT,
+  criado_por  TEXT,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ----------------------------------------------------------------------------
 -- Operação: devolver à fila os áudios que viraram ERRO (ou gastaram tentativas)
 -- por problema do transcritor, não do arquivo — ex.: token errado, runner fora.

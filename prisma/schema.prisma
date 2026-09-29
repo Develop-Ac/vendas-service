@@ -2383,6 +2383,14 @@ model ven_wa_contato {
   @@index([cli_codigo], map: "idx_ven_wa_contato_cli")
 }
 
+model ven_wa_contato_ignorado {
+  chave      String   @id
+  telefone   String
+  motivo     String?
+  criado_por String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+}
+
 model ven_wa_mensagem {
   id                     String   @id @default(cuid())
   message_id             String

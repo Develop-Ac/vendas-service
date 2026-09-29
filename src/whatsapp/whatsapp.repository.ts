@@ -67,7 +67,92 @@ export class WhatsappRepository {
       where: { chave },
       data: { cli_codigo: params.cli_codigo },
     });
+    // vincular desfaz um "não é cliente" marcado antes
+    await this.prisma.ven_wa_contato_ignorado.deleteMany({ where: { chave } }).catch(() => undefined);
     return { contato, mensagens_resolvidas: msgs.count };
+  }
+
+  // ------------------------------------------------- "não é cliente"
+  async ignorar(p: { chave: string; telefone: string; motivo?: string | null; criado_por?: string | null }) {
+    return this.prisma.ven_wa_contato_ignorado.upsert({
+      where: { chave: p.chave },
+      create: { chave: p.chave, telefone: p.telefone, motivo: p.motivo ?? null, criado_por: p.criado_por ?? null },
+      update: { motivo: p.motivo ?? null, criado_por: p.criado_por ?? null },
+    });
+  }
+
+  /** Chaves marcadas como não-cliente (vazio se a tabela ainda não existe). */
+  async chavesIgnoradas(): Promise<Set<string>> {
+    try {
+      const r = await this.prisma.ven_wa_contato_ignorado.findMany({ select: { chave: true } });
+      return new Set(r.map((x) => x.chave));
+    } catch {
+      return new Set();
+    }
+  }
+
+  // ------------------------------------------- insumo da sugestão de vínculo
+  /**
+   * Números sem cliente das sessões de vendedor, por volume de mensagens —
+   * uma linha por chave, com as sessões em que apareceu.
+   */
+  async semClientePorVolume() {
+    const g = await this.prisma.ven_wa_mensagem.groupBy({
+      by: ['chave', 'chat_telefone', 'sessao'],
+      where: { cli_codigo: null, sessao: { startsWith: 'rep-' } },
+      _count: { _all: true },
+      _max: { timestamp: true },
+    });
+    const porChave = new Map<string, { chave: string; telefone: string; sessoes: string[]; mensagens: number; ultima: Date | null }>();
+    for (const x of g) {
+      const a = porChave.get(x.chave) ?? { chave: x.chave, telefone: x.chat_telefone, sessoes: [], mensagens: 0, ultima: null };
+      a.sessoes.push(x.sessao);
+      a.mensagens += x._count._all;
+      const ts = x._max.timestamp;
+      if (ts && (!a.ultima || ts > a.ultima)) a.ultima = ts;
+      porChave.set(x.chave, a);
+    }
+    return [...porChave.values()].sort((a, b) => b.mensagens - a.mensagens);
+  }
+
+  /** Texto (corpo + transcrição) das conversas dessas chaves desde a data. */
+  async textoDasChaves(chaves: string[], desde: Date) {
+    if (!chaves.length) return [];
+    return this.prisma.ven_wa_mensagem.findMany({
+      where: { chave: { in: chaves }, timestamp: { gte: desde }, sessao: { startsWith: 'rep-' } },
+      select: { sessao: true, chave: true, timestamp: true, corpo: true, transcricao: true },
+    });
+  }
+
+  /**
+   * Orçamento da intranet entregue pelo WhatsApp → a mensagem ENVIADA mais
+   * próxima (±3 min) na sessão do vendedor. Só devolve as que caíram nas chaves
+   * pedidas (as sem cliente).
+   */
+  async entregasNasChaves(chaves: string[], desde: Date) {
+    if (!chaves.length) return [];
+    return this.prisma.$queryRaw<Array<{ chave: string; rep: number; cli: number; cli_nome: string | null; numero: number; entregue_em: Date }>>`
+      WITH o AS (
+        SELECT id, numero, rep_codigo, cli_codigo, cli_nome, entregue_em FROM ven_orcamento
+         WHERE entregue_canal = 'WHATSAPP' AND entregue_em >= ${desde} AND rep_codigo IS NOT NULL
+      ), m AS (
+        SELECT o.numero, o.rep_codigo, o.cli_codigo, o.cli_nome, o.entregue_em, w.chave,
+               row_number() OVER (PARTITION BY o.id ORDER BY abs(extract(epoch FROM w."timestamp" - o.entregue_em))) rk
+          FROM o JOIN ven_wa_mensagem w
+            ON w.sessao = 'rep-' || o.rep_codigo AND w.direcao = 'ENVIADA'
+           AND w."timestamp" BETWEEN o.entregue_em - interval '3 minutes' AND o.entregue_em + interval '3 minutes'
+      )
+      SELECT chave, rep_codigo AS rep, cli_codigo AS cli, cli_nome, numero, entregue_em
+        FROM m WHERE rk = 1 AND chave = ANY(${chaves}::text[])`;
+  }
+
+  /** Orçamentos da intranet dos vendedores na janela, com a descrição dos itens. */
+  async orcamentosIntranet(reps: number[], desde: Date) {
+    if (!reps.length) return [];
+    return this.prisma.ven_orcamento.findMany({
+      where: { created_at: { gte: desde }, rep_codigo: { in: reps } },
+      select: { numero: true, rep_codigo: true, cli_codigo: true, cli_nome: true, created_at: true, itens: { select: { descricao: true } } },
+    });
   }
 
   async contarContatos() {
@@ -133,15 +218,19 @@ export class WhatsappRepository {
     });
   }
 
-  /** Chaves sem cliente (fila de vínculo), com contagem e última atividade. */
+  /** Chaves sem cliente (fila de vínculo), com contagem e última atividade. Fora as marcadas "não é cliente". */
   async pendentesVinculo(limite = 100) {
-    const grupos = await this.prisma.ven_wa_mensagem.groupBy({
-      by: ['chave', 'chat_telefone', 'sessao'],
-      where: { cli_codigo: null },
-      _count: { _all: true },
-      _max: { timestamp: true },
-    });
+    const [grupos, ignoradas] = await Promise.all([
+      this.prisma.ven_wa_mensagem.groupBy({
+        by: ['chave', 'chat_telefone', 'sessao'],
+        where: { cli_codigo: null },
+        _count: { _all: true },
+        _max: { timestamp: true },
+      }),
+      this.chavesIgnoradas(),
+    ]);
     return grupos
+      .filter((g) => !ignoradas.has(g.chave))
       .map((g) => ({
         chave: g.chave,
         telefone: g.chat_telefone,
