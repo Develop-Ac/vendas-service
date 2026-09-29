@@ -172,6 +172,7 @@ export class OrcamentoService {
 
   /* ---------------------------------------------------------- parâmetros */
 
+  /** Sai inteiro na resposta de GET /orcamento/regua (tela): nada secreto aqui — chaves e senhas se leem do ambiente onde são usadas. */
   parametros() {
     const num = (k: string, d: number) => {
       const v = Number(process.env[k]);
@@ -199,8 +200,6 @@ export class OrcamentoService {
       // Mandar regime e DIFAL/ST por item na importação ao Celta: só quando a api-vendas-service
       // que os aceita (plano v3, seção 11) estiver no ar — a atual recusa campo desconhecido.
       celta_tributacao: ['1', 'true', 'sim'].includes((process.env.ORCAMENTO_CELTA_TRIBUTACAO ?? '').trim().toLowerCase()),
-      /** chave privada (PEM Ed25519) que assina o comprovante de aprovação enviado ao Celta */
-      aprovacao_chave_privada: (process.env.ORCAMENTO_APROVACAO_CHAVE_PRIVADA ?? '').trim() || null,
       /** USUARIOS.USU_CODIGO do Celta (INTRANET-ORÇ) que libera o bloqueio de orçamento dentro da alçada do vendedor */
       celta_usuario_alcada: num('ORCAMENTO_CELTA_USUARIO_ALCADA', 258),
     };
@@ -1826,7 +1825,8 @@ export class OrcamentoService {
         valor_descto: previa.valor_descto,
         itens: previa.itens,
       },
-      this.parametros().aprovacao_chave_privada ?? undefined,
+      // lida direto do ambiente e só aqui: parametros() sai na resposta de GET /orcamento/regua
+      process.env.ORCAMENTO_APROVACAO_CHAVE_PRIVADA,
     );
   }
 
