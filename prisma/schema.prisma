@@ -2143,6 +2143,8 @@ model ven_orcamento {
   aprovado_por       String?
   aprovado_em        DateTime?            @db.Timestamptz(6)
   aprovado_codigo    Int?
+  /// a aprovação veio do ajuste da bolsa (dentro da alçada): cai se o orçamento passar da alçada ou o ajuste sair
+  aprovado_por_ajuste Boolean             @default(false)
   enviado_em         DateTime?            @db.Timestamptz(6)
   desfecho_em        DateTime?            @db.Timestamptz(6)
   desfecho_motivo    String?
@@ -2168,6 +2170,7 @@ model ven_orcamento {
   meia_nota          Boolean              @default(false)
   itens              ven_orcamento_item[]
   ven_venda_perdida  ven_venda_perdida[]
+  ven_bolsa_ajuste   ven_bolsa_ajuste[]
 
   @@index([cli_codigo], map: "idx_ven_orcamento_cli")
   @@index([created_at], map: "idx_ven_orcamento_created")
@@ -2231,6 +2234,8 @@ model ven_orcamento_item {
   icms_st            Decimal       @default(0) @db.Decimal(15, 2)
   difal              Decimal       @default(0) @db.Decimal(15, 2)
   difal_pct          Decimal?      @db.Decimal(6, 4)
+  /// vendedor pede ajuste da bolsa nesta linha (produto avariado/usado/embalagem): enviar leva a APROVACAO
+  pedir_ajuste       Boolean       @default(false)
   ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([orcamento_id], map: "idx_ven_orcamento_item_orc")
@@ -2588,6 +2593,31 @@ model ven_bolsa_oportunidade {
   updated_at   DateTime  @default(now()) @db.Timestamptz(6)
 
   @@index([pro_codigo], map: "ven_bolsa_oportunidade_pro_idx")
+}
+
+/// Ajuste da bolsa negativa: por item do orçamento, quanto por unidade a empresa assume da linha
+/// que sairia da bolsa do vendedor. Só entra na bolsa quando a NF (empresa 3) casa com o orçamento.
+model ven_bolsa_ajuste {
+  id              String        @id @default(cuid())
+  orcamento_id    String
+  pro_codigo      Int
+  cli_codigo      Int
+  rep_codigo      Int?
+  quantidade      Decimal       @db.Decimal(15, 3)
+  assumido_unit   Decimal       @db.Decimal(15, 4)
+  negativo_linha  Decimal       @db.Decimal(15, 2)
+  motivo          String
+  justificativa   String
+  ajustado_id     String?
+  ajustado_por    String?
+  ajustado_codigo Int?
+  created_at      DateTime      @default(now()) @db.Timestamptz(6)
+  updated_at      DateTime      @default(now()) @db.Timestamptz(6)
+  ven_orcamento   ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([orcamento_id, pro_codigo], map: "uq_ven_bolsa_ajuste_orc_pro")
+  @@index([created_at], map: "idx_ven_bolsa_ajuste_created")
+  @@index([rep_codigo], map: "idx_ven_bolsa_ajuste_rep")
 }
 
 enum rec_estado_resolucao {

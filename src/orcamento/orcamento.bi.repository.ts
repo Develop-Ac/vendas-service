@@ -395,6 +395,54 @@ export class OrcamentoBiRepository {
   }
 
   /**
+   * Linhas de NF (venda e devolução) do atacado, empresa 3, dos pares cliente + produto desde
+   * `desde` (YYYYMMDD) — o que o ajuste da bolsa negativa casa com o orçamento. Valores sempre
+   * positivos (a devolução vem marcada); o custo é o da bolsa (lote de oportunidade na data).
+   * `emissao` é a data local (YYYY-MM-DD), sem hora.
+   */
+  async linhasNfAjuste(pares: { cli_codigo: number; pro_codigo: number }[], desde: string, lotes: OportunidadeBolsa[] = []) {
+    const values = [...new Set(pares.filter((p) => Number.isFinite(p.cli_codigo) && Number.isFinite(p.pro_codigo)).map((p) => `(${Math.trunc(p.cli_codigo)}, ${Math.trunc(p.pro_codigo)})`))].join(', ');
+    if (!values || !/^\d{8}$/.test(desde)) return [];
+    const ob = custoBolsaSql(lotes);
+    const rows = await this.mssql.query<any>(
+      `
+      SELECT v.EMPRESA AS empresa, v.SERIE AS serie, v.NFS AS nfs, v.PRO_CODIGO AS pro_codigo, v.CLI_CODIGO AS cli_codigo,
+             v.vendedor_venda AS rep_codigo, CONVERT(varchar(10), v.dt_emissao_convertida, 23) AS emissao,
+             CASE WHEN v.OPF_CODIGO = 2 THEN 1 ELSE 0 END AS devolucao,
+             ABS(v.QUANTIDADE) AS quantidade, ABS(v.liquido_produto) AS liquido, ABS(${ob.custo}) AS custo,
+             CASE WHEN v.PROMOCAO = 'S' THEN 1 ELSE 0 END AS promocao
+      FROM (VALUES ${values}) p (cli, pro)
+      JOIN dbo.vw_analise_vendas v ON v.CLI_CODIGO = p.cli AND v.PRO_CODIGO = p.pro
+      ${ob.join}
+      WHERE v.dt_emissao_convertida >= CAST(@desde AS date)
+        AND v.EMPRESA = 3
+        AND v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+        AND v.QUANTIDADE <> 0
+      `,
+      { desde },
+    );
+    return rows.map((r) => {
+      const quantidade = Number(r.quantidade ?? 0), liquido = Number(r.liquido ?? 0);
+      return {
+        empresa: Number(r.empresa),
+        serie: String(r.serie ?? '').trim(),
+        nfs: Number(r.nfs),
+        pro_codigo: Number(r.pro_codigo),
+        cli_codigo: Number(r.cli_codigo),
+        rep_codigo: Number(r.rep_codigo),
+        emissao: String(r.emissao),
+        devolucao: Number(r.devolucao) === 1,
+        quantidade,
+        preco_unit: quantidade > 0 ? liquido / quantidade : 0,
+        liquido,
+        custo: Number(r.custo ?? 0),
+        promocao: Number(r.promocao) === 1,
+      };
+    });
+  }
+
+  /**
    * Unidades vendidas de cada produto desde uma data (todos os canais e vendedores;
    * devolução desconta) — para saber quando o lote de oportunidade acabou.
    */

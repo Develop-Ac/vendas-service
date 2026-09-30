@@ -766,6 +766,24 @@ export class OrcamentoErpRepository {
     return { orcamento: Number(o.ORCAMENTO), cli_codigo: Number(o.CLI_CODIGO), rep_codigo: o.REP_CODIGO == null ? null : Number(o.REP_CODIGO), emissao: ymdDe(o.EMISSAO), total: num(o.TOTAL) };
   }
 
+  /**
+   * NF (chave interna NFS, única por empresa) gravada no orçamento do Celta — ORCAMENTOS.NFS,
+   * quase nunca preenchida. Orçamento sem NF não entra no mapa.
+   * ponytail: o condicional (ORCAMENTOS.CONDICIONAL → CONDICIONAIS.NFS) não é exposto pela
+   * erp-firebird-api; entra aqui quando houver catálogo de CONDICIONAIS.
+   */
+  async nfsDosOrcamentosCelta(orcamentos: number[]): Promise<Map<number, number>> {
+    const lista = [...new Set(orcamentos.filter((o) => Number.isFinite(o) && o > 0))];
+    if (!lista.length) return new Map();
+    const orcs = await this.erp.consultar<Record<string, any>>('orcamentos', {
+      empresa: EMPRESA,
+      campos: ['ORCAMENTO', 'NFS'],
+      filtros: [{ campo: 'ORCAMENTO', op: 'em', valor: lista }],
+      limite: lista.length + FOLGA,
+    });
+    return new Map(orcs.filter((o) => o.NFS != null && Number(o.NFS) > 0).map((o) => [Number(o.ORCAMENTO), Number(o.NFS)]));
+  }
+
   /* ------------------------------------------------------------ imagens */
 
   /** IDs das fotos do produto (ordem 0 = produto, 1 = veículo). */

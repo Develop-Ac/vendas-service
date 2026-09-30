@@ -25,19 +25,22 @@ import {
   RegraFaixa,
   round2,
 } from './regua';
-import { AlterarOportunidadeDto, DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, RegistrarOportunidadeDto, SalvarOrcamentoDto, TributacaoDto, VendaPerdidaPesquisaDto } from './dto/orcamento.dto';
+import { AjusteBolsaDto, AlterarOportunidadeDto, DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, RegistrarOportunidadeDto, SalvarOrcamentoDto, TributacaoDto, VendaPerdidaPesquisaDto } from './dto/orcamento.dto';
 import { custoParaBolsa, PCT_VENDEDOR_PADRAO } from './oportunidade';
 import { calcularDifal, calcularSt, descricaoIndicadorIe, regimeInterestadual, seloTributacao, type ParametrosSt, type RegimeInterestadual } from './tributacao';
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
 import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, justificativaAlcada, soAscii, type LinhaComparativo } from './celta';
 import { assinarComprovante, liberadorDoBloqueio } from './comprovante';
+import { casarAjustes, validarAjuste, type AjusteParaCasar, type LinhaNf } from './ajuste-bolsa';
 
 /**
  * As duas permissões (sis_permissoes.tela, com editar ou criar) que o Celta exige de quem libera
  * desconto acima do máximo: sem as duas o serviço recusa a aprovação e a tela não mostra o botão.
  */
 export const PERMISSOES_APROVACAO = ['/vendas/orcamento/liberar-bloqueio', '/vendas/orcamento/desconto-excedido'] as const;
+/** Permissão (sis_permissoes.tela, com editar ou criar) de quem ajusta a bolsa negativa de uma linha. */
+export const PERMISSAO_AJUSTE_BOLSA = '/vendas/orcamento/ajustar-bolsa';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
@@ -442,6 +445,8 @@ export class OrcamentoService {
       receita: number; desconto: number; custo: number; sem_custo: number; m1a?: number; m1b?: number; m1c?: number; m1d?: number; m23?: number;
       /** promoção: o que a empresa absorve neste orçamento — já somado pela tela, ou as linhas para somar aqui com o piso */
       absorvido?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>;
+      /** ajuste da bolsa negativa: R$ que a empresa assume neste orçamento (≥ 0) */
+      ajuste?: number;
     },
   ) {
     const p = this.parametros();
@@ -456,7 +461,7 @@ export class OrcamentoService {
     ]);
     // compra de oportunidade: lotes que cobrem vendas do mês (vigentes ou encerrados há pouco)
     const lotes = await this.oportunidadesParaBolsa(2);
-    const [v, clientes, celulas, cfgComissao, canalMtd] = await Promise.all([
+    const [v, clientes, celulas, cfgComissao, canalMtd, ajustes] = await Promise.all([
       this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
@@ -474,7 +479,11 @@ export class OrcamentoService {
         this.logger.warn(`Bolsa do canal indisponível: ${(e as Error).message}`);
         return null;
       }),
+      // ajuste da bolsa negativa: o efetivo das NFs casadas no mês comissional (NF até 30 dias da importação)
+      this.efetivoAjustes(rep, 2, piso).then((ls) => ls.filter((l) => mesmoMes(l.emissao, periodo))),
     ]);
+    const ajustePorCliente = new Map<number, number>();
+    for (const l of ajustes) ajustePorCliente.set(l.cli_codigo, (ajustePorCliente.get(l.cli_codigo) ?? 0) + l.efetivo);
     // Bolsa do CANAL atacado (todos os vendedores) no mês. Com este orçamento conta só o desconto
     // em R$ que ele dá: preço de tabela abaixo do piso é preço da empresa, não entra na regra.
     const canalSaldo = canalMtd
@@ -496,6 +505,8 @@ export class OrcamentoService {
       sem_custo_orc: orc?.sem_custo ?? 0,
       absorvido_mtd: v.absorvido,
       absorvido_orc: absorvidoOrc,
+      ajuste_mtd: ajustes.reduce((s, l) => s + l.efetivo, 0),
+      ajuste_orc: orc?.ajuste ?? 0,
       piso,
       linha,
       premio_pct: p.premio_pct,
@@ -516,7 +527,7 @@ export class OrcamentoService {
         cli_nome: c.cli_nome,
         venda_liquida: round2(c.venda_liquida),
         desconto: round2(c.desconto),
-        saldo: round2(c.venda_liquida - c.custo * piso),
+        saldo: round2(c.venda_liquida - c.custo * piso + (ajustePorCliente.get(c.cli_codigo) ?? 0)),
       }))
       .sort((a, b) => b.saldo - a.saldo);
     return {
@@ -604,15 +615,17 @@ export class OrcamentoService {
       this.oportunidadesParaBolsa(meses + 1).then((lotes) => this.bi.bolsaClienteMensal(rep, cli, chaves[chaves.length - 1], chaves[0], lotes)),
       this.pisoVigente(periodo),
     ]);
+    const ajustes = (await this.efetivoAjustes(rep, meses + 2, piso)).filter((l) => l.cli_codigo === cli);
     const linhas = chaves.map(({ ano, mes }) => {
       const r = rows.find((x) => x.ano === ano && x.mes === mes);
       const venda = r?.venda_liquida ?? 0, custo = r?.custo ?? 0;
+      const ajuste = ajustes.filter((l) => mesmoMes(l.emissao, { ano, mes })).reduce((s, l) => s + l.efetivo, 0);
       return {
         ano,
         mes,
         venda_liquida: round2(venda),
         desconto: round2(r?.desconto ?? 0),
-        saldo: round2(venda - custo * piso),
+        saldo: round2(venda - custo * piso + ajuste),
       };
     });
     return {
@@ -1330,6 +1343,7 @@ export class OrcamentoService {
         // parte sem saldo que o cliente aceitou receber depois (decidida ao concluir)
         qtd_encomenda: Math.min(qtd, Math.max(0, Number(i.qtd_encomenda ?? 0))),
         fora_promocao: fora,
+        pedir_ajuste: !!i.pedir_ajuste,
         icms_st: 0,
         difal: 0,
         difal_pct: null,
@@ -1540,6 +1554,9 @@ export class OrcamentoService {
     const antes = (atual.itens ?? []).map(chave).sort().join(';');
     const depois = m.linhas.map(chave).sort().join(';');
     const mesmosItens = atual.cli_codigo === dto.cli_codigo && antes === depois;
+    const acimaAlcada = this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa, bolsa.canal_apos);
+    // aprovação dada pelo ajuste da bolsa vale só dentro da alçada: passou dela, a gerência aprova
+    const mantemAprovacao = mesmosItens && !(atual.aprovado_por_ajuste && acimaAlcada);
     if (atual.status === 'APROVACAO' && !mesmosItens) this.avisos.aprovacaoEncerrada(id);
     return this.db.atualizar(
       id,
@@ -1558,7 +1575,7 @@ export class OrcamentoService {
         desconto_total: m.desconto_total,
         total: m.total,
         desc_pct: m.desc_pct,
-        acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa, bolsa.canal_apos),
+        acima_alcada: acimaAlcada,
         bolsa_pct_antes: bolsa.antes,
         bolsa_pct_depois: bolsa.depois,
         presencial: !!dto.presencial,
@@ -1566,11 +1583,14 @@ export class OrcamentoService {
         tributacao: m.tributacao.regime,
         icms_st: m.icms_st,
         difal: m.difal,
-        aprovado_por: mesmosItens ? atual.aprovado_por : null,
-        aprovado_em: mesmosItens ? atual.aprovado_em : null,
+        aprovado_por: mantemAprovacao ? atual.aprovado_por : null,
+        aprovado_em: mantemAprovacao ? atual.aprovado_em : null,
+        aprovado_por_ajuste: mantemAprovacao ? atual.aprovado_por_ajuste : false,
         enviado_em: mesmosItens ? atual.enviado_em : null,
       },
       m.linhas.map((l) => ({ ...l, orcamento_id: id })),
+      // os ajustes da bolsa caem junto com a aprovação: a linha ajustada mudou
+      !mesmosItens,
     );
   }
 
@@ -1588,7 +1608,8 @@ export class OrcamentoService {
     // Só a alçada da intranet (bolsa e régua) pede a gerência. Item acima do desconto máximo do
     // Celta mas dentro da alçada não para aqui: na importação o bloqueio sai liberado pelo usuário
     // INTRANET-ORÇ (comprovanteParaCelta).
-    const precisaAprovar = o.acima_alcada && !o.aprovado_em;
+    // Item com pedido de ajuste da bolsa ainda sem ajuste também espera por quem tem a permissão.
+    const precisaAprovar = (o.acima_alcada && !o.aprovado_em) || ajustesPendentes(o) > 0;
     const r = await this.db.atualizar(id, {
       status: precisaAprovar ? 'APROVACAO' : 'ENVIADO',
       enviado_em: precisaAprovar ? null : new Date(),
@@ -1794,9 +1815,197 @@ export class OrcamentoService {
       aprovado_por: usuario?.usuario_nome ?? u.nome,
       aprovado_em: new Date(),
       aprovado_codigo: Number.isFinite(codigo) ? codigo : null,
+      aprovado_por_ajuste: false,
     });
     if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
     return r;
+  }
+
+  /* ------------------------------------------------ ajuste da bolsa negativa */
+
+  /**
+   * Quem ajusta a bolsa: permissão PERMISSAO_AJUSTE_BOLSA (editar ou criar), nunca no próprio
+   * orçamento (quem o lançou ou o vendedor dele) e só antes do fechamento.
+   */
+  private async ajustadorDaBolsa(o: Awaited<ReturnType<OrcamentoService['obter']>>, usuarioId: string | undefined) {
+    const u = await this.db.usuarioPorRef(usuarioId);
+    if (!u) throw new ForbiddenException('Usuário não identificado: entre de novo na intranet e tente outra vez.');
+    if (!u.sis_permissoes.some((p) => p.tela === PERMISSAO_AJUSTE_BOLSA && (p.editar || p.criar))) {
+      throw new ForbiddenException(`Ajustar a bolsa exige a permissão "ajustar bolsa negativa" (${PERMISSAO_AJUSTE_BOLSA}).`);
+    }
+    const proprio = (!!o.usuario_id && (o.usuario_id === u.id || o.usuario_id === u.codigo)) || (u.vendas_rep_codigo != null && u.vendas_rep_codigo === o.rep_codigo);
+    if (proprio) throw new ForbiddenException('Não é permitido ajustar o próprio orçamento.');
+    if (!STATUS_EDITAVEL.has(o.status)) throw new BadRequestException(`Orçamento ${o.status}: a bolsa só é ajustada antes do fechamento.`);
+    return u;
+  }
+
+  /**
+   * Ajuste da bolsa negativa numa linha: `valor` é quanto da linha AINDA sai da bolsa (entre o
+   * negativo da linha, calculado aqui com o piso vigente, e 0). Dentro da alçada o ajuste conta
+   * como aprovação (quem ajustou libera o bloqueio no Celta); acima dela, não. Com todos os
+   * pedidos de ajuste atendidos, o orçamento em APROVAÇÃO que não depende da gerência vai a ENVIADO.
+   */
+  async ajustarBolsa(id: string, proCodigo: number, dto: AjusteBolsaDto) {
+    const o = await this.obter(id);
+    const u = await this.ajustadorDaBolsa(o, dto.usuario_id);
+    const item = (o.itens ?? []).find((i) => i.pro_codigo === proCodigo);
+    if (!item) throw new NotFoundException(`Produto ${proCodigo} não está no orçamento.`);
+    const [{ piso }, servicos] = await Promise.all([this.pisoVigente(mesComissional()), this.erp.codigosDeServico().catch(() => [] as number[])]);
+    const negativo = negativoDaLinha(item, piso);
+    const v = validarAjuste({
+      negativo_linha: negativo,
+      valor: dto.valor,
+      quantidade: item.quantidade,
+      motivo: dto.motivo,
+      justificativa: dto.justificativa,
+      proprio: false,
+      servico: servicos.includes(proCodigo),
+    });
+    if (!v.ok) throw new BadRequestException(v.erro);
+    const nome = dto.usuario_nome ?? u.nome;
+    const codigo = Number(u.codigo);
+    const aprova = !o.acima_alcada && !o.aprovado_em;
+    const libera = o.status === 'APROVACAO' && (!o.acima_alcada || !!o.aprovado_em) && ajustesPendentes(o, proCodigo) === 0;
+    await this.db.salvarAjuste(
+      {
+        orcamento_id: id,
+        pro_codigo: proCodigo,
+        cli_codigo: o.cli_codigo,
+        rep_codigo: o.rep_codigo,
+        quantidade: item.quantidade,
+        assumido_unit: v.assumido_unit,
+        negativo_linha: negativo,
+        motivo: dto.motivo,
+        justificativa: dto.justificativa.trim(),
+        ajustado_id: u.id,
+        ajustado_por: nome,
+        ajustado_codigo: Number.isFinite(codigo) ? codigo : null,
+      },
+      {
+        ...(aprova ? { aprovado_por: nome, aprovado_em: new Date(), aprovado_codigo: Number.isFinite(codigo) ? codigo : null, aprovado_por_ajuste: true } : {}),
+        ...(libera ? { status: 'ENVIADO', enviado_em: new Date() } : {}),
+        updated_at: new Date(),
+      },
+    );
+    if (libera) this.avisos.aprovacaoEncerrada(id);
+    return this.obter(id);
+  }
+
+  /**
+   * Desfaz o ajuste da linha (mesmas travas de quem ajusta). Sem ajuste restante, a aprovação que
+   * veio do ajuste cai; ENVIADO com pedido de ajuste de novo pendente volta a APROVAÇÃO.
+   */
+  async removerAjusteBolsa(id: string, proCodigo: number, usuarioId?: string) {
+    const o = await this.obter(id);
+    await this.ajustadorDaBolsa(o, usuarioId);
+    await this.db.apagarAjuste(id, proCodigo);
+    const restantes = (o.ajustes_bolsa ?? []).filter((a) => a.pro_codigo !== proCodigo);
+    const cab: Prisma.ven_orcamentoUncheckedUpdateInput = {};
+    if (!restantes.length && o.aprovado_por_ajuste) Object.assign(cab, { aprovado_por: null, aprovado_em: null, aprovado_codigo: null, aprovado_por_ajuste: false });
+    const volta = o.status === 'ENVIADO' && ajustesPendentes({ itens: o.itens, ajustes_bolsa: restantes }) > 0;
+    if (volta) Object.assign(cab, { status: 'APROVACAO', enviado_em: null });
+    if (!Object.keys(cab).length) return this.obter(id);
+    const r = await this.db.atualizar(id, cab);
+    if (volta) void this.avisos.orcamentoAprovacao(r);
+    return this.obter(id);
+  }
+
+  /**
+   * Casa os ajustes com as NFs do atacado (empresa 3): NF gravada no orçamento do Celta, senão a
+   * primeira NF do cliente + produto + vendedor na janela da importação (ajuste-bolsa.ts).
+   * ponytail: sem as NFs do condicional (a erp-firebird-api não expõe CONDICIONAIS.NFS).
+   */
+  private async casarAjustesComNf(ajustes: Awaited<ReturnType<OrcamentoPrismaRepository['ajustes']>>, piso: number) {
+    const importados = ajustes.filter((a) => a.celta_importado_em && a.celta_orcamento);
+    if (!importados.length) return casarAjustes(ajustes.map((a) => paraCasar(a, null)), [], { piso, hoje: new Date() });
+    const inicio = new Date(Math.min(...importados.map((a) => a.celta_importado_em!.getTime())));
+    inicio.setHours(0, 0, 0, 0);
+    const meses = Math.ceil((Date.now() - inicio.getTime()) / (30 * 86_400_000)) + 1;
+    const desde = `${inicio.getFullYear()}${String(inicio.getMonth() + 1).padStart(2, '0')}${String(inicio.getDate()).padStart(2, '0')}`;
+    const [nfOrc, linhas] = await Promise.all([
+      this.erp.nfsDosOrcamentosCelta(importados.map((a) => a.celta_orcamento!)).catch((e) => {
+        this.logger.warn(`NF dos orçamentos do Celta indisponível (ajuste casa pela janela): ${(e as Error).message}`);
+        return new Map<number, number>();
+      }),
+      this.oportunidadesParaBolsa(meses).then((lotes) => this.bi.linhasNfAjuste(importados, desde, lotes)),
+    ]);
+    const nfs: LinhaNf[] = linhas.map((l) => ({ ...l, emissao: new Date(`${l.emissao}T00:00:00`) }));
+    return casarAjustes(
+      ajustes.map((a) => {
+        const nf = a.celta_orcamento ? nfOrc.get(a.celta_orcamento) : undefined;
+        // a série vem da própria linha do BI (NFS é única por empresa)
+        return paraCasar(a, nf == null ? null : { empresa: 3, serie: nfs.find((l) => l.nfs === nf)?.serie ?? '', nfs: nf });
+      }),
+      nfs,
+      { piso, hoje: new Date() },
+    );
+  }
+
+  private ajusteCache = new Map<string, { em: number; v: Promise<Array<{ cli_codigo: number; emissao: Date; efetivo: number }>> }>();
+
+  /**
+   * Efetivo dos ajustes do vendedor por linha de NF (estorno da devolução negativo), dos
+   * orçamentos importados nos últimos `meses` — cache de 5 minutos por vendedor. Falha do
+   * BI/ERP não derruba a bolsa: o ajuste fica fora até a próxima leitura.
+   */
+  private efetivoAjustes(rep: number, meses: number, piso: number) {
+    const chave = `${rep}|${meses}|${piso}`;
+    const c = this.ajusteCache.get(chave);
+    if (c && Date.now() - c.em < 5 * 60_000) return c.v;
+    const desde = new Date();
+    desde.setHours(0, 0, 0, 0);
+    desde.setMonth(desde.getMonth() - meses);
+    const v = this.db
+      .ajustes({ rep, importadosDesde: desde })
+      .then(async (ajustes) => (ajustes.length ? (await this.casarAjustesComNf(ajustes, piso)).linhas : []))
+      .catch((e) => {
+        this.logger.warn(`Ajustes da bolsa indisponíveis (rep ${rep}): ${(e as Error).message}`);
+        this.ajusteCache.delete(chave);
+        return [];
+      });
+    this.ajusteCache.set(chave, { em: Date.now(), v });
+    return v;
+  }
+
+  /** Relação dos ajustes pelo período do ajuste, com o efetivo e a situação do casamento com a NF. */
+  async listarAjustesBolsa(f: { de?: string; ate?: string; rep?: number; ajustador?: string; motivo?: string; pro?: number }) {
+    const ate = f.ate ? new Date(`${f.ate}T00:00:00`) : undefined;
+    if (ate) ate.setDate(ate.getDate() + 1);
+    const [ajustes, { piso }] = await Promise.all([
+      this.db.ajustes({ rep: f.rep, pro: f.pro, motivo: f.motivo, ajustador: f.ajustador, de: f.de ? new Date(`${f.de}T00:00:00`) : undefined, ate }),
+      this.pisoVigente(mesComissional()),
+    ]);
+    const casado = new Map((await this.casarAjustesComNf(ajustes, piso)).ajustes.map((c) => [c.id, c]));
+    const itens = await this.comRepNome(
+      ajustes.map((a) => {
+        const c = casado.get(a.id);
+        return {
+          id: a.id,
+          orcamento_id: a.orcamento_id,
+          orcamento_numero: a.orcamento_numero,
+          celta_orcamento: a.celta_orcamento,
+          cli_codigo: a.cli_codigo,
+          cli_nome: a.cli_nome,
+          rep_codigo: a.rep_codigo,
+          rep_nome: a.rep_nome,
+          pro_codigo: a.pro_codigo,
+          descricao: a.descricao,
+          quantidade: a.quantidade,
+          valor_ajustado: round2(a.assumido_unit * a.quantidade),
+          efetivo: c?.efetivo ?? 0,
+          situacao: c?.situacao ?? 'SEM_CELTA',
+          motivo: a.motivo,
+          justificativa: a.justificativa,
+          ajustado_por: a.ajustado_por,
+          ajustado_em: a.ajustado_em,
+          nfs: (c?.nfs ?? []).map((n) => ({ serie: n.serie, nfs: n.nfs, emissao: n.emissao.toLocaleDateString('sv-SE'), quantidade: n.quantidade, efetivo: n.efetivo, devolucao: n.devolucao })),
+        };
+      }),
+    );
+    return {
+      itens,
+      totais: { ajustado: round2(itens.reduce((s, i) => s + i.valor_ajustado, 0)), efetivo: round2(itens.reduce((s, i) => s + i.efetivo, 0)) },
+    };
   }
 
   /**
@@ -2047,7 +2256,7 @@ export class OrcamentoService {
     if (o.rep_codigo == null) throw new BadRequestException('Orçamento sem vendedor.');
     const itens = (o.itens ?? []) as Array<{
       pro_codigo: number; descricao: string | null; quantidade: number; qtd_encomenda?: number | null;
-      desc_pct: number; preco_tabela: number; preco_unit: number; substituto_de: number | null; observacao: string | null; fora_promocao?: boolean;
+      desc_pct: number; preco_tabela: number; preco_unit: number; substituto_de: number | null; observacao: string | null; fora_promocao?: boolean; pedir_ajuste?: boolean;
     }>;
     const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo);
     const { saldoPor } = await this.saldoComLiberacao(itens.map((i) => i.pro_codigo), produtos);
@@ -2084,10 +2293,46 @@ export class OrcamentoService {
         observacao: i.observacao ?? undefined,
         qtd_encomenda: i.qtd_encomenda ?? 0,
         fora_promocao: !!i.fora_promocao,
+        pedir_ajuste: !!i.pedir_ajuste,
       })),
     });
     return { orcamento: salvo, sem_itens: false, venda_perdida: r.venda_perdida.length };
   }
+}
+
+/** Data (meia-noite local) cai no mês comissional (ano, mes). */
+const mesmoMes = (d: Date, m: { ano: number; mes: number }) => {
+  const x = mesComissional(d);
+  return x.ano === m.ano && x.mes === m.mes;
+};
+
+/**
+ * R$ da linha na bolsa, a mesma conta do saldo: total − custo da bolsa × piso × qtd, com a metade
+ * da promoção que a empresa absorve. Sem custo a linha é neutra (0).
+ */
+function negativoDaLinha(i: { total: number; quantidade: number; preco_unit: number; custo_ref: number | null; promocao_codigo: number | null; fora_promocao: boolean }, piso: number) {
+  const custo = i.custo_ref ?? 0;
+  if (!(custo > 0)) return 0;
+  const promo = i.promocao_codigo != null && !i.fora_promocao ? absorcaoPromocao(i.preco_unit, custo, piso, i.quantidade) : 0;
+  return round2(i.total - custo * piso * i.quantidade + promo);
+}
+
+/** Itens com pedido de ajuste da bolsa ainda sem ajuste (`resolvido` = linha que está sendo ajustada agora). */
+function ajustesPendentes(o: { itens?: Array<{ pro_codigo: number; pedir_ajuste: boolean }>; ajustes_bolsa?: Array<{ pro_codigo: number }> }, resolvido?: number) {
+  const feitos = new Set((o.ajustes_bolsa ?? []).map((a) => a.pro_codigo));
+  if (resolvido != null) feitos.add(resolvido);
+  return (o.itens ?? []).filter((i) => i.pedir_ajuste && !feitos.has(i.pro_codigo)).length;
+}
+
+function paraCasar(
+  a: { id: string; pro_codigo: number; cli_codigo: number; rep_codigo: number | null; quantidade: number; assumido_unit: number; preco_unit: number; celta_importado_em: Date | null },
+  nf: AjusteParaCasar['nf_orcamento'],
+): AjusteParaCasar {
+  return {
+    id: a.id, pro_codigo: a.pro_codigo, cli_codigo: a.cli_codigo, rep_codigo: a.rep_codigo ?? 0,
+    quantidade: a.quantidade, assumido_unit: a.assumido_unit, preco_unit: a.preco_unit,
+    importado_em: a.celta_importado_em, nf_orcamento: nf, nfs_condicional: [],
+  };
 }
 
 /**

@@ -60,7 +60,11 @@ export interface OrcamentoParaCelta {
   tributacao?: string | null;
   /** meia nota: imposto estimado sobre metade do valor; vai inteiro em despesas acessórias, sem regime */
   meia_nota?: boolean;
+  /** ajustes da bolsa negativa (produto avariado/usado/embalagem): motivo e justificativa vão na observação */
+  ajustes_bolsa?: Array<{ pro_codigo: number; motivo: string; justificativa: string; ajustado_por: string | null }>;
 }
+
+const MOTIVO_AJUSTE: Record<string, string> = { AVARIADO: 'Avariado', USADO: 'Usado', EMBALAGEM: 'Embalagem danificada', OUTRO: 'Outro' };
 
 /**
  * Compensação do orçamento: linhas que ficaram abaixo do limite em vigor SEM pedir aprovação
@@ -115,6 +119,10 @@ export function justificativaAlcada(o: OrcamentoParaCelta): string {
       : `Alçada: dentro do limite do vendedor${aprov ? ` (${aprov})` : ''}.`;
   const mes = o.bolsa_pct_antes != null && o.bolsa_pct_depois != null ? ` Desconto do mês: ${pct(o.bolsa_pct_antes)} -> ${pct(o.bolsa_pct_depois)}.` : '';
   linhas.push(`${alcada} Desconto total ${pct(o.desc_pct ?? 0)}.${mes}`);
+  // antes dos itens: o comprovante do bloqueio corta a justificativa em 500 caracteres
+  for (const a of o.ajustes_bolsa ?? []) {
+    linhas.push(`Bolsa ajustada${a.ajustado_por ? ` por ${a.ajustado_por}` : ''}: ${a.pro_codigo} ${MOTIVO_AJUSTE[a.motivo] ?? a.motivo} — ${a.justificativa.trim()}`);
+  }
   const comDesc = (o.itens ?? []).filter((i) => Number(i.desc_pct) > 0);
   if (comDesc.length) {
     const partes = comDesc.map((i) => {

@@ -41,4 +41,11 @@ describe('comprovante de aprovação', () => {
     expect(liberadorDoBloqueio(false, true, undefined, 258)).toEqual({ erro: expect.stringMatching(/acima da alçada/) });
     expect(liberadorDoBloqueio(true, true, NaN, 258)).toEqual({ erro: expect.stringMatching(/anterior/) });
   });
+
+  it('ajuste da bolsa: dentro da alçada quem ajustou libera; acima da alçada o ajuste sozinho não libera', () => {
+    // dentro da alçada o ajuste grava aprovado_* com o código de quem ajustou
+    expect(liberadorDoBloqueio(true, false, 77, 258)).toEqual({ codigo: 77 });
+    // acima da alçada o ajuste não grava aprovação: a importação para até a gerência aprovar
+    expect(liberadorDoBloqueio(false, true, undefined, 258)).toEqual({ erro: expect.stringMatching(/acima da alçada/) });
+  });
 });

@@ -220,6 +220,14 @@ describe('alcadaDoItem', () => {
     expect(b.orcamento).toBe(-15);
     expect(b.acima_linha).toBe(-200); // prêmio é sobre o lucro real: sem a metade da empresa
   });
+  it('ajuste da bolsa negativa: efetivo do mês e o assumido no orçamento entram no saldo, não na linha do prêmio', () => {
+    const b = calcularBolsa({ receita_mtd: 1000, custo_mtd: 800, desconto_mtd: 0, receita_orc: 120, custo_orc: 100, ajuste_mtd: 25, ajuste_orc: 10, piso: 1.5, linha: 1.5 } as Parameters<typeof calcularBolsa>[0]);
+    expect(b.saldo).toBe(-175); // 1000 − 1200 + 25
+    expect(b.saldo_apos).toBe(-195); // −175 + (120 − 150) + 10
+    expect(b.ajuste_mtd).toBe(25);
+    expect(b.ajuste_orc).toBe(10);
+    expect(b.acima_linha).toBe(-200);
+  });
   it('calcularBolsa expõe quanto só o orçamento rende contra o piso', () => {
     const b = calcularBolsa({ receita_mtd: 0, custo_mtd: 0, desconto_mtd: 0, receita_orc: 1600, custo_orc: 1000, piso: 1.5 } as Parameters<typeof calcularBolsa>[0]);
     expect(b.orcamento).toBe(100);

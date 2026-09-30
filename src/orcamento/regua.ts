@@ -580,6 +580,9 @@ export interface BolsaEntrada {
   /** Promoção: metade do que o item tira da bolsa é da empresa — no mês (orçamentos fechados) e neste orçamento. */
   absorvido_mtd?: number;
   absorvido_orc?: number;
+  /** Ajuste da bolsa negativa: o que a empresa assume — no mês (casado com a NF) e no orçamento em edição. */
+  ajuste_mtd?: number;
+  ajuste_orc?: number;
   piso?: number;
   linha?: number;
   premio_pct?: number;
@@ -618,6 +621,9 @@ export interface Bolsa {
   /** o que a empresa absorve das promoções: no mês (orçamentos fechados) e neste orçamento. */
   absorvido_mtd: number;
   absorvido_orc: number;
+  /** ajuste da bolsa negativa: efetivo do mês (NFs casadas) e o assumido no orçamento em edição */
+  ajuste_mtd: number;
+  ajuste_orc: number;
   /** Lucro acima da linha dos 4%: receita − custo × linha (negativo = abaixo da linha). */
   acima_linha: number;
   acima_linha_apos: number;
@@ -646,8 +652,11 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
   // promoção: a metade que a empresa absorve volta para a bolsa (não para a linha do prêmio)
   const absMtd = Math.max(0, e.absorvido_mtd ?? 0);
   const absOrc = Math.max(0, e.absorvido_orc ?? 0);
-  const saldo = receita - custo * piso + absMtd;
-  const saldoApos = saldo + (recOrc - custoOrc * piso) + absOrc;
+  // ajuste da bolsa negativa: termo à parte, como a promoção (não mexe na linha do prêmio)
+  const ajMtd = e.ajuste_mtd ?? 0;
+  const ajOrc = Math.max(0, e.ajuste_orc ?? 0);
+  const saldo = receita - custo * piso + absMtd + ajMtd;
+  const saldoApos = saldo + (recOrc - custoOrc * piso) + absOrc + ajOrc;
   const acima = receita - custo * linha;
   const acimaApos = acima + (recOrc - custoOrc * linha);
   return {
@@ -663,9 +672,11 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
     gerada: round2(receita + desc - custo * piso),
     saldo: round2(saldo),
     saldo_apos: round2(saldoApos),
-    orcamento: round2(recOrc - custoOrc * piso + absOrc),
+    orcamento: round2(recOrc - custoOrc * piso + absOrc + ajOrc),
     absorvido_mtd: round2(absMtd),
     absorvido_orc: round2(absOrc),
+    ajuste_mtd: round2(ajMtd),
+    ajuste_orc: round2(ajOrc),
     acima_linha: round2(acima),
     acima_linha_apos: round2(acimaApos),
     premio_estimado: round2(premio * Math.max(0, acima)),

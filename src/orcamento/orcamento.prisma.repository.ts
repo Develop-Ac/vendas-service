@@ -634,6 +634,23 @@ export class OrcamentoPrismaRepository {
       promocao_fim: i.promocao_fim ? new Date(i.promocao_fim).toISOString().slice(0, 10) : null,
       qtd_encomenda: n(i.qtd_encomenda),
       fora_promocao: !!i.fora_promocao,
+      pedir_ajuste: !!i.pedir_ajuste,
+    };
+  }
+
+  private mapAjuste(a: any) {
+    const assumido = n(a.assumido_unit), qtd = n(a.quantidade);
+    return {
+      pro_codigo: a.pro_codigo as number,
+      quantidade: qtd,
+      assumido_unit: assumido,
+      // R$ da linha que AINDA sai da bolsa (o que foi digitado): negativo + o que a empresa assume
+      valor: round2(Math.min(0, n(a.negativo_linha) + assumido * qtd)),
+      negativo_linha: n(a.negativo_linha),
+      motivo: a.motivo as string,
+      justificativa: a.justificativa as string,
+      ajustado_por: (a.ajustado_por ?? null) as string | null,
+      ajustado_em: (a.updated_at ?? a.created_at) as Date,
     };
   }
 
@@ -671,6 +688,7 @@ export class OrcamentoPrismaRepository {
       aprovado_por: o.aprovado_por,
       aprovado_em: o.aprovado_em,
       aprovado_codigo: o.aprovado_codigo ?? null,
+      aprovado_por_ajuste: !!o.aprovado_por_ajuste,
       enviado_em: o.enviado_em,
       desfecho_em: o.desfecho_em,
       desfecho_motivo: o.desfecho_motivo,
@@ -685,6 +703,7 @@ export class OrcamentoPrismaRepository {
       // null = sem divergência detectada · false = divergente aguardando gerência · true = liberado
       liberadogerencia: o.liberadogerencia ?? null,
       itens: Array.isArray(o.itens) ? o.itens.map((i: any) => this.mapItem(i)) : undefined,
+      ajustes_bolsa: Array.isArray(o.ven_bolsa_ajuste) ? o.ven_bolsa_ajuste.map((a: any) => this.mapAjuste(a)) : undefined,
     };
   }
 
@@ -715,7 +734,7 @@ export class OrcamentoPrismaRepository {
     if (!r) return Promise.resolve(null);
     return this.prisma.sis_usuarios.findFirst({
       where: { trash: 0, OR: [{ id: r }, { codigo: r }] },
-      select: { id: true, codigo: true, nome: true, sis_permissoes: { select: { tela: true, editar: true, criar: true } } },
+      select: { id: true, codigo: true, nome: true, vendas_rep_codigo: true, sis_permissoes: { select: { tela: true, editar: true, criar: true } } },
     });
   }
 
@@ -735,7 +754,7 @@ export class OrcamentoPrismaRepository {
   async obter(id: string) {
     const o = await this.prisma.ven_orcamento.findUnique({
       where: { id },
-      include: { itens: { orderBy: { item: 'asc' } } },
+      include: { itens: { orderBy: { item: 'asc' } }, ven_bolsa_ajuste: { orderBy: { pro_codigo: 'asc' } } },
     });
     return o ? this.mapOrcamento(o) : null;
   }
@@ -827,26 +846,28 @@ export class OrcamentoPrismaRepository {
   async criar(cab: Prisma.ven_orcamentoUncheckedCreateInput, itens: Prisma.ven_orcamento_itemUncheckedCreateInput[]) {
     const o = await this.prisma.ven_orcamento.create({
       data: { ...cab, itens: { create: itens.map(({ orcamento_id: _o, ...i }) => i) } },
-      include: { itens: { orderBy: { item: 'asc' } } },
+      include: { itens: { orderBy: { item: 'asc' } }, ven_bolsa_ajuste: true },
     });
     return this.mapOrcamento(o);
   }
 
-  /** Regrava cabeçalho e itens (os itens são substituídos por inteiro). */
+  /** Regrava cabeçalho e itens (os itens são substituídos por inteiro); `limparAjustes` apaga os ajustes da bolsa junto. */
   async atualizar(
     id: string,
     cab: Prisma.ven_orcamentoUncheckedUpdateInput,
     itens?: Prisma.ven_orcamento_itemUncheckedCreateInput[],
+    limparAjustes = false,
   ) {
     const o = await this.prisma.$transaction(async (tx) => {
       if (itens) {
         await tx.ven_orcamento_item.deleteMany({ where: { orcamento_id: id } });
         if (itens.length) await tx.ven_orcamento_item.createMany({ data: itens });
       }
+      if (limparAjustes) await tx.ven_bolsa_ajuste.deleteMany({ where: { orcamento_id: id } });
       return tx.ven_orcamento.update({
         where: { id },
         data: cab,
-        include: { itens: { orderBy: { item: 'asc' } } },
+        include: { itens: { orderBy: { item: 'asc' } }, ven_bolsa_ajuste: { orderBy: { pro_codigo: 'asc' } } },
       });
     });
     return this.mapOrcamento(o);
@@ -922,6 +943,71 @@ export class OrcamentoPrismaRepository {
       select: { pro_codigo: true },
     });
     return new Set(rows.map((r) => r.pro_codigo));
+  }
+
+  /* ------------------------------------------------ ajuste da bolsa negativa */
+
+  /** Grava (ou regrava) o ajuste da linha e, se vier, a aprovação no cabeçalho — juntos. */
+  async salvarAjuste(
+    a: Omit<Prisma.ven_bolsa_ajusteUncheckedCreateInput, 'id' | 'created_at' | 'updated_at'>,
+    cab: Prisma.ven_orcamentoUncheckedUpdateInput,
+  ) {
+    await this.prisma.$transaction([
+      this.prisma.ven_bolsa_ajuste.upsert({
+        where: { orcamento_id_pro_codigo: { orcamento_id: a.orcamento_id, pro_codigo: a.pro_codigo } },
+        create: a,
+        update: { ...a, updated_at: new Date() },
+      }),
+      this.prisma.ven_orcamento.update({ where: { id: a.orcamento_id }, data: cab }),
+    ]);
+  }
+
+  async apagarAjuste(orcamentoId: string, proCodigo: number) {
+    await this.prisma.ven_bolsa_ajuste.deleteMany({ where: { orcamento_id: orcamentoId, pro_codigo: proCodigo } });
+  }
+
+  /**
+   * Ajustes com o orçamento e a linha (preço do orçamento): por vendedor e importados no Celta
+   * desde `importadosDesde` (bolsa do mês), ou pelo período do ajuste (listagem).
+   */
+  async ajustes(f: { rep?: number; importadosDesde?: Date; de?: Date; ate?: Date; ajustador?: string; motivo?: string; pro?: number }) {
+    const where: Prisma.ven_bolsa_ajusteWhereInput = {};
+    if (f.rep != null) where.rep_codigo = f.rep;
+    if (f.pro != null) where.pro_codigo = f.pro;
+    if (f.motivo) where.motivo = f.motivo;
+    if (f.ajustador) where.ajustado_por = { contains: f.ajustador, mode: 'insensitive' };
+    if (f.de || f.ate) where.created_at = { ...(f.de ? { gte: f.de } : {}), ...(f.ate ? { lt: f.ate } : {}) };
+    if (f.importadosDesde) where.ven_orcamento = { celta_importado_em: { gte: f.importadosDesde } };
+    const rows = await this.prisma.ven_bolsa_ajuste.findMany({
+      where,
+      orderBy: { created_at: 'desc' },
+      take: 2000,
+      include: {
+        ven_orcamento: {
+          select: {
+            numero: true, celta_orcamento: true, celta_importado_em: true, cli_nome: true, rep_nome: true,
+            itens: { select: { pro_codigo: true, descricao: true, preco_unit: true } },
+          },
+        },
+      },
+    });
+    return rows.map((r) => {
+      const item = r.ven_orcamento.itens.find((i) => i.pro_codigo === r.pro_codigo);
+      return {
+        ...this.mapAjuste(r),
+        id: r.id,
+        orcamento_id: r.orcamento_id,
+        cli_codigo: r.cli_codigo,
+        rep_codigo: r.rep_codigo,
+        orcamento_numero: r.ven_orcamento.numero,
+        celta_orcamento: r.ven_orcamento.celta_orcamento,
+        celta_importado_em: r.ven_orcamento.celta_importado_em,
+        cli_nome: r.ven_orcamento.cli_nome,
+        rep_nome: r.ven_orcamento.rep_nome,
+        descricao: item?.descricao ?? null,
+        preco_unit: n(item?.preco_unit),
+      };
+    });
   }
 
   /** Orçamentos abertos deste vendedor (ENVIADO/APROVACAO) — para a bolsa projetada. */
