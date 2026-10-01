@@ -2061,11 +2061,40 @@ export class OrcamentoService {
    * Já importado → devolve o nº guardado sem chamar a API. A chave de idempotência
    * é por orçamento: uma falha de rede depois da gravação não duplica no ERP.
    */
+  /**
+   * Item que entrou com DIFAL zero por falta de alíquota no Celta (ALIQUOTAS_ICMS_UF_DESTINO) é
+   * recalculado antes de ir ao ERP: cadastrada a alíquota, o orçamento passa a levar o DIFAL. Ainda
+   * sem alíquota, para aqui com os produtos a cadastrar — a API do Celta recusaria do mesmo jeito.
+   */
+  private async difalPendente(o: Awaited<ReturnType<OrcamentoService['obter']>>) {
+    if (o.tributacao !== 'DIFAL' || !o.itens?.length) return o;
+    const servicos = new Set(await this.erp.codigosDeServico().catch(() => [] as number[]));
+    if (!o.itens.some((i) => i.difal_pct == null && !servicos.has(i.pro_codigo))) return o;
+    const cliente = await this.erp.clientePorCodigo(o.cli_codigo);
+    if (!cliente) throw new BadRequestException(`Cliente ${o.cli_codigo} não encontrado no ERP.`);
+    const t = await this.tributar(
+      o.itens.map((i) => ({ pro_codigo: i.pro_codigo, total: Number(i.total), servico: servicos.has(i.pro_codigo) })),
+      cliente,
+      !!o.presencial,
+      !!o.meia_nota,
+    );
+    if (t.resumo.regime !== 'DIFAL') return o; // o cliente mudou de situação: a importação decide com o que está gravado
+    if (t.sem_aliquota.length) {
+      throw new BadRequestException(
+        `Produto ${t.sem_aliquota.join(', ')} sem alíquota de DIFAL para ${t.resumo.uf} no Celta. Peça ao fiscal o cadastro e importe de novo: o orçamento é recalculado com o DIFAL.`,
+      );
+    }
+    const itens = o.itens.map((i, k) => ({ item: Number(i.item), difal: t.itens[k].difal, difal_pct: t.itens[k].difal_pct }));
+    this.logger.log(`Orçamento ${o.numero}: DIFAL recalculado na importação (alíquota cadastrada no Celta), ${o.difal} -> ${t.difal}.`);
+    return this.db.atualizarDifal(o.id, itens, t.difal);
+  }
+
   async importarCelta(id: string) {
-    const o = await this.obter(id);
-    if (o.celta_orcamento) return { orcamento: o, celta_orcamento: o.celta_orcamento, repetido: true };
-    if (o.status !== 'FECHADO') throw new BadRequestException('Só orçamento fechado vai ao Celta.');
-    if (!o.rep_codigo) throw new BadRequestException('Orçamento sem vendedor não pode ir ao Celta.');
+    const lido = await this.obter(id);
+    if (lido.celta_orcamento) return { orcamento: lido, celta_orcamento: lido.celta_orcamento, repetido: true };
+    if (lido.status !== 'FECHADO') throw new BadRequestException('Só orçamento fechado vai ao Celta.');
+    if (!lido.rep_codigo) throw new BadRequestException('Orçamento sem vendedor não pode ir ao Celta.');
+    const o = await this.difalPendente(lido);
     // piso da bolsa de hoje: a observação diz quanto o orçamento se compensou contra ele
     const piso = await this.pisoVigente(mesComissional()).then((x) => x.piso).catch(() => this.parametros().bolsa_piso);
     let corpo;

@@ -851,6 +851,21 @@ export class OrcamentoPrismaRepository {
     return this.mapOrcamento(o);
   }
 
+  /** Regrava só o DIFAL dos itens (por nº do item) e o total de DIFAL do cabeçalho; o resto do orçamento não muda. */
+  async atualizarDifal(id: string, itens: Array<{ item: number; difal: number; difal_pct: number | null }>, difal: number) {
+    const o = await this.prisma.$transaction(async (tx) => {
+      for (const i of itens) {
+        await tx.ven_orcamento_item.updateMany({ where: { orcamento_id: id, item: i.item }, data: { difal: i.difal, difal_pct: i.difal_pct } });
+      }
+      return tx.ven_orcamento.update({
+        where: { id },
+        data: { difal, updated_at: new Date() },
+        include: { itens: { orderBy: { item: 'asc' } }, ven_bolsa_ajuste: { orderBy: { pro_codigo: 'asc' } } },
+      });
+    });
+    return this.mapOrcamento(o);
+  }
+
   /** Regrava cabeçalho e itens (os itens são substituídos por inteiro); `limparAjustes` apaga os ajustes da bolsa junto. */
   async atualizar(
     id: string,
