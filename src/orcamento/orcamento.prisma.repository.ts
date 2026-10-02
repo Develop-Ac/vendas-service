@@ -14,6 +14,20 @@ import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } fro
    EQUIVALENTES) e os pares "vendem juntos" apurados no BI.
    ============================================================================= */
 
+/** Filtros da lista de orçamentos (GET /orcamento); `de`/`ate` em YYYY-MM-DD, já validados no controller. */
+export type FiltroListaOrcamento = {
+  rep_codigo?: number;
+  cli_codigo?: number;
+  status?: string;
+  page?: number;
+  pageSize?: number;
+  de?: string;
+  ate?: string;
+  numero?: number;
+  produto?: string;
+  flag?: 'SEM_CELTA' | 'ACIMA_ALCADA' | 'AGUARDANDO';
+};
+
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 const nn = (v: unknown): number | null => (v == null ? null : Number(v));
 /** Início e fim (exclusivo) do dia de HOJE em Cuiabá (UTC−4, sem horário de verão), como instantes UTC. */
@@ -710,11 +724,33 @@ export class OrcamentoPrismaRepository {
     };
   }
 
-  async listar(f: { rep_codigo?: number; cli_codigo?: number; status?: string; page?: number; pageSize?: number }) {
+  async listar(f: FiltroListaOrcamento) {
     const where: Prisma.ven_orcamentoWhereInput = {};
     if (f.rep_codigo != null) where.rep_codigo = f.rep_codigo;
     if (f.cli_codigo != null) where.cli_codigo = f.cli_codigo;
     if (f.status) where.status = f.status;
+    // Período pela criação, em dias de Cuiabá (UTC−4 fixo, como diaCuiaba): `ate` vale até 23:59:59 do dia.
+    if (f.de || f.ate) {
+      where.created_at = {
+        ...(f.de && { gte: new Date(`${f.de}T00:00:00-04:00`) }),
+        ...(f.ate && { lt: new Date(new Date(`${f.ate}T00:00:00-04:00`).getTime() + 86_400_000) }),
+      };
+    }
+    const and: Prisma.ven_orcamentoWhereInput[] = [];
+    // O vendedor conhece o orçamento pelo nº da intranet ou pelo do Celta: um campo só procura nos dois.
+    if (f.numero != null) and.push({ OR: [{ numero: f.numero }, { celta_orcamento: f.numero }] });
+    // Produto: código exato (índice em pro_codigo; até 9 dígitos para caber no INT) ou trecho da descrição;
+    // o `some` vira EXISTS na mesma consulta, sem ida extra por orçamento.
+    if (f.produto) {
+      and.push({
+        itens: { some: /^\d+$/.test(f.produto) && f.produto.length <= 9 ? { pro_codigo: Number(f.produto) } : { descricao: { contains: f.produto, mode: 'insensitive' } } },
+      });
+    }
+    // Sinais que a supervisão persegue: fechado sem nº do Celta (não importado), acima da alçada e na fila de aprovação.
+    if (f.flag === 'SEM_CELTA') and.push({ status: 'FECHADO', celta_orcamento: null });
+    else if (f.flag === 'ACIMA_ALCADA') and.push({ acima_alcada: true });
+    else if (f.flag === 'AGUARDANDO') and.push({ status: 'APROVACAO' });
+    if (and.length) where.AND = and;
     const page = Math.max(1, f.page ?? 1);
     const pageSize = Math.min(200, Math.max(1, f.pageSize ?? 50));
     const [total, rows] = await this.prisma.$transaction([

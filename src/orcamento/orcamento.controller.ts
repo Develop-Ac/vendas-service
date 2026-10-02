@@ -33,6 +33,7 @@ import {
 } from './dto/orcamento.dto';
 
 const toNum = (v?: string) => (v == null || v === '' ? undefined : Number(v));
+const FLAGS_LISTA = ['SEM_CELTA', 'ACIMA_ALCADA', 'AGUARDANDO'] as const;
 
 /* =============================================================================
    ORÇAMENTO DO ATACADO — rotas.
@@ -374,20 +375,39 @@ export class OrcamentoController {
   /* ---------------------------------------------------------- orçamento */
 
   @Get()
-  @ApiOperation({ summary: 'Lista de orçamentos (filtros: rep, cli, status, page, pageSize).' })
+  @ApiOperation({ summary: 'Lista de orçamentos (filtros: rep, cli, status, de, ate, numero, produto, flag, page, pageSize). Filtro inválido é ignorado.' })
+  @ApiQuery({ name: 'de', required: false, description: 'YYYY-MM-DD — criado a partir do dia (Cuiabá)' })
+  @ApiQuery({ name: 'ate', required: false, description: 'YYYY-MM-DD — criado até o fim do dia (Cuiabá), inclusive' })
+  @ApiQuery({ name: 'numero', required: false, description: 'Nº da intranet ou do Celta' })
+  @ApiQuery({ name: 'produto', required: false, description: 'Só dígitos = código do produto; senão parte da descrição. Orçamentos com algum item assim.' })
+  @ApiQuery({ name: 'flag', required: false, enum: ['SEM_CELTA', 'ACIMA_ALCADA', 'AGUARDANDO'] })
   listar(
     @Query('rep') rep?: string,
     @Query('cli') cli?: string,
     @Query('status') status?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('de') de?: string,
+    @Query('ate') ate?: string,
+    @Query('numero') numero?: string,
+    @Query('produto') produto?: string,
+    @Query('flag') flag?: string,
   ) {
+    // Filtro de lista: parâmetro malformado é ignorado (a tela segue listando), nunca vira erro.
+    const dia = (v?: string) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v)) ? v : undefined);
+    const num = toNum(numero);
     return this.service.listar({
       rep_codigo: toNum(rep),
       cli_codigo: toNum(cli),
       status: status || undefined,
       page: toNum(page),
       pageSize: toNum(pageSize),
+      de: dia(de),
+      ate: dia(ate),
+      // numero e celta_orcamento são INT4: fora da faixa o Postgres recusaria a consulta
+      numero: num != null && Number.isInteger(num) && num > 0 && num <= 2_147_483_647 ? num : undefined,
+      produto: produto?.trim() || undefined,
+      flag: FLAGS_LISTA.find((x) => x === flag),
     });
   }
 

@@ -5,7 +5,7 @@ import { Prisma } from '@prisma/client';
 import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta, ordenarBuscaClientes } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional, mesesAnteriores } from './orcamento.bi.repository';
 import { celulasDoOrcamento, comissaoComOrcamento } from './comissao';
-import { OrcamentoPrismaRepository, GiroItem } from './orcamento.prisma.repository';
+import { OrcamentoPrismaRepository, GiroItem, FiltroListaOrcamento } from './orcamento.prisma.repository';
 import {
   Avaliacao,
   alcadaDoItem,
@@ -1230,7 +1230,7 @@ export class OrcamentoService {
 
   /* ----------------------------------------------------------- orçamento */
 
-  async listar(f: { rep_codigo?: number; cli_codigo?: number; status?: string; page?: number; pageSize?: number }) {
+  async listar(f: FiltroListaOrcamento) {
     const r = await this.db.listar(f);
     return { ...r, itens: await this.comBolsa(await this.comRepNome(r.itens)) };
   }

@@ -238,7 +238,7 @@ como hoje e registra o número em "Fechado".
 | GET | `/produtos?q=&tabela=&cli=` | busca já avaliada na régua |
 | GET | `/produtos/:codigo[/equivalentes|/relacionados]` | detalhe, equivalentes, vendem juntos |
 | POST | `/relacionados/recalcular` | reapura os pares no BI |
-| GET/POST | `/` | lista / cria |
+| GET/POST | `/` | lista / cria. Lista: `?rep=&cli=&status=&de=&ate=&numero=&produto=&flag=&page=&pageSize=` — `de`/`ate` YYYY-MM-DD sobre a criação, em dias de Cuiabá (`ate` inclusivo); `numero` casa o nº da intranet **ou** o do Celta; `produto` só com dígitos = código do produto, senão trecho da descrição (sem caixa) — orçamentos com ao menos um item assim; `flag` = `SEM_CELTA` (fechado sem nº do Celta), `ACIMA_ALCADA` ou `AGUARDANDO` (em aprovação). Parâmetro inválido é ignorado |
 | GET/PUT/DELETE | `/:id` | obtém / regrava / cancela |
 | POST | `/:id/enviar` · `/:id/aprovar` · `/:id/desfecho` | ciclo |
 
