@@ -34,7 +34,7 @@ A view de vendas do BI não traz orçamento nem condicional, e o Celta quase nun
 orçamento. Ordem, por ajuste:
 
 1. `ORCAMENTOS.NFS` preenchida → essa NF;
-2. `ORCAMENTOS.CONDICIONAL` → NF(s) geradas do condicional (se a ligação existir no Firebird);
+2. `ORCAMENTOS.CONDICIONAL` → `CONDICIONAIS.NFS` (tabela `condicionais` da erp-firebird-api; sem ela, só NF e janela);
 3. primeira NF do mesmo cliente + produto + vendedor, emissão ≥ importação e ≤ importação + 30 dias,
    preço unitário ≥ o do orçamento − R$ 0,01.
 

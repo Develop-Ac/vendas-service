@@ -185,6 +185,14 @@ export class OrcamentoController {
     return this.service.bolsaCliente(rep, cli, toNum(meses) ?? 6);
   }
 
+  @Get('vendedor/:rep/bolsa/extrato')
+  @ApiOperation({ summary: 'Extrato da bolsa por NF num dos últimos 6 meses comissionais (padrão: o atual), com o orçamento casado a cada linha e a conferência com o card.' })
+  @ApiQuery({ name: 'ano', required: false })
+  @ApiQuery({ name: 'mes', required: false })
+  extratoBolsa(@Param('rep', ParseIntPipe) rep: number, @Query('ano') ano?: string, @Query('mes') mes?: string) {
+    return this.service.extratoBolsa(rep, toNum(ano), toNum(mes));
+  }
+
   @Get('vendedor/:rep/bolsa')
   @ApiOperation({ summary: 'Bolsa de desconto do vendedor no mês comissional: receita − custo × piso (+ projeção com o orçamento).' })
   @ApiQuery({ name: 'total', required: false, description: 'Total líquido do orçamento em edição' })
@@ -448,7 +456,7 @@ export class OrcamentoController {
 
   @Get(':id')
   obter(@Param('id') id: string) {
-    return this.service.obter(id);
+    return this.service.obterComBolsa(id);
   }
 
   @Get(':id/conferir')

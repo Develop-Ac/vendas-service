@@ -685,6 +685,9 @@ export class OrcamentoPrismaRepository {
       acima_alcada: !!o.acima_alcada,
       bolsa_pct_antes: nn(o.bolsa_pct_antes),
       bolsa_pct_depois: nn(o.bolsa_pct_depois),
+      // bolsa congelada no desfecho FECHADO (nula nos fechados antes de 02/10/2026)
+      piso_bolsa: nn(o.piso_bolsa),
+      bolsa_orcamento: nn(o.bolsa_orcamento),
       aprovado_por: o.aprovado_por,
       aprovado_em: o.aprovado_em,
       aprovado_codigo: o.aprovado_codigo ?? null,
@@ -1023,6 +1026,39 @@ export class OrcamentoPrismaRepository {
         preco_unit: n(item?.preco_unit),
       };
     });
+  }
+
+  /** FECHADOS do vendedor com desfecho desde `desde`, com os itens — o que o extrato casa com as NFs. */
+  async fechadosParaCasar(rep: number, desde: Date) {
+    const rows = await this.prisma.ven_orcamento.findMany({
+      where: { rep_codigo: rep, status: 'FECHADO', desfecho_em: { gte: desde } },
+      select: {
+        id: true, numero: true, cli_codigo: true, rep_codigo: true, celta_orcamento: true, celta_importado_em: true, desfecho_em: true,
+        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, custo_ref: true }, orderBy: { item: 'asc' } },
+      },
+    });
+    return rows.map((r) => ({ ...r, itens: r.itens.map((i) => ({ pro_codigo: i.pro_codigo, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), custo_ref: nn(i.custo_ref) })) }));
+  }
+
+  /** Itens e ajustes da bolsa dos orçamentos — a bolsa do orçamento recalculada na leitura. */
+  async itensParaBolsa(ids: string[]) {
+    const rows = await this.prisma.ven_orcamento.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, total: true, custo_ref: true, promocao_codigo: true, fora_promocao: true } },
+        ven_bolsa_ajuste: { select: { quantidade: true, assumido_unit: true } },
+      },
+    });
+    return new Map(
+      rows.map((r) => [
+        r.id,
+        {
+          itens: r.itens.map((i) => ({ ...i, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), total: n(i.total), custo_ref: nn(i.custo_ref) })),
+          ajustes: r.ven_bolsa_ajuste.map((a) => ({ quantidade: n(a.quantidade), assumido_unit: n(a.assumido_unit) })),
+        },
+      ]),
+    );
   }
 
   /** Orçamentos abertos deste vendedor (ENVIADO/APROVACAO) — para a bolsa projetada. */

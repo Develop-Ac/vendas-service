@@ -32,7 +32,8 @@ import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
 import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, justificativaAlcada, soAscii, type LinhaComparativo } from './celta';
 import { assinarComprovante, liberadorDoBloqueio } from './comprovante';
-import { casarAjustes, validarAjuste, type AjusteParaCasar, type LinhaNf } from './ajuste-bolsa';
+import { casarAjustes, validarAjuste, type AjusteParaCasar, type NfChave } from './ajuste-bolsa';
+import { atribuirAjustes, bolsaDoOrcamento, bolsaNfPorOrcamento, casarOrcamentos, conciliar, valoresLinha, type OrcParaCasar } from './extrato-bolsa';
 
 /**
  * As duas permissões (sis_permissoes.tela, com editar ou criar) que o Celta exige de quem libera
@@ -157,6 +158,12 @@ export interface ResumoTributacao {
 /** Quantos candidatos a busca de cliente pede ao ERP antes de ordenar por canal/compras e cortar. */
 const BUSCA_CLIENTES_CANDIDATOS = 60;
 const BUSCA_CLIENTES_LIMITE = 20;
+
+/**
+ * Orçamentos FECHADOS que entram no casamento com as NFs: desfecho nos últimos 8 meses — os 6
+ * meses do extrato mais a janela de 30 dias, com folga. Mais antigo sai sem `bolsa_nf`.
+ */
+const CASAMENTO_MESES = 8;
 
 const CONCEITO: Record<number, string> = { 1: 'BOM', 2: 'REGULAR', 3: 'RUIM' };
 const STATUS_EDITAVEL = new Set(['RASCUNHO', 'ENVIADO', 'APROVACAO']);
@@ -452,17 +459,11 @@ export class OrcamentoService {
     const p = this.parametros();
     const periodo = mesComissional();
     // o piso entra na leitura do mês (metade da promoção) — por isso vem antes; serviços ficam fora da bolsa
-    const [{ piso, linha, pisoDre, degrau, vol }, servicos] = await Promise.all([
-      this.pisoVigente(periodo),
-      this.erp.codigosDeServico().catch((e) => {
-        this.logger.warn(`Serviços do ERP indisponíveis (ficam na bolsa): ${(e as Error).message}`);
-        return [] as number[];
-      }),
-    ]);
+    const [{ piso, linha, pisoDre, degrau, vol }, servicos] = await Promise.all([this.pisoVigente(periodo), this.servicosDoErp()]);
     // compra de oportunidade: lotes que cobrem vendas do mês (vigentes ou encerrados há pouco)
     const lotes = await this.oportunidadesParaBolsa(2);
-    const [v, clientes, celulas, cfgComissao, canalMtd, ajustes] = await Promise.all([
-      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
+    const [[v, ajustes], clientes, celulas, cfgComissao, canalMtd] = await Promise.all([
+      this.mesDaBolsa(rep, periodo, piso, servicos, lotes, 2),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
         return [];
@@ -479,8 +480,6 @@ export class OrcamentoService {
         this.logger.warn(`Bolsa do canal indisponível: ${(e as Error).message}`);
         return null;
       }),
-      // ajuste da bolsa negativa: o efetivo das NFs casadas no mês comissional (NF até 30 dias da importação)
-      this.efetivoAjustes(rep, 2, piso).then((ls) => ls.filter((l) => mesmoMes(l.emissao, periodo))),
     ]);
     const ajustePorCliente = new Map<number, number>();
     for (const l of ajustes) ajustePorCliente.set(l.cli_codigo, (ajustePorCliente.get(l.cli_codigo) ?? 0) + l.efetivo);
@@ -561,6 +560,26 @@ export class OrcamentoService {
           }
         : { modo: 'fixo' as const, piso, linha },
     };
+  }
+
+  /**
+   * O mês da bolsa do vendedor como o card lê: venda do BI (sem serviço, custo da bolsa, metade
+   * da promoção) e o efetivo dos ajustes da bolsa negativa com NF no mês (orçamentos importados
+   * nos últimos `mesesAjuste` meses). O extrato usa a mesma leitura para conferir com o card.
+   */
+  private mesDaBolsa(rep: number, periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], mesesAjuste: number) {
+    return Promise.all([
+      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
+      this.efetivoAjustes(rep, mesesAjuste, piso).then((ls) => ls.filter((l) => mesmoMes(l.emissao, periodo))),
+    ]);
+  }
+
+  /** Códigos de serviço (subtipo 09) no ERP; indisponível → lista vazia (o serviço fica na bolsa). */
+  private servicosDoErp() {
+    return this.erp.codigosDeServico().catch((e) => {
+      this.logger.warn(`Serviços do ERP indisponíveis (ficam na bolsa): ${(e as Error).message}`);
+      return [] as number[];
+    });
   }
 
   private canalCache: { chave: string; em: number; v: Awaited<ReturnType<OrcamentoBiRepository['bolsaVendedor']>> } | null = null;
@@ -1213,13 +1232,59 @@ export class OrcamentoService {
 
   async listar(f: { rep_codigo?: number; cli_codigo?: number; status?: string; page?: number; pageSize?: number }) {
     const r = await this.db.listar(f);
-    return { ...r, itens: await this.comRepNome(r.itens) };
+    return { ...r, itens: await this.comBolsa(await this.comRepNome(r.itens)) };
   }
 
   async obter(id: string) {
     const o = await this.db.obter(id);
     if (!o) throw new NotFoundException('Orçamento não encontrado.');
     return (await this.comRepNome([o]))[0];
+  }
+
+  /** GET /orcamento/:id: o orçamento com a bolsa do fechamento e a gerada nas NFs (só FECHADO). */
+  async obterComBolsa(id: string) {
+    return (await this.comBolsa([await this.obter(id)]))[0];
+  }
+
+  /**
+   * Bolsa dos FECHADOS: a do orçamento (gravada no desfecho; nos fechados antes da coluna,
+   * calculada agora com o piso de hoje → `bolsa_aprox`) e a gerada nas NFs casadas
+   * (`bolsa_nf`, null = nenhuma NF casada, fora do horizonte ou BI indisponível). Falha aqui
+   * nunca derruba a lista: os campos saem nulos.
+   */
+  private async comBolsa<T extends { id: string; status: string; rep_codigo: number | null; piso_bolsa: number | null; bolsa_orcamento: number | null }>(rows: T[]) {
+    const vazio = (o: T) => ({ ...o, bolsa_aprox: false, bolsa_nf: null as number | null });
+    const fechados = rows.filter((o) => o.status === 'FECHADO');
+    if (!fechados.length) return rows.map(vazio);
+    try {
+      const [{ piso }, codigos] = await Promise.all([this.pisoVigente(mesComissional()), this.servicosDoErp()]);
+      const servicos = new Set(codigos);
+      const semValor = fechados.filter((o) => o.bolsa_orcamento == null).map((o) => o.id);
+      const reps = [...new Set(fechados.map((o) => o.rep_codigo).filter((r): r is number => r != null))];
+      const [itens, porRep] = await Promise.all([
+        semValor.length ? this.db.itensParaBolsa(semValor) : Promise.resolve(new Map<string, never>()),
+        Promise.all(reps.map((rep) => this.bolsaNfDoRep(rep, piso, servicos).catch((e) => {
+          this.logger.warn(`Bolsa nas NFs indisponível (rep ${rep}): ${(e as Error).message}`);
+          return new Map<string, number>();
+        }))),
+      ]);
+      const bolsaNf = new Map(porRep.flatMap((m) => [...m]));
+      return rows.map((o) => {
+        if (o.status !== 'FECHADO') return vazio(o);
+        const x = o.bolsa_orcamento == null ? itens.get(o.id) : undefined;
+        const aprox = x ? bolsaDoOrcamento(x.itens, x.ajustes, piso, servicos) : null;
+        return {
+          ...o,
+          bolsa_orcamento: o.bolsa_orcamento ?? aprox,
+          piso_bolsa: o.piso_bolsa ?? (aprox != null ? piso : null),
+          bolsa_aprox: aprox != null,
+          bolsa_nf: bolsaNf.get(o.id) ?? null,
+        };
+      });
+    } catch (e) {
+      this.logger.warn(`Bolsa dos orçamentos fechados indisponível: ${(e as Error).message}`);
+      return rows.map(vazio);
+    }
   }
 
   /**
@@ -1911,37 +1976,46 @@ export class OrcamentoService {
   }
 
   /**
-   * Casa os ajustes com as NFs do atacado (empresa 3): NF gravada no orçamento do Celta, senão a
-   * primeira NF do cliente + produto + vendedor na janela da importação (ajuste-bolsa.ts).
-   * ponytail: sem as NFs do condicional (a erp-firebird-api não expõe CONDICIONAIS.NFS).
+   * Linhas de NF do atacado (empresa 3) dos pares cliente + produto desde o dia de `inicio`, e as
+   * NFs que o Celta liga a cada orçamento importado (a do orçamento e a do condicional). ERP fora →
+   * casa só pela janela.
+   */
+  private async nfsParaCasar(pares: { cli_codigo: number; pro_codigo: number }[], celtas: number[], inicio: Date) {
+    const dia = new Date(inicio);
+    dia.setHours(0, 0, 0, 0);
+    const meses = Math.ceil((Date.now() - dia.getTime()) / (30 * 86_400_000)) + 1;
+    const desde = `${dia.getFullYear()}${String(dia.getMonth() + 1).padStart(2, '0')}${String(dia.getDate()).padStart(2, '0')}`;
+    const [nfOrc, linhas] = await Promise.all([
+      this.erp.nfsDosOrcamentosCelta(celtas).catch((e) => {
+        this.logger.warn(`NF dos orçamentos do Celta indisponível (casa pela janela): ${(e as Error).message}`);
+        return new Map<number, { nf: number | null; condicionais_nfs: number[] }>();
+      }),
+      this.oportunidadesParaBolsa(meses).then((lotes) => this.bi.linhasNfAjuste(pares, desde, lotes)),
+    ]);
+    const nfs = linhas.map((l) => ({ ...l, emissao: new Date(`${l.emissao}T00:00:00`) }));
+    // a série vem da própria linha do BI (NFS é única por empresa); NF fora das linhas não casa
+    const chave = (n: number): NfChave => ({ empresa: 3, serie: nfs.find((l) => l.nfs === n)?.serie ?? '', nfs: n });
+    const doCelta = (celta: number | null) => {
+      const n = celta ? nfOrc.get(celta) : undefined;
+      return { nf_orcamento: n?.nf != null ? chave(n.nf) : null, nfs_condicional: (n?.condicionais_nfs ?? []).map(chave) };
+    };
+    return { linhas: nfs, doCelta };
+  }
+
+  /**
+   * Casa os ajustes com as NFs do atacado (empresa 3): NF gravada no orçamento do Celta, NF do
+   * condicional, senão a primeira NF do cliente + produto + vendedor na janela da importação
+   * (ajuste-bolsa.ts).
    */
   private async casarAjustesComNf(ajustes: Awaited<ReturnType<OrcamentoPrismaRepository['ajustes']>>, piso: number) {
     const importados = ajustes.filter((a) => a.celta_importado_em && a.celta_orcamento);
-    if (!importados.length) return casarAjustes(ajustes.map((a) => paraCasar(a, null)), [], { piso, hoje: new Date() });
+    if (!importados.length) return casarAjustes(ajustes.map((a) => paraCasar(a, { nf_orcamento: null, nfs_condicional: [] })), [], { piso, hoje: new Date() });
     const inicio = new Date(Math.min(...importados.map((a) => a.celta_importado_em!.getTime())));
-    inicio.setHours(0, 0, 0, 0);
-    const meses = Math.ceil((Date.now() - inicio.getTime()) / (30 * 86_400_000)) + 1;
-    const desde = `${inicio.getFullYear()}${String(inicio.getMonth() + 1).padStart(2, '0')}${String(inicio.getDate()).padStart(2, '0')}`;
-    const [nfOrc, linhas] = await Promise.all([
-      this.erp.nfsDosOrcamentosCelta(importados.map((a) => a.celta_orcamento!)).catch((e) => {
-        this.logger.warn(`NF dos orçamentos do Celta indisponível (ajuste casa pela janela): ${(e as Error).message}`);
-        return new Map<number, number>();
-      }),
-      this.oportunidadesParaBolsa(meses).then((lotes) => this.bi.linhasNfAjuste(importados, desde, lotes)),
-    ]);
-    const nfs: LinhaNf[] = linhas.map((l) => ({ ...l, emissao: new Date(`${l.emissao}T00:00:00`) }));
-    return casarAjustes(
-      ajustes.map((a) => {
-        const nf = a.celta_orcamento ? nfOrc.get(a.celta_orcamento) : undefined;
-        // a série vem da própria linha do BI (NFS é única por empresa)
-        return paraCasar(a, nf == null ? null : { empresa: 3, serie: nfs.find((l) => l.nfs === nf)?.serie ?? '', nfs: nf });
-      }),
-      nfs,
-      { piso, hoje: new Date() },
-    );
+    const { linhas, doCelta } = await this.nfsParaCasar(importados, importados.map((a) => a.celta_orcamento!), inicio);
+    return casarAjustes(ajustes.map((a) => paraCasar(a, doCelta(a.celta_orcamento))), linhas, { piso, hoje: new Date() });
   }
 
-  private ajusteCache = new Map<string, { em: number; v: Promise<Array<{ cli_codigo: number; emissao: Date; efetivo: number }>> }>();
+  private ajusteCache = new Map<string, { em: number; v: Promise<ReturnType<typeof casarAjustes>['linhas']> }>();
 
   /**
    * Efetivo dos ajustes do vendedor por linha de NF (estorno da devolução negativo), dos
@@ -1965,6 +2039,131 @@ export class OrcamentoService {
       });
     this.ajusteCache.set(chave, { em: Date.now(), v });
     return v;
+  }
+
+  /* --------------------------------------------------- extrato da bolsa */
+
+  private casamentoCache = new Map<number, { em: number; v: ReturnType<OrcamentoService['casarFechados']> }>();
+
+  /**
+   * Orçamentos FECHADOS do vendedor (desfecho nos últimos CASAMENTO_MESES) casados com as NFs do
+   * atacado — a mesma leitura serve a lista, o orçamento e o extrato, para os três baterem.
+   * Cache de 5 minutos por vendedor; erro não fica em cache.
+   */
+  private casamentoDoRep(rep: number) {
+    const c = this.casamentoCache.get(rep);
+    if (c && Date.now() - c.em < 5 * 60_000) return c.v;
+    const v = this.casarFechados(rep);
+    v.catch(() => this.casamentoCache.delete(rep));
+    this.casamentoCache.set(rep, { em: Date.now(), v });
+    return v;
+  }
+
+  private async casarFechados(rep: number) {
+    const desde = new Date();
+    desde.setHours(0, 0, 0, 0);
+    desde.setMonth(desde.getMonth() - CASAMENTO_MESES);
+    const fechados = await this.db.fechadosParaCasar(rep, desde);
+    if (!fechados.length) return { linhas: [] as Awaited<ReturnType<OrcamentoService['nfsParaCasar']>>['linhas'], ...casarOrcamentos([], []) };
+    // sem importação no Celta, a janela começa no desfecho
+    const inicio = (f: (typeof fechados)[number]) => f.celta_importado_em ?? f.desfecho_em!;
+    const { linhas, doCelta } = await this.nfsParaCasar(
+      fechados.flatMap((f) => f.itens.map((i) => ({ cli_codigo: f.cli_codigo, pro_codigo: i.pro_codigo }))),
+      fechados.map((f) => f.celta_orcamento).filter((n): n is number => n != null),
+      new Date(Math.min(...fechados.map((f) => inicio(f).getTime()))),
+    );
+    const orcs: OrcParaCasar[] = fechados.map((f) => ({
+      id: f.id, numero: f.numero, cli_codigo: f.cli_codigo, rep_codigo: f.rep_codigo ?? rep, inicio: inicio(f),
+      ...doCelta(f.celta_importado_em ? f.celta_orcamento : null),
+      itens: f.itens,
+    }));
+    return { linhas, ...casarOrcamentos(orcs, linhas) };
+  }
+
+  /** Bolsa gerada nas NFs por orçamento FECHADO do vendedor, com o piso de hoje e o ajuste efetivo de cada linha. */
+  private async bolsaNfDoRep(rep: number, piso: number, servicos: Set<number>) {
+    const [c, ajustes] = await Promise.all([this.casamentoDoRep(rep), this.efetivoAjustes(rep, CASAMENTO_MESES, piso)]);
+    const linhas = c.linhas.map((l) => ({ ...l, servico: servicos.has(l.pro_codigo), ajuste: 0 }));
+    atribuirAjustes(linhas, ajustes);
+    return bolsaNfPorOrcamento(c.porOrcamento, linhas, piso);
+  }
+
+  /**
+   * Extrato da bolsa do vendedor num dos últimos 6 meses comissionais: cada linha de NF do mês
+   * com o que pôs na bolsa (piso de hoje, como o card) e o orçamento que a gerou. `totais.card_saldo`
+   * é o saldo do card no mesmo mês pela mesma leitura (`mesDaBolsa`); `diferenca` ≠ 0 aponta
+   * linha que o card conta e o extrato não mostra (ex.: ajuste casado com NF de outro vendedor).
+   */
+  async extratoBolsa(rep: number, ano?: number, mes?: number) {
+    const atual = mesComissional();
+    const meses = [{ ano: atual.ano, mes: atual.mes }, ...mesesAnteriores(atual.ano, atual.mes, 5)];
+    const k = ano == null && mes == null ? 0 : meses.findIndex((m) => m.ano === ano && m.mes === mes);
+    if (k < 0) throw new BadRequestException(`ano/mes: escolha um dos últimos 6 meses comissionais (${meses.map((m) => `${m.mes}/${m.ano}`).join(', ')}).`);
+    const periodo = meses[k];
+    const [{ piso, linha }, servicos] = await Promise.all([this.pisoVigente(atual), this.servicosDoErp()]);
+    // lotes e ajustes que alcançam o mês escolhido (no mês atual, os mesmos do card)
+    const lotes = await this.oportunidadesParaBolsa(k + 2);
+    const [rows, [v, ajustes], cas] = await Promise.all([
+      this.bi.linhasExtrato(rep, periodo.ano, periodo.mes, lotes, servicos),
+      this.mesDaBolsa(rep, periodo, piso, servicos, lotes, k + 2),
+      this.casamentoDoRep(rep).catch((e) => {
+        this.logger.warn(`Casamento orçamento × NF indisponível (rep ${rep}): ${(e as Error).message}`);
+        return null;
+      }),
+    ]);
+    // nº impresso e chave da NF: a view do BI os traz nulos (Stage_Vendas não carrega esses campos);
+    // completa pelo ERP só o que veio vazio. ERP fora → ficam nulos, o extrato sai assim mesmo.
+    const faltam = rows.filter((r) => r.empresa === 3 && (r.nota_fiscal == null || r.chave_nfe == null)).map((r) => r.nfs);
+    if (faltam.length) {
+      const doErp = await this.erp.numerosNfSaida(faltam).catch((e) => {
+        this.logger.warn(`Nº e chave das NFs indisponíveis no ERP (extrato sai sem eles): ${(e as Error).message}`);
+        return new Map<number, { nota_fiscal: number | null; chave_nfe: string | null }>();
+      });
+      for (const r of rows) {
+        const n = r.empresa === 3 ? doErp.get(r.nfs) : undefined;
+        if (n) { r.nota_fiscal ??= n.nota_fiscal; r.chave_nfe ??= n.chave_nfe; }
+      }
+    }
+    const linhas = rows.sort((a, b) => a.nfs - b.nfs || a.item - b.item).map((r) => ({ ...r, ajuste: 0 }));
+    atribuirAjustes(linhas, ajustes);
+    const indice = new Map((cas?.linhas ?? []).map((l, i) => [`${l.empresa}|${l.serie}|${l.nfs}|${l.item}`, i]));
+    const itens = linhas.map((r) => {
+      const i = indice.get(`${r.empresa}|${r.serie}|${r.nfs}|${r.item}`);
+      return { r, v: valoresLinha(r, piso), casadas: i == null ? [] : (cas!.porLinha.get(i) ?? []) };
+    });
+    const notas = new Map<string, typeof itens>();
+    for (const x of itens) {
+      const chave = `${x.r.empresa}|${x.r.serie}|${x.r.nfs}`;
+      notas.set(chave, [...(notas.get(chave) ?? []), x]);
+    }
+    const soma = (its: typeof itens, f: (x: (typeof itens)[number]) => number) => round2(its.reduce((s, x) => s + f(x), 0));
+    const nfs = [...notas.values()]
+      .map((its) => {
+        const nf = its[0].r;
+        return {
+          empresa: nf.empresa, serie: nf.serie, nfs: nf.nfs, nota_fiscal: nf.nota_fiscal, chave_nfe: nf.chave_nfe, emissao: nf.emissao, devolucao: nf.devolucao,
+          cli_codigo: nf.cli_codigo, cli_nome: nf.cli_nome,
+          orcamentos: [...new Map(its.flatMap((x) => x.casadas).map((c) => [c.orcamento_id, { id: c.orcamento_id, numero: c.numero }])).values()],
+          // serviço fica fora da bolsa: nem na venda líquida da NF
+          venda_liquida: soma(its, (x) => (x.r.servico ? 0 : x.r.liquido)),
+          custo_piso: soma(its, (x) => x.v.custo_piso),
+          saldo: soma(its, (x) => x.v.saldo),
+          absorvido: soma(its, (x) => x.v.absorvido),
+          ajuste: soma(its, (x) => x.v.ajuste),
+          itens: its.map(({ r, v, casadas }) => ({
+            item: r.item, pro_codigo: r.pro_codigo, pro_descricao: r.pro_descricao, quantidade: r.quantidade, unitario: r.unitario,
+            // custo, custo_nf e custo_piso são da linha inteira (quantidade × unitário), com sinal
+            liquido: round2(r.liquido), custo: round2(r.custo_bolsa), custo_oportunidade: r.custo_oportunidade, custo_nf: round2(r.custo_produto),
+            custo_piso: round2(v.custo_piso), saldo: round2(v.saldo), promocao: r.promocao, absorvido: round2(v.absorvido), ajuste: round2(v.ajuste),
+            servico: r.servico,
+            orcamento: casadas[0] ? { id: casadas[0].orcamento_id, numero: casadas[0].numero, preco_unit: casadas[0].preco_unit_orc, custo_ref: casadas[0].custo_ref } : null,
+          })),
+        };
+      })
+      .sort((a, b) => b.emissao.localeCompare(a.emissao) || b.nfs - a.nfs);
+    const totais = conciliar(linhas, piso);
+    const card = calcularBolsa({ receita_mtd: v.venda_liquida, custo_mtd: v.custo, desconto_mtd: v.desconto, absorvido_mtd: v.absorvido, ajuste_mtd: ajustes.reduce((s, l) => s + l.efetivo, 0), piso, linha }).saldo;
+    return { periodo, piso, rep_codigo: rep, nfs, totais: { ...totais, card_saldo: card, diferenca: round2(totais.saldo - card) } };
   }
 
   /** Relação dos ajustes pelo período do ajuste, com o efetivo e a situação do casamento com a NF. */
@@ -2040,6 +2239,21 @@ export class OrcamentoService {
     );
   }
 
+  /**
+   * Bolsa do orçamento congelada no FECHADO: o piso em vigor hoje e o resultado do orçamento
+   * contra ele, dos itens gravados. Sem piso (BI fora) fecha mesmo assim, com as colunas nulas —
+   * a leitura calcula depois com o piso do dia (`bolsa_aprox`).
+   */
+  private async bolsaNoFechamento(o: Awaited<ReturnType<OrcamentoService['obter']>>) {
+    try {
+      const [{ piso }, servicos] = await Promise.all([this.pisoVigente(mesComissional()), this.servicosDoErp()]);
+      return { piso_bolsa: piso, bolsa_orcamento: bolsaDoOrcamento(o.itens ?? [], o.ajustes_bolsa ?? [], piso, new Set(servicos)) };
+    } catch (e) {
+      this.logger.warn(`Bolsa do orçamento ${o.numero} não gravada no fechamento: ${(e as Error).message}`);
+      return {};
+    }
+  }
+
   async desfecho(id: string, dto: DesfechoOrcamentoDto) {
     const o = await this.obter(id);
     if (['FECHADO', 'PERDIDO', 'CANCELADO'].includes(o.status)) {
@@ -2048,6 +2262,7 @@ export class OrcamentoService {
     if (dto.resultado === 'PERDIDO' && !dto.motivo) throw new BadRequestException('Informe o motivo da perda.');
     if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
     return this.db.atualizar(id, {
+      ...(dto.resultado === 'FECHADO' ? await this.bolsaNoFechamento(o) : {}),
       status: dto.resultado,
       desfecho_em: new Date(),
       desfecho_motivo: dto.resultado === 'PERDIDO' ? dto.motivo : null,
@@ -2230,6 +2445,8 @@ export class OrcamentoService {
       desfecho_em: null,
       desfecho_motivo: null,
       desfecho_ref: null,
+      piso_bolsa: null,
+      bolsa_orcamento: null,
     });
   }
 
@@ -2355,12 +2572,12 @@ function ajustesPendentes(o: { itens?: Array<{ pro_codigo: number; pedir_ajuste:
 
 function paraCasar(
   a: { id: string; pro_codigo: number; cli_codigo: number; rep_codigo: number | null; quantidade: number; assumido_unit: number; preco_unit: number; celta_importado_em: Date | null },
-  nf: AjusteParaCasar['nf_orcamento'],
+  nfs: Pick<AjusteParaCasar, 'nf_orcamento' | 'nfs_condicional'>,
 ): AjusteParaCasar {
   return {
     id: a.id, pro_codigo: a.pro_codigo, cli_codigo: a.cli_codigo, rep_codigo: a.rep_codigo ?? 0,
     quantidade: a.quantidade, assumido_unit: a.assumido_unit, preco_unit: a.preco_unit,
-    importado_em: a.celta_importado_em, nf_orcamento: nf, nfs_condicional: [],
+    importado_em: a.celta_importado_em, ...nfs,
   };
 }
 

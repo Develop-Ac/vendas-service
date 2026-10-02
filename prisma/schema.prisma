@@ -2168,6 +2168,10 @@ model ven_orcamento {
   icms_st            Decimal              @default(0) @db.Decimal(15, 2)
   difal              Decimal              @default(0) @db.Decimal(15, 2)
   meia_nota          Boolean              @default(false)
+  /// piso da bolsa em vigor no desfecho FECHADO (nulo nos fechados antes de 02/10/2026)
+  piso_bolsa         Decimal?             @db.Decimal(8, 4)
+  /// R$ do orçamento contra custo × piso no fechamento (calcularBolsa().orcamento)
+  bolsa_orcamento    Decimal?             @db.Decimal(14, 2)
   itens              ven_orcamento_item[]
   ven_venda_perdida  ven_venda_perdida[]
   ven_bolsa_ajuste   ven_bolsa_ajuste[]

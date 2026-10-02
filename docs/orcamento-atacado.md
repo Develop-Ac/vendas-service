@@ -144,6 +144,17 @@ na empresa 1, itens com custo/tabela 2/estoque da empresa 3 e a sobra), `GET/POS
 /orcamento/oportunidade`, `PUT /orcamento/oportunidade/:id` (% do vendedor ou encerrar).
 SQL manual bloco 14. Função pura em `oportunidade.ts` (+ spec).
 
+### Extrato da bolsa por NF e bolsa do orçamento fechado (02/10/2026)
+
+No desfecho FECHADO o orçamento grava `piso_bolsa` e `bolsa_orcamento` (`calcularBolsa().orcamento`
+dos itens gravados); fechados antes disso são calculados na leitura com o piso de hoje
+(`bolsa_aprox: true`). `GET /orcamento` e `GET /orcamento/:id` trazem também `bolsa_nf`, a bolsa que
+as NFs casadas com o orçamento geraram. `GET /orcamento/vendedor/:rep/bolsa/extrato?ano=&mes=` abre a
+bolsa do mês NF a NF, com o orçamento de cada linha e a conferência com o card (`diferenca`, esperado 0).
+Regras do casamento orçamento → NF (NF do orçamento, NF do condicional, janela de 30 dias **sem
+condição de preço**), conciliação e contrato da rota: **[extrato-bolsa.md](extrato-bolsa.md)**.
+SQL manual `sql/2026-10-02_bolsa_fechado_postgres.sql`.
+
 ## Comissão estimada (ao lado da bolsa)
 
 `comissao` na resposta da bolsa: `atual` (mês como está) e `com_orcamento` (se o orçamento fechar),
@@ -218,6 +229,7 @@ como hoje e registra o número em "Fechado".
 | GET | `/clientes?q=&todos=` | a mesma busca na forma antiga (só o array) — mantida para a tela publicada |
 | GET | `/clientes/:cli` | cabeçalho: cadastro ao vivo + crédito + histórico |
 | GET | `/vendedor/:rep/bolsa?total=&desconto=&custo=&sem_custo=&m1a..m1d=&m23=` | bolsa do mês (+ projeção) e comissão estimada do mês / com o orçamento |
+| GET | `/vendedor/:rep/bolsa/extrato?ano=&mes=` | extrato da bolsa por NF num dos últimos 6 meses comissionais, com o orçamento casado e a conferência com o card (ver [extrato-bolsa.md](extrato-bolsa.md)) |
 | GET | `/vendedor/:rep/bolsa/cliente/:cli?meses=6` | bolsa que o cliente gerou para o vendedor nos meses comissionais fechados (1 a 12, mais recente primeiro) + total; **piso de hoje em todos os meses** — compara o cliente, não reproduz o fechamento |
 | GET | `/produtos?q=&tabela=&cli=` | busca já avaliada na régua |
 | GET | `/produtos/:codigo[/equivalentes|/relacionados]` | detalhe, equivalentes, vendem juntos |

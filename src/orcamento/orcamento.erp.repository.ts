@@ -767,21 +767,72 @@ export class OrcamentoErpRepository {
   }
 
   /**
-   * NF (chave interna NFS, única por empresa) gravada no orçamento do Celta — ORCAMENTOS.NFS,
-   * quase nunca preenchida. Orçamento sem NF não entra no mapa.
-   * ponytail: o condicional (ORCAMENTOS.CONDICIONAL → CONDICIONAIS.NFS) não é exposto pela
-   * erp-firebird-api; entra aqui quando houver catálogo de CONDICIONAIS.
+   * Número impresso e chave de acesso das NFs de saída (empresa 3) pela chave interna NFS. O
+   * extrato da bolsa precisa deles e o BI não tem: o Stage_Vendas nunca carregou NOTA_FISCAL nem
+   * CHAVE_NFE (só NFS/SERIE), então vêm nulos na vw_analise_vendas. Em lotes de 200.
    */
-  async nfsDosOrcamentosCelta(orcamentos: number[]): Promise<Map<number, number>> {
+  async numerosNfSaida(nfs: number[]): Promise<Map<number, { nota_fiscal: number | null; chave_nfe: string | null }>> {
+    const lista = [...new Set(nfs.filter((n) => Number.isFinite(n) && n > 0))];
+    const saida = new Map<number, { nota_fiscal: number | null; chave_nfe: string | null }>();
+    for (let i = 0; i < lista.length; i += 200) {
+      const lote = lista.slice(i, i + 200);
+      const rows = await this.erp.consultar<Record<string, any>>('nf-saida', {
+        empresa: EMPRESA,
+        campos: ['NFS', 'NOTA_FISCAL', 'SERIE', 'CHAVE_NFE'],
+        filtros: [{ campo: 'NFS', op: 'em', valor: lote }],
+        limite: lote.length + FOLGA,
+      });
+      for (const r of rows) {
+        saida.set(Number(r.NFS), { nota_fiscal: Number(r.NOTA_FISCAL) > 0 ? Number(r.NOTA_FISCAL) : null, chave_nfe: String(r.CHAVE_NFE ?? '').trim() || null });
+      }
+    }
+    return saida;
+  }
+
+  /**
+   * NFs (chave interna NFS, única por empresa) que saíram do orçamento do Celta: a gravada no
+   * próprio orçamento (ORCAMENTOS.NFS, quase nunca preenchida) e a do condicional aberto a partir
+   * dele (ORCAMENTOS.CONDICIONAL → CONDICIONAIS.NFS) — no atacado o orçamento costuma virar
+   * condicional antes da nota. Orçamento sem nenhuma das duas não entra no mapa.
+   * erp-firebird-api sem CONDICIONAL/`condicionais` (versão anterior): fica só a NF do orçamento.
+   */
+  async nfsDosOrcamentosCelta(orcamentos: number[]): Promise<Map<number, { nf: number | null; condicionais_nfs: number[] }>> {
     const lista = [...new Set(orcamentos.filter((o) => Number.isFinite(o) && o > 0))];
-    if (!lista.length) return new Map();
-    const orcs = await this.erp.consultar<Record<string, any>>('orcamentos', {
-      empresa: EMPRESA,
-      campos: ['ORCAMENTO', 'NFS'],
-      filtros: [{ campo: 'ORCAMENTO', op: 'em', valor: lista }],
-      limite: lista.length + FOLGA,
-    });
-    return new Map(orcs.filter((o) => o.NFS != null && Number(o.NFS) > 0).map((o) => [Number(o.ORCAMENTO), Number(o.NFS)]));
+    const saida = new Map<number, { nf: number | null; condicionais_nfs: number[] }>();
+    if (!lista.length) return saida;
+    // filtro `em` aceita até 500 valores
+    const emLotes = async (recurso: string, campos: string[], campo: string, valores: number[]) => {
+      const rows: Record<string, any>[] = [];
+      for (let i = 0; i < valores.length; i += 500) {
+        const lote = valores.slice(i, i + 500);
+        rows.push(...(await this.erp.consultar<Record<string, any>>(recurso, { empresa: EMPRESA, campos, filtros: [{ campo, op: 'em', valor: lote }], limite: lote.length + FOLGA })));
+      }
+      return rows;
+    };
+    let orcs: Record<string, any>[];
+    try {
+      orcs = await emLotes('orcamentos', ['ORCAMENTO', 'NFS', 'CONDICIONAL'], 'ORCAMENTO', lista);
+    } catch (e) {
+      this.logger.warn(`ORCAMENTOS.CONDICIONAL indisponível na erp-firebird-api (casa só pela NF do orçamento): ${(e as Error).message}`);
+      orcs = await emLotes('orcamentos', ['ORCAMENTO', 'NFS'], 'ORCAMENTO', lista);
+    }
+    const nfDoCondicional = new Map<number, number>();
+    const condicionais = [...new Set(orcs.map((o) => Number(o.CONDICIONAL)).filter((c) => c > 0))];
+    if (condicionais.length) {
+      try {
+        for (const c of await emLotes('condicionais', ['CONDICIONAL', 'NFS'], 'CONDICIONAL', condicionais)) {
+          if (Number(c.NFS) > 0) nfDoCondicional.set(Number(c.CONDICIONAL), Number(c.NFS));
+        }
+      } catch (e) {
+        this.logger.warn(`CONDICIONAIS indisponível na erp-firebird-api (casa só pela NF do orçamento): ${(e as Error).message}`);
+      }
+    }
+    for (const o of orcs) {
+      const nf = Number(o.NFS) > 0 ? Number(o.NFS) : null;
+      const cond = nfDoCondicional.get(Number(o.CONDICIONAL));
+      if (nf != null || cond != null) saida.set(Number(o.ORCAMENTO), { nf, condicionais_nfs: cond != null ? [cond] : [] });
+    }
+    return saida;
   }
 
   /* ------------------------------------------------------------ imagens */

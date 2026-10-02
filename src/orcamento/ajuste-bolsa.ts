@@ -59,12 +59,12 @@ export type SituacaoAjuste = 'AGUARDANDO_NF' | 'APLICADO' | 'PARCIAL' | 'EXPIRAD
 
 type NfDoAjuste = NfChave & { emissao: Date; quantidade: number; efetivo: number; devolucao: boolean };
 
-const mesmaNf = (a: NfChave, b: NfChave) => a.empresa === b.empresa && String(a.serie).trim() === String(b.serie).trim() && a.nfs === b.nfs;
+export const mesmaNf = (a: NfChave, b: NfChave) => a.empresa === b.empresa && String(a.serie).trim() === String(b.serie).trim() && a.nfs === b.nfs;
 const chave = (l: LinhaNf): NfChave => ({ empresa: l.empresa, serie: l.serie, nfs: l.nfs });
 
 /** Janela do fallback em dias de calendário: do dia da importação até o fim do dia importação + janela
  *  (a NF traz só a data; a importação traz hora — NF do mesmo dia tem de casar). */
-function janela(importado: Date, dias: number) {
+export function janela(importado: Date, dias: number) {
   const inicio = new Date(importado);
   inicio.setHours(0, 0, 0, 0);
   return { inicio: inicio.getTime(), fim: inicio.getTime() + (dias + 1) * DIA_MS };
