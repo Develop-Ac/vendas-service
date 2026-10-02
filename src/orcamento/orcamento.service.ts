@@ -1513,9 +1513,11 @@ export class OrcamentoService {
    * Fotografia da bolsa ao salvar: % de desconto do mês antes/depois (colunas
    * bolsa_pct_*) e o saldo depois deste orçamento — quem decide a alçada.
    */
-  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }> }) {
+  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>; ajuste?: number }) {
     try {
-      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos });
+      // `ajuste` = o que a empresa assume pelo ajuste da bolsa negativa já gravado: entra na compensação
+      // do orçamento, como na tela — sem ele a alçada recalculada derrubaria uma aprovação dada pelo ajuste
+      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos, ajuste: m.ajuste });
       const brutoDepois = b.bolsa.bruto_mtd + m.subtotal;
       return {
         antes: b.bolsa.pct_desconto,
@@ -1609,8 +1611,6 @@ export class OrcamentoService {
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
     const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
-    const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
-    const pag = await this.pagamentoDe(dto);
     // Editar os ITENS de um orçamento já enviado o devolve ao rascunho e derruba a aprovação:
     // o que o cliente recebeu (e o que o gerente liberou) mudou. Salvar sem mexer em produto,
     // quantidade e preço — só pagamento ou observação, como no "Fechou" — mantém os dois.
@@ -1619,10 +1619,19 @@ export class OrcamentoService {
     const antes = (atual.itens ?? []).map(chave).sort().join(';');
     const depois = m.linhas.map(chave).sort().join(';');
     const mesmosItens = atual.cli_codigo === dto.cli_codigo && antes === depois;
+    // ajustes da bolsa só sobrevivem com os mesmos itens — e só então contam na compensação
+    const ajuste = mesmosItens ? (atual.ajustes_bolsa ?? []).reduce((acc, a) => acc + Number(a.assumido_unit) * Number(a.quantidade), 0) : 0;
+    const bolsa = await this.bolsaSnapshot(dto.rep_codigo, { ...m, ajuste });
+    const pag = await this.pagamentoDe(dto);
     const acimaAlcada = this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa, bolsa.canal_apos);
     // aprovação dada pelo ajuste da bolsa vale só dentro da alçada: passou dela, a gerência aprova
     const mantemAprovacao = mesmosItens && !(atual.aprovado_por_ajuste && acimaAlcada);
-    if (atual.status === 'APROVACAO' && !mesmosItens) this.avisos.aprovacaoEncerrada(id);
+    // A alçada é recalculada a cada salvar com a bolsa DE AGORA: o orçamento que esperava o gestor
+    // porque a bolsa não cobria pode caber na alçada horas depois (venda nova do mês). Com os mesmos
+    // itens e nada mais a aprovar, sai da fila sozinho — é o que `enviar` faria, e é o que a tela
+    // mostra ao vendedor; sem isso o WhatsApp dizia "aguardando o supervisor" por um status velho.
+    const saiDaAprovacao = atual.status === 'APROVACAO' && mesmosItens && !acimaAlcada && ajustesPendentes(atual) === 0;
+    if (atual.status === 'APROVACAO' && (!mesmosItens || saiDaAprovacao)) this.avisos.aprovacaoEncerrada(id);
     return this.db.atualizar(
       id,
       {
@@ -1632,7 +1641,7 @@ export class OrcamentoService {
         rep_codigo: dto.rep_codigo,
         // Vendedor trocado na edição: o nome gravado antes não serve mais.
         rep_nome: dto.rep_nome || (atual.rep_codigo === dto.rep_codigo && atual.rep_nome) || (await this.erp.nomeRepresentante(dto.rep_codigo)),
-        status: mesmosItens ? atual.status : 'RASCUNHO',
+        status: !mesmosItens ? 'RASCUNHO' : saiDaAprovacao ? 'ENVIADO' : atual.status,
         validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
         ...pag,
@@ -1651,7 +1660,7 @@ export class OrcamentoService {
         aprovado_por: mantemAprovacao ? atual.aprovado_por : null,
         aprovado_em: mantemAprovacao ? atual.aprovado_em : null,
         aprovado_por_ajuste: mantemAprovacao ? atual.aprovado_por_ajuste : false,
-        enviado_em: mesmosItens ? atual.enviado_em : null,
+        enviado_em: !mesmosItens ? null : saiDaAprovacao ? new Date() : atual.enviado_em,
       },
       m.linhas.map((l) => ({ ...l, orcamento_id: id })),
       // os ajustes da bolsa caem junto com a aprovação: a linha ajustada mudou

@@ -212,7 +212,11 @@ Sempre **hoje + 7 dias** (`ORCAMENTO_VALIDADE_DIAS`). Com item em promoção, en
 SEM_ESTOQUE, CONCORRENTE, CLIENTE_ADIOU, CREDITO_BLOQUEADO) | `CANCELADO`.
 
 Editar um orçamento enviado o devolve a RASCUNHO. Ao salvar, preço de tabela, custo e saldo
-são relidos do ERP — o que a tela mostrou pode ter mudado. `GET /orcamento/:id/conferir`
+são relidos do ERP — o que a tela mostrou pode ter mudado. A alçada também é recalculada a
+cada salvar com a bolsa de agora: um orçamento em `APROVACAO` salvo com os mesmos itens que
+já cabe na alçada (a bolsa do mês cresceu) e sem pedido de ajuste pendente passa a `ENVIADO`
+sozinho — o mesmo que `/enviar` faria. O ajuste da bolsa já gravado entra na compensação do
+orçamento nesse recálculo, como na tela. `GET /orcamento/:id/conferir`
 re-avalia um orçamento salvo (saldo que sumiu, tabela que mudou) sem gravar.
 
 **O orçamento NÃO é gravado no Celta** (não existe escrita de orçamento no ERP; a única
