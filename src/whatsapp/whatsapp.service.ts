@@ -78,6 +78,8 @@ export interface HistoricoEstado {
   gravadas: number;
   midias: number;
   erro: string | null;
+  /** true = pede ao WAHA só as mensagens fromMe (recarga leve de uma lacuna de enviadas). */
+  so_enviadas?: boolean;
 }
 
 /**
@@ -230,8 +232,11 @@ export class WhatsappService {
    */
   private async gravarEvento(sessao: string, p: PayloadWaha) {
     // fromMe define a direção e, com ela, qual lado do par é o interlocutor.
+    // WEBJS: enviada vem com from=eu e to=contato. NOWEB: `from` é SEMPRE o chat
+    // (remoteJid do Baileys) e `to` vem vazio — sem o fallback, toda enviada
+    // caía no descarte de "grupo/broadcast" e o painel mostrava 0 enviadas.
     const direcao: MensagemRow['direcao'] = p.fromMe ? 'ENVIADA' : 'RECEBIDA';
-    const interlocutor = String((p.fromMe ? p.to : p.from) ?? '');
+    const interlocutor = String((p.fromMe ? p.to || p.from : p.from) ?? '');
     if (!interlocutor || CHATS_IGNORADOS.some((s) => interlocutor.includes(s))) {
       return { ignorado: 'grupo/broadcast' };
     }
@@ -446,7 +451,7 @@ export class WhatsappService {
    * Limite conhecido do engine WEBJS: só devolve o que o WhatsApp Web sincronizou
    * do aparelho — medir na primeira rodada.
    */
-  importarHistorico(sessao: string, desde?: string) {
+  importarHistorico(sessao: string, desde?: string, soEnviadas = false) {
     if (!sessao) throw new BadRequestException('sessao é obrigatória.');
     if (!this.wahaBase) throw new BadRequestException('WA_API_URL não configurada.');
     if (!sessoesComCorpo().has(sessao)) {
@@ -467,6 +472,7 @@ export class WhatsappService {
       gravadas: 0,
       midias: 0,
       erro: null,
+      so_enviadas: soEnviadas,
     };
     this.historicos.set(sessao, estado);
     void this.executarHistorico(estado, d);
@@ -505,7 +511,10 @@ export class WhatsappService {
         try {
           const r = await fetch(
             `${base}/api/${s}/chats/${encodeURIComponent(chatId)}/messages` +
-              `?limit=1000&downloadMedia=true&filter.timestamp.gte=${epoch}`,
+              `?limit=1000&downloadMedia=true&filter.timestamp.gte=${epoch}` +
+              // filter.fromMe=true: o WAHA devolve (e baixa mídia) só das enviadas —
+              // recarga da lacuna de 29/09→deploy sem repassar milhares de recebidas.
+              (estado.so_enviadas ? '&filter.fromMe=true' : ''),
             { headers: this.wahaHeaders(), signal: AbortSignal.timeout(180_000) },
           );
           if (!r.ok) throw new Error(`HTTP ${r.status}`);

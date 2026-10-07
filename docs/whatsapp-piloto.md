@@ -116,6 +116,9 @@ depois de conectá-la:
 curl -X POST http://vendas-service.acacessorios.local/whatsapp/historico -H 'Content-Type: application/json' -d '{"sessao":"rep-163"}'
 ```
 
+`"so_enviadas": true` no corpo pede ao WAHA só as mensagens `fromMe` (recarga
+leve de uma lacuna de enviadas, como a de 29/09→07/10/2026 no NOWEB). Rode uma
+sessão por vez e espere `terminado_em` antes da próxima — `scripts/recarregar-enviadas.ps1`.
 Roda em segundo plano (`GET /whatsapp/historico` mostra chats, lidas, gravadas,
 mídias, erro). Repetir é seguro: a chave única `(sessao, message_id)` ignora o
 que já entrou. Limite do engine WEBJS: só devolve o que o WhatsApp Web

@@ -97,6 +97,16 @@ describe('WhatsappService', () => {
     expect(gravadas[0]).toMatchObject({ direcao: 'ENVIADA', cli_codigo: 1 });
   });
 
+  it('mensagem enviada no NOWEB: "to" vazio e "from" é o contato — ainda assim ENVIADA', async () => {
+    const r = await service.processarWebhook({
+      event: 'message.any',
+      session: 'rep-316',
+      payload: { id: 'true_556588887777@c.us_X', from: '556588887777@c.us', to: undefined, fromMe: true, timestamp: 1756300000, source: 'app' },
+    });
+    expect(r).toMatchObject({ ok: true, gravada: true });
+    expect(gravadas[0]).toMatchObject({ direcao: 'ENVIADA', chave: '6588887777', cli_codigo: 1 });
+  });
+
   it('grupo e broadcast ficam fora do sensor', async () => {
     const r1 = await service.processarWebhook({
       event: 'message',

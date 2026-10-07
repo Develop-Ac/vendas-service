@@ -78,8 +78,8 @@ export class WhatsappController {
   // Importa as conversas de uma sessão desde uma data (padrão 01/09/2026),
   // em segundo plano. Só sessões em WA_CORPO_SESSOES; repetir não duplica.
   @Post('historico')
-  historico(@Body() dto: { sessao: string; desde?: string }) {
-    return this.service.importarHistorico(dto?.sessao ?? '', dto?.desde);
+  historico(@Body() dto: { sessao: string; desde?: string; so_enviadas?: boolean }) {
+    return this.service.importarHistorico(dto?.sessao ?? '', dto?.desde, dto?.so_enviadas === true);
   }
 
   @Get('historico')

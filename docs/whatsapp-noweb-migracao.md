@@ -38,7 +38,7 @@ O webhook lê campos que só o WEBJS preenche. Ajuste em
 | `p.body \|\| p._data.caption` → `corpo` | `body` vazio em mídia, legenda em `_data.caption` | legenda deve vir em `body` (confirmar no item 4 do checklist) | manter a ordem; se a legenda vier fora de `body`, ler `_data.message.*Message.caption` |
 | `p._data.size` → corte de 20 MB antes de baixar | preenchido | ausente (NaN → corte não roda) | conferir `content-length` na resposta do download antes de ler o corpo |
 | `p.media.url` / `p.media.mimetype` | ok | ok (exige `WHATSAPP_DOWNLOAD_MEDIA=true` + mimetypes, como hoje) | nenhum |
-| `p.from` / `p.to` / `p.fromMe` / `p.timestamp` / `p.ack` / `p.id` | ok | ok | nenhum; confirmar que o `id` mantém o formato `fromMe_chat_id` (item 7) |
+| `p.from` / `p.to` / `p.fromMe` / `p.timestamp` / `p.ack` / `p.id` | enviada: `from`=eu, `to`=contato | **`from` é sempre o chat e `to` vem vazio, também na enviada** (medido 07/10/2026: 8 dias de enviadas descartadas como "grupo/broadcast") | interlocutor = `fromMe ? (to \|\| from) : from` |
 | `GET /api/{sessao}/lids/{lid}` | ok | ok com store ligado | nenhum |
 | histórico: `GET /api/{s}/chats` e `/chats/{id}/messages?filter.timestamp.gte=` | limitado ao que o WhatsApp Web sincronizou | vem do store; `fullSync=true` pede ~1 ano ao aparelho | nenhum no código; `fullSync` na criação da sessão |
 
