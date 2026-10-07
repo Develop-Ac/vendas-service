@@ -1,0 +1,51 @@
+import { generateKeyPairSync, verify } from 'node:crypto';
+import { assinarComprovante, chavePrivada, liberadorDoBloqueio, VALIDADE_S } from './comprovante';
+
+describe('comprovante de aprovação', () => {
+  const par = generateKeyPairSync('ed25519');
+  const pem = par.privateKey.export({ type: 'pkcs8', format: 'pem' }) as string;
+  const escapado = pem.replace(/\n/g, '\\n');
+  const dados = {
+    empresa: 3,
+    cli_codigo: 40275,
+    aprovador: 19,
+    solicitante: 200,
+    justificativa: 'Intranet ORC-000262',
+    valor_descto: 0,
+    itens: [{ item: 1, pro_codigo: 21367, quantidade: 1, unitario: 937.3, perc_descto: 8, valor_descto: 74.98, efetivo: 8, permitido: 5 }],
+  };
+
+  it('emite um JWT EdDSA que a chave pública confere, com id único e validade curta', () => {
+    const token = assinarComprovante(dados, pem);
+    const [h, p, s] = token.split('.');
+    expect(JSON.parse(Buffer.from(h, 'base64url').toString())).toEqual({ alg: 'EdDSA', typ: 'JWT' });
+    const payload = JSON.parse(Buffer.from(p, 'base64url').toString());
+    expect(payload).toMatchObject(dados);
+    expect(payload.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(payload.exp - payload.iat).toBe(VALIDADE_S);
+    expect(verify(null, Buffer.from(`${h}.${p}`), par.publicKey, Buffer.from(s, 'base64url'))).toBe(true);
+    expect(assinarComprovante(dados, pem)).not.toBe(token);
+  });
+
+  it('aceita o PEM como vem do .env (quebras escapadas) e de um painel (com aspas em volta)', () => {
+    expect(chavePrivada(escapado)).not.toBeNull();
+    expect(chavePrivada(`"${escapado}"`)).not.toBeNull();
+    expect(chavePrivada(undefined)).toBeNull();
+    expect(() => assinarComprovante(dados, '')).toThrow(/ORCAMENTO_APROVACAO_CHAVE_PRIVADA/);
+  });
+
+  it('libera com o gestor que aprovou; sem aprovação, com INTRANET-ORÇ só dentro da alçada', () => {
+    expect(liberadorDoBloqueio(true, true, 19, 258)).toEqual({ codigo: 19 });
+    expect(liberadorDoBloqueio(true, false, 19, 258)).toEqual({ codigo: 19 });
+    expect(liberadorDoBloqueio(false, false, undefined, 258)).toEqual({ codigo: 258 });
+    expect(liberadorDoBloqueio(false, true, undefined, 258)).toEqual({ erro: expect.stringMatching(/acima da alçada/) });
+    expect(liberadorDoBloqueio(true, true, NaN, 258)).toEqual({ erro: expect.stringMatching(/anterior/) });
+  });
+
+  it('ajuste da bolsa: dentro da alçada quem ajustou libera; acima da alçada o ajuste sozinho não libera', () => {
+    // dentro da alçada o ajuste grava aprovado_* com o código de quem ajustou
+    expect(liberadorDoBloqueio(true, false, 77, 258)).toEqual({ codigo: 77 });
+    // acima da alçada o ajuste não grava aprovação: a importação para até a gerência aprovar
+    expect(liberadorDoBloqueio(false, true, undefined, 258)).toEqual({ erro: expect.stringMatching(/acima da alçada/) });
+  });
+});

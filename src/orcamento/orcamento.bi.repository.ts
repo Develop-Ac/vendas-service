@@ -21,7 +21,7 @@ const ymd8 = (d: Date) => d.toISOString().slice(0, 10).replace(/-/g, '');
  */
 function custoBolsaSql(lotes: OportunidadeBolsa[]) {
   const validos = lotes.filter((x) => Number.isFinite(x.pro_codigo) && Number.isFinite(x.custo_bolsa) && x.vigente_de instanceof Date);
-  if (!validos.length) return { join: '', custo: 'v.custo_produto' };
+  if (!validos.length) return { join: '', custo: 'v.custo_produto', casou: '0' };
   const values = validos
     .map(
       (x) =>
@@ -32,6 +32,8 @@ function custoBolsaSql(lotes: OportunidadeBolsa[]) {
     join: `LEFT JOIN (VALUES ${values}) o (pro_codigo, custo_bolsa, de, ate)
         ON o.pro_codigo = v.PRO_CODIGO AND v.dt_emissao_convertida >= o.de AND (o.ate IS NULL OR v.dt_emissao_convertida < o.ate)`,
     custo: `COALESCE(o.custo_bolsa * CASE WHEN v.OPF_CODIGO = 2 THEN -v.QUANTIDADE ELSE v.QUANTIDADE END, v.custo_produto)`,
+    // 1 quando a linha usou o custo do lote (o extrato mostra o selo "oportunidade")
+    casou: 'CASE WHEN o.pro_codigo IS NULL THEN 0 ELSE 1 END',
   };
 }
 
@@ -146,7 +148,8 @@ export class OrcamentoBiRepository {
    * produto de serviço (subtipo 09 no ERP), que ficam fora da bolsa — o Stage_Produtos do BI
    * não traz o subtipo real, por isso a lista vem do ERP.
    */
-  async bolsaVendedor(rep: number, ano: number, mes: number, piso = 0, servicos: number[] = [], lotes: OportunidadeBolsa[] = []): Promise<BolsaVendedorRow> {
+  /** `rep` null = o canal ATACADO inteiro (todos os vendedores), para a bolsa do canal. */
+  async bolsaVendedor(rep: number | null, ano: number, mes: number, piso = 0, servicos: number[] = [], lotes: OportunidadeBolsa[] = []): Promise<BolsaVendedorRow> {
     const semServico = servicos.length ? `AND v.PRO_CODIGO NOT IN (${servicos.map((c) => Math.trunc(c)).join(',')})` : '';
     const ob = custoBolsaSql(lotes);
     const rows = await this.mssql.query<BolsaVendedorRow>(
@@ -160,11 +163,11 @@ export class OrcamentoBiRepository {
                                 THEN (v.custo_produto * @piso - v.liquido_produto) / 2 END), 0) AS absorvido
       FROM dbo.vw_analise_vendas v
       ${ob.join}
-      WHERE v.vendedor_venda = @rep
-        AND v.mes_comissional = @mes
+      WHERE v.mes_comissional = @mes
         AND v.ano_comissional = @ano
         AND v.local_venda = 'ATACADO'
         AND v.DT_CANCELAMENTO IS NULL
+        ${rep == null ? '' : 'AND v.vendedor_venda = @rep'}
         ${semServico}
       `,
       { rep, mes, ano, piso },
@@ -391,6 +394,113 @@ export class OrcamentoBiRepository {
       desconto: Number(r.desconto ?? 0),
       custo: Number(r.custo ?? 0),
     }));
+  }
+
+  /**
+   * Linhas de NF (venda e devolução) do atacado, empresa 3, dos pares cliente + produto desde
+   * `desde` (YYYYMMDD) — o que o ajuste da bolsa negativa casa com o orçamento. Valores sempre
+   * positivos (a devolução vem marcada); o custo é o da bolsa (lote de oportunidade na data).
+   * `emissao` é a data local (YYYY-MM-DD), sem hora.
+   */
+  async linhasNfAjuste(pares: { cli_codigo: number; pro_codigo: number }[], desde: string, lotes: OportunidadeBolsa[] = []) {
+    const values = [...new Set(pares.filter((p) => Number.isFinite(p.cli_codigo) && Number.isFinite(p.pro_codigo)).map((p) => `(${Math.trunc(p.cli_codigo)}, ${Math.trunc(p.pro_codigo)})`))].join(', ');
+    if (!values || !/^\d{8}$/.test(desde)) return [];
+    const ob = custoBolsaSql(lotes);
+    const rows = await this.mssql.query<any>(
+      `
+      SELECT v.EMPRESA AS empresa, v.SERIE AS serie, v.NFS AS nfs, v.PRO_CODIGO AS pro_codigo, v.CLI_CODIGO AS cli_codigo,
+             v.vendedor_venda AS rep_codigo, CONVERT(varchar(10), v.dt_emissao_convertida, 23) AS emissao,
+             CASE WHEN v.OPF_CODIGO = 2 THEN 1 ELSE 0 END AS devolucao,
+             ABS(v.QUANTIDADE) AS quantidade, ABS(v.liquido_produto) AS liquido, ABS(${ob.custo}) AS custo,
+             CASE WHEN v.PROMOCAO = 'S' THEN 1 ELSE 0 END AS promocao,
+             v.ITEM AS item, ABS(v.custo_produto) AS custo_produto
+      FROM (VALUES ${values}) p (cli, pro)
+      JOIN dbo.vw_analise_vendas v ON v.CLI_CODIGO = p.cli AND v.PRO_CODIGO = p.pro
+      ${ob.join}
+      WHERE v.dt_emissao_convertida >= CAST(@desde AS date)
+        AND v.EMPRESA = 3
+        AND v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+        AND v.QUANTIDADE <> 0
+      `,
+      { desde },
+    );
+    return rows.map((r) => {
+      const quantidade = Number(r.quantidade ?? 0), liquido = Number(r.liquido ?? 0);
+      return {
+        empresa: Number(r.empresa),
+        serie: String(r.serie ?? '').trim(),
+        nfs: Number(r.nfs),
+        pro_codigo: Number(r.pro_codigo),
+        cli_codigo: Number(r.cli_codigo),
+        rep_codigo: Number(r.rep_codigo),
+        emissao: String(r.emissao),
+        devolucao: Number(r.devolucao) === 1,
+        quantidade,
+        preco_unit: quantidade > 0 ? liquido / quantidade : 0,
+        liquido,
+        custo: Number(r.custo ?? 0),
+        promocao: Number(r.promocao) === 1,
+        // item da NF: liga a linha à do extrato; custo do produto: a metade da promoção usa ele, não o do lote
+        item: Number(r.item),
+        custo_produto: Number(r.custo_produto ?? 0),
+      };
+    });
+  }
+
+  /**
+   * Linhas de NF do vendedor no mês comissional — o extrato da bolsa. Mesmo recorte de
+   * `bolsaVendedor` (ATACADO, sem canceladas, vendedor_venda), mas sem tirar o serviço: ele vem
+   * marcado (`servico`) para a tela contar o que ficou fora. Valores com sinal (devolução negativa,
+   * quantidade inclusive), para a soma das linhas fechar com o card.
+   */
+  async linhasExtrato(rep: number, ano: number, mes: number, lotes: OportunidadeBolsa[] = [], servicos: number[] = []) {
+    const ob = custoBolsaSql(lotes);
+    const servico = servicos.length ? `CASE WHEN v.PRO_CODIGO IN (${servicos.map((c) => Math.trunc(c)).join(',')}) THEN 1 ELSE 0 END` : '0';
+    const rows = await this.mssql.query<any>(
+      `
+      SELECT v.EMPRESA AS empresa, v.SERIE AS serie, v.NFS AS nfs, v.NOTA_FISCAL AS nota_fiscal, v.CHAVE_NFE AS chave_nfe, v.ITEM AS item,
+             CONVERT(varchar(10), v.dt_emissao_convertida, 23) AS emissao,
+             CASE WHEN v.OPF_CODIGO = 2 THEN 1 ELSE 0 END AS devolucao,
+             v.CLI_CODIGO AS cli_codigo, v.CLI_NOME AS cli_nome, v.PRO_CODIGO AS pro_codigo, v.PRO_DESCRICAO AS pro_descricao,
+             CASE WHEN v.OPF_CODIGO = 2 THEN -ABS(v.QUANTIDADE) ELSE v.QUANTIDADE END AS quantidade,
+             v.UNITARIO AS unitario, v.liquido_produto AS liquido, ${ob.custo} AS custo_bolsa, ${ob.casou} AS custo_oportunidade,
+             v.custo_produto AS custo_produto, CASE WHEN v.PROMOCAO = 'S' THEN 1 ELSE 0 END AS promocao, ${servico} AS servico
+      FROM dbo.vw_analise_vendas v
+      ${ob.join}
+      WHERE v.mes_comissional = @mes
+        AND v.ano_comissional = @ano
+        AND v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+        AND v.vendedor_venda = @rep
+      `,
+      { rep, mes, ano },
+    );
+    return rows.map((r) => {
+      const nota = Number(String(r.nota_fiscal ?? '').trim());
+      return {
+        empresa: Number(r.empresa),
+        serie: String(r.serie ?? '').trim(),
+        nfs: Number(r.nfs),
+        nota_fiscal: Number.isFinite(nota) && nota > 0 ? nota : null,
+        chave_nfe: String(r.chave_nfe ?? '').trim() || null,
+        item: Number(r.item),
+        emissao: String(r.emissao),
+        devolucao: Number(r.devolucao) === 1,
+        cli_codigo: Number(r.cli_codigo),
+        cli_nome: String(r.cli_nome ?? '').trim(),
+        pro_codigo: Number(r.pro_codigo),
+        pro_descricao: String(r.pro_descricao ?? '').trim(),
+        quantidade: Number(r.quantidade ?? 0),
+        unitario: Number(r.unitario ?? 0),
+        liquido: Number(r.liquido ?? 0),
+        custo_bolsa: Number(r.custo_bolsa ?? 0),
+        custo_oportunidade: Number(r.custo_oportunidade) === 1,
+        custo_produto: Number(r.custo_produto ?? 0),
+        promocao: Number(r.promocao) === 1,
+        servico: Number(r.servico) === 1,
+      };
+    });
   }
 
   /**

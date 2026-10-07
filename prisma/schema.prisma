@@ -2137,6 +2137,7 @@ model ven_meta_vendedor {
 }
 
 model ven_orcamento {
+<<<<<<< HEAD
   id                  String               @id @default(cuid())
   numero              Int                  @unique @default(autoincrement())
   empresa             Int                  @default(3)
@@ -2187,6 +2188,61 @@ model ven_orcamento {
   ven_bolsa_ajuste    ven_bolsa_ajuste[]
   itens               ven_orcamento_item[]
   ven_venda_perdida   ven_venda_perdida[]
+=======
+  id                 String               @id @default(cuid())
+  numero             Int                  @unique @default(autoincrement())
+  empresa            Int                  @default(3)
+  cli_codigo         Int
+  cli_nome           String?
+  tabela_preco       String?
+  rep_codigo         Int?
+  rep_nome           String?
+  status             String               @default("RASCUNHO")
+  validade           DateTime?            @db.Date
+  observacao         String?
+  subtotal           Decimal              @default(0) @db.Decimal(15, 2)
+  desconto_total     Decimal              @default(0) @db.Decimal(15, 2)
+  total              Decimal              @default(0) @db.Decimal(15, 2)
+  desc_pct           Decimal              @default(0) @db.Decimal(6, 4)
+  acima_alcada       Boolean              @default(false)
+  bolsa_pct_antes    Decimal?             @db.Decimal(6, 4)
+  bolsa_pct_depois   Decimal?             @db.Decimal(6, 4)
+  aprovado_por       String?
+  aprovado_em        DateTime?            @db.Timestamptz(6)
+  aprovado_codigo    Int?
+  /// a aprovação veio do ajuste da bolsa (dentro da alçada): cai se o orçamento passar da alçada ou o ajuste sair
+  aprovado_por_ajuste Boolean             @default(false)
+  enviado_em         DateTime?            @db.Timestamptz(6)
+  desfecho_em        DateTime?            @db.Timestamptz(6)
+  desfecho_motivo    String?
+  desfecho_ref       String?
+  usuario_id         String?
+  usuario_nome       String?
+  created_at         DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime             @default(now()) @db.Timestamptz(6)
+  entregue_canal     String?
+  entregue_em        DateTime?            @db.Timestamptz(6)
+  celta_orcamento    Int?                 @map("orcamentoCelta")
+  cp_codigo          Int?
+  cp_descricao       String?
+  fp_codigo          String?
+  fp_descricao       String?
+  celta_importado_em DateTime?            @db.Timestamptz(6)
+  comparado          Boolean              @default(false)
+  liberadogerencia   Boolean?
+  presencial         Boolean              @default(false)
+  tributacao         String?
+  icms_st            Decimal              @default(0) @db.Decimal(15, 2)
+  difal              Decimal              @default(0) @db.Decimal(15, 2)
+  meia_nota          Boolean              @default(false)
+  /// piso da bolsa em vigor no desfecho FECHADO (nulo nos fechados antes de 02/10/2026)
+  piso_bolsa         Decimal?             @db.Decimal(8, 4)
+  /// R$ do orçamento contra custo × piso no fechamento (calcularBolsa().orcamento)
+  bolsa_orcamento    Decimal?             @db.Decimal(14, 2)
+  itens              ven_orcamento_item[]
+  ven_venda_perdida  ven_venda_perdida[]
+  ven_bolsa_ajuste   ven_bolsa_ajuste[]
+>>>>>>> 08540004ccdb44faf2ac9302bf5ed6f65d0d6906
 
   @@index([cli_codigo], map: "idx_ven_orcamento_cli")
   @@index([created_at], map: "idx_ven_orcamento_created")
@@ -2250,6 +2306,10 @@ model ven_orcamento_item {
   icms_st            Decimal       @default(0) @db.Decimal(15, 2)
   difal              Decimal       @default(0) @db.Decimal(15, 2)
   difal_pct          Decimal?      @db.Decimal(6, 4)
+<<<<<<< HEAD
+=======
+  /// vendedor pede ajuste da bolsa nesta linha (produto avariado/usado/embalagem): enviar leva a APROVACAO
+>>>>>>> 08540004ccdb44faf2ac9302bf5ed6f65d0d6906
   pedir_ajuste       Boolean       @default(false)
   ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -2401,6 +2461,14 @@ model ven_wa_contato {
   updated_at DateTime @default(now()) @db.Timestamptz(6)
 
   @@index([cli_codigo], map: "idx_ven_wa_contato_cli")
+}
+
+model ven_wa_contato_ignorado {
+  chave      String   @id
+  telefone   String
+  motivo     String?
+  criado_por String?
+  created_at DateTime @default(now()) @db.Timestamptz(6)
 }
 
 model ven_wa_mensagem {
@@ -2602,6 +2670,7 @@ model ven_bolsa_oportunidade {
   @@index([pro_codigo], map: "ven_bolsa_oportunidade_pro_idx")
 }
 
+<<<<<<< HEAD
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model com_precificacao_conferencia {
   id                                Int                                 @id @default(autoincrement())
@@ -2818,6 +2887,12 @@ model pes_tarefa {
 
 model ven_bolsa_ajuste {
   id              String        @id
+=======
+/// Ajuste da bolsa negativa: por item do orçamento, quanto por unidade a empresa assume da linha
+/// que sairia da bolsa do vendedor. Só entra na bolsa quando a NF (empresa 3) casa com o orçamento.
+model ven_bolsa_ajuste {
+  id              String        @id @default(cuid())
+>>>>>>> 08540004ccdb44faf2ac9302bf5ed6f65d0d6906
   orcamento_id    String
   pro_codigo      Int
   cli_codigo      Int
@@ -2839,6 +2914,7 @@ model ven_bolsa_ajuste {
   @@index([rep_codigo], map: "idx_ven_bolsa_ajuste_rep")
 }
 
+<<<<<<< HEAD
 model ven_wa_contato_ignorado {
   chave      String   @id
   telefone   String
@@ -2847,6 +2923,8 @@ model ven_wa_contato_ignorado {
   created_at DateTime @default(now()) @db.Timestamptz(6)
 }
 
+=======
+>>>>>>> 08540004ccdb44faf2ac9302bf5ed6f65d0d6906
 enum rec_estado_resolucao {
   RESOLVIDA
   CONFIRMADA

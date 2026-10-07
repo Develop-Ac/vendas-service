@@ -19,6 +19,7 @@ import { OrcamentoService } from './orcamento.service';
 import { ProdutosDiaService } from './produtos-dia.service';
 import {
   AcaoOrcamentoDto,
+  AjusteBolsaDto,
   AlterarOportunidadeDto,
   DecisaoSaldoDto,
   RegistrarOportunidadeDto,
@@ -32,6 +33,7 @@ import {
 } from './dto/orcamento.dto';
 
 const toNum = (v?: string) => (v == null || v === '' ? undefined : Number(v));
+const FLAGS_LISTA = ['SEM_CELTA', 'ACIMA_ALCADA', 'AGUARDANDO'] as const;
 
 /* =============================================================================
    ORÇAMENTO DO ATACADO — rotas.
@@ -184,6 +186,14 @@ export class OrcamentoController {
     return this.service.bolsaCliente(rep, cli, toNum(meses) ?? 6);
   }
 
+  @Get('vendedor/:rep/bolsa/extrato')
+  @ApiOperation({ summary: 'Extrato da bolsa por NF num dos últimos 6 meses comissionais (padrão: o atual), com o orçamento casado a cada linha e a conferência com o card.' })
+  @ApiQuery({ name: 'ano', required: false })
+  @ApiQuery({ name: 'mes', required: false })
+  extratoBolsa(@Param('rep', ParseIntPipe) rep: number, @Query('ano') ano?: string, @Query('mes') mes?: string) {
+    return this.service.extratoBolsa(rep, toNum(ano), toNum(mes));
+  }
+
   @Get('vendedor/:rep/bolsa')
   @ApiOperation({ summary: 'Bolsa de desconto do vendedor no mês comissional: receita − custo × piso (+ projeção com o orçamento).' })
   @ApiQuery({ name: 'total', required: false, description: 'Total líquido do orçamento em edição' })
@@ -193,6 +203,7 @@ export class OrcamentoController {
   @ApiQuery({ name: 'm1a', required: false, description: 'Total líquido dos itens MIX 1 faixa A (idem m1b, m1c, m1d) — projeção da comissão' })
   @ApiQuery({ name: 'm23', required: false, description: 'Total líquido dos itens MIX 2/3 (e sem faixa) — projeção da comissão' })
   @ApiQuery({ name: 'absorvido', required: false, description: 'Promoção: o que a empresa absorve neste orçamento (metade da falta contra custo × piso nas linhas em promoção)' })
+  @ApiQuery({ name: 'ajuste_orc', required: false, description: 'Ajuste da bolsa negativa: R$ que a empresa assume neste orçamento (≥ 0)' })
   bolsa(
     @Param('rep', ParseIntPipe) rep: number,
     @Query('total') total?: string,
@@ -205,6 +216,7 @@ export class OrcamentoController {
     @Query('m1d') m1d?: string,
     @Query('m23') m23?: string,
     @Query('absorvido') absorvido?: string,
+    @Query('ajuste_orc') ajusteOrc?: string,
   ) {
     const t = toNum(total);
     return this.service.bolsa(
@@ -214,6 +226,7 @@ export class OrcamentoController {
             receita: t, desconto: toNum(desconto) ?? 0, custo: toNum(custo) ?? 0, sem_custo: toNum(semCusto) ?? 0,
             m1a: toNum(m1a), m1b: toNum(m1b), m1c: toNum(m1c), m1d: toNum(m1d), m23: toNum(m23),
             absorvido: toNum(absorvido) ?? 0,
+            ajuste: toNum(ajusteOrc) ?? 0,
           }
         : undefined,
     );
@@ -362,20 +375,39 @@ export class OrcamentoController {
   /* ---------------------------------------------------------- orçamento */
 
   @Get()
-  @ApiOperation({ summary: 'Lista de orçamentos (filtros: rep, cli, status, page, pageSize).' })
+  @ApiOperation({ summary: 'Lista de orçamentos (filtros: rep, cli, status, de, ate, numero, produto, flag, page, pageSize). Filtro inválido é ignorado.' })
+  @ApiQuery({ name: 'de', required: false, description: 'YYYY-MM-DD — criado a partir do dia (Cuiabá)' })
+  @ApiQuery({ name: 'ate', required: false, description: 'YYYY-MM-DD — criado até o fim do dia (Cuiabá), inclusive' })
+  @ApiQuery({ name: 'numero', required: false, description: 'Nº da intranet ou do Celta' })
+  @ApiQuery({ name: 'produto', required: false, description: 'Só dígitos = código do produto; senão parte da descrição. Orçamentos com algum item assim.' })
+  @ApiQuery({ name: 'flag', required: false, enum: ['SEM_CELTA', 'ACIMA_ALCADA', 'AGUARDANDO'] })
   listar(
     @Query('rep') rep?: string,
     @Query('cli') cli?: string,
     @Query('status') status?: string,
     @Query('page') page?: string,
     @Query('pageSize') pageSize?: string,
+    @Query('de') de?: string,
+    @Query('ate') ate?: string,
+    @Query('numero') numero?: string,
+    @Query('produto') produto?: string,
+    @Query('flag') flag?: string,
   ) {
+    // Filtro de lista: parâmetro malformado é ignorado (a tela segue listando), nunca vira erro.
+    const dia = (v?: string) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v)) ? v : undefined);
+    const num = toNum(numero);
     return this.service.listar({
       rep_codigo: toNum(rep),
       cli_codigo: toNum(cli),
       status: status || undefined,
       page: toNum(page),
       pageSize: toNum(pageSize),
+      de: dia(de),
+      ate: dia(ate),
+      // numero e celta_orcamento são INT4: fora da faixa o Postgres recusaria a consulta
+      numero: num != null && Number.isInteger(num) && num > 0 && num <= 2_147_483_647 ? num : undefined,
+      produto: produto?.trim() || undefined,
+      flag: FLAGS_LISTA.find((x) => x === flag),
     });
   }
 
@@ -422,9 +454,29 @@ export class OrcamentoController {
     return this.service.comparar(id);
   }
 
+  @Get('ajustes-bolsa')
+  @ApiOperation({ summary: 'Ajustes da bolsa negativa pelo período do ajuste, com o efetivo casado com a NF e a situação.' })
+  @ApiQuery({ name: 'de', required: false, description: 'YYYY-MM-DD' })
+  @ApiQuery({ name: 'ate', required: false, description: 'YYYY-MM-DD (inclusive)' })
+  @ApiQuery({ name: 'rep', required: false })
+  @ApiQuery({ name: 'ajustador', required: false, description: 'Parte do nome de quem ajustou' })
+  @ApiQuery({ name: 'motivo', required: false, enum: ['AVARIADO', 'USADO', 'EMBALAGEM', 'OUTRO'] })
+  @ApiQuery({ name: 'pro', required: false })
+  ajustesBolsa(
+    @Query('de') de?: string,
+    @Query('ate') ate?: string,
+    @Query('rep') rep?: string,
+    @Query('ajustador') ajustador?: string,
+    @Query('motivo') motivo?: string,
+    @Query('pro') pro?: string,
+  ) {
+    for (const d of [de, ate]) if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new BadRequestException('de/ate: YYYY-MM-DD');
+    return this.service.listarAjustesBolsa({ de, ate, rep: toNum(rep), ajustador: ajustador?.trim() || undefined, motivo: motivo || undefined, pro: toNum(pro) });
+  }
+
   @Get(':id')
   obter(@Param('id') id: string) {
-    return this.service.obter(id);
+    return this.service.obterComBolsa(id);
   }
 
   @Get(':id/conferir')
@@ -449,6 +501,19 @@ export class OrcamentoController {
   @ApiOperation({ summary: 'Regrava cabeçalho e itens; orçamento volta a RASCUNHO.' })
   atualizar(@Param('id') id: string, @Body() dto: SalvarOrcamentoDto) {
     return this.service.atualizar(id, dto);
+  }
+
+  @Put(':id/ajuste-bolsa/:pro_codigo')
+  @ApiOperation({ summary: 'Ajusta a bolsa negativa da linha (permissão /vendas/orcamento/ajustar-bolsa; nunca no próprio orçamento). Devolve o orçamento.' })
+  ajustarBolsa(@Param('id') id: string, @Param('pro_codigo', ParseIntPipe) pro: number, @Body() dto: AjusteBolsaDto) {
+    return this.service.ajustarBolsa(id, pro, dto);
+  }
+
+  @Delete(':id/ajuste-bolsa/:pro_codigo')
+  @ApiOperation({ summary: 'Desfaz o ajuste da bolsa da linha. Devolve o orçamento.' })
+  @ApiQuery({ name: 'usuario_id', required: true })
+  removerAjusteBolsa(@Param('id') id: string, @Param('pro_codigo', ParseIntPipe) pro: number, @Query('usuario_id') usuarioId?: string) {
+    return this.service.removerAjusteBolsa(id, pro, usuarioId);
   }
 
   @Post(':id/enviar')

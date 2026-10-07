@@ -1,5 +1,6 @@
-import { BadGatewayException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import { CorpoCelta } from './celta';
+import type { ItemAprovado } from './comprovante';
 
 /**
  * Cliente da api-vendas-service — a API que grava orçamentos no Celta.
@@ -83,6 +84,51 @@ export class OrcamentoCeltaRepository {
       clearTimeout(t);
     }
   }
+  /**
+   * Prévia dos itens acima do desconto máximo do Celta para o corpo que seria importado
+   * (POST /orcamentos/:empresa/excedentes): nada é gravado. É o conjunto exato que o
+   * comprovante de aprovação precisa carregar. Recusa de cadastro/regra vem como 400 da API e
+   * sobe como BadRequest, com a mensagem do ERP.
+   */
+  async excedentes(empresa: number, corpo: CorpoCelta): Promise<{ valor_descto: number; itens: ItemAprovado[] }> {
+    if (!this.configurado()) {
+      throw new ServiceUnavailableException('Integração com o Celta não configurada (API_VENDAS_URL / API_VENDAS_KEY).');
+    }
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    try {
+      const { comprovante: _c, ...semComprovante } = corpo;
+      const r = await fetch(`${this.baseUrl}/orcamentos/${empresa}/excedentes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'x-api-key': process.env.API_VENDAS_KEY as string },
+        body: JSON.stringify(semComprovante),
+        signal: ctrl.signal,
+      });
+      const texto = await r.text();
+      let dados: any = null;
+      try {
+        dados = texto ? JSON.parse(texto) : null;
+      } catch {
+        /* resposta sem JSON: tratada abaixo */
+      }
+      if (!r.ok) {
+        const msg = Array.isArray(dados?.message) ? dados.message.join('; ') : dados?.message ?? texto ?? `HTTP ${r.status}`;
+        this.logger.warn(`Prévia de excedentes recusada pelo Celta (${r.status}): ${msg}`);
+        if (r.status === 400 || r.status === 404) throw new BadRequestException(`O Celta não aceitou o orçamento: ${msg}`);
+        throw new BadGatewayException(`A prévia do Celta falhou: ${msg}`);
+      }
+      if (!Array.isArray(dados?.itens)) throw new BadGatewayException('A prévia do Celta respondeu num formato inesperado.');
+      return { valor_descto: Number(dados.valor_descto ?? 0), itens: dados.itens };
+    } catch (e) {
+      if (e instanceof BadGatewayException || e instanceof BadRequestException) throw e;
+      const causa = (e as { cause?: { code?: string } }).cause?.code;
+      this.logger.error(`Falha ao chamar a api-vendas-service (excedentes): ${(e as Error).message}${causa ? ` (${causa})` : ''}`);
+      throw new ServiceUnavailableException('Não foi possível falar com a API do Celta agora.');
+    } finally {
+      clearTimeout(t);
+    }
+  }
+
   /** Comparativo orçamento × condicional × intranet de um nº do Celta (um item por empresa). */
   async comparativo(orcamento: number): Promise<ComparativoCelta[]> {
     if (!this.configurado()) {

@@ -41,6 +41,24 @@ export class WhatsappController {
     return this.service.pendentes(Number.isFinite(n) && n > 0 ? n : undefined);
   }
 
+  // Lista de vínculo com sugestão: números sem cliente por volume, cada um com
+  // o cliente provável e a evidência (orçamento + produto citado, entrega, agenda).
+  @Get('contatos/sugestoes')
+  sugestoes(@Query('limite') limite?: string, @Query('dias') dias?: string) {
+    const l = Number(limite);
+    const d = Number(dias);
+    return this.service.sugestoesVinculo(
+      Number.isInteger(l) && l > 0 && l <= 200 ? l : 50,
+      Number.isInteger(d) && d > 0 && d <= 120 ? d : 30,
+    );
+  }
+
+  // "Não é cliente" (colega, transportadora, fornecedor): sai da lista de vínculo.
+  @Post('contatos/ignorar')
+  ignorar(@Body() dto: { telefone: string; motivo?: string; usuario_nome?: string }) {
+    return this.service.ignorar(dto ?? ({} as any));
+  }
+
   // 1 toque que aprende para sempre (corrige o histórico da chave junto).
   @Post('contatos/vincular')
   vincular(
@@ -60,8 +78,8 @@ export class WhatsappController {
   // Importa as conversas de uma sessão desde uma data (padrão 01/09/2026),
   // em segundo plano. Só sessões em WA_CORPO_SESSOES; repetir não duplica.
   @Post('historico')
-  historico(@Body() dto: { sessao: string; desde?: string }) {
-    return this.service.importarHistorico(dto?.sessao ?? '', dto?.desde);
+  historico(@Body() dto: { sessao: string; desde?: string; so_enviadas?: boolean }) {
+    return this.service.importarHistorico(dto?.sessao ?? '', dto?.desde, dto?.so_enviadas === true);
   }
 
   @Get('historico')

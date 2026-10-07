@@ -55,6 +55,11 @@ export class ItemOrcamentoDto {
   @IsOptional()
   @IsBoolean()
   fora_promocao?: boolean;
+
+  @ApiProperty({ description: 'Vendedor pede ajuste da bolsa nesta linha (avariado/usado/embalagem): enviar leva a APROVACAO até alguém ajustar.', required: false })
+  @IsOptional()
+  @IsBoolean()
+  pedir_ajuste?: boolean;
 }
 
 export class SalvarOrcamentoDto {
@@ -177,6 +182,22 @@ export class AcaoOrcamentoDto {
   @IsOptional()
   @IsString()
   usuario_nome?: string;
+}
+
+/** Ajuste da bolsa negativa numa linha: `valor` = R$ da linha que AINDA sai da bolsa (negativo da linha ≤ valor ≤ 0). */
+export class AjusteBolsaDto extends AcaoOrcamentoDto {
+  @ApiProperty()
+  @IsNumber()
+  valor!: number;
+
+  @ApiProperty({ enum: ['AVARIADO', 'USADO', 'EMBALAGEM', 'OUTRO'] })
+  @IsString()
+  motivo!: string;
+
+  @ApiProperty({ description: 'Mínimo 10 caracteres.' })
+  @IsString()
+  @MaxLength(500)
+  justificativa!: string;
 }
 
 export const MOTIVOS_PERDA = [

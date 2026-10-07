@@ -3,6 +3,7 @@ import { Cron } from '@nestjs/schedule';
 import { ErpApiService } from '../common/erp-api/erp-api.service';
 import { S3Service } from '../storage/s3.service';
 import { WhatsappRepository, MensagemRow } from './whatsapp.repository';
+import { ClienteCadastro, ConversaSemCliente, OrcamentoJanela, sugerirVinculos } from './sugestao-vinculo';
 
 /**
  * Sensor WhatsApp do CRM do Atacado (piloto WAHA).
@@ -77,6 +78,8 @@ export interface HistoricoEstado {
   gravadas: number;
   midias: number;
   erro: string | null;
+  /** true = pede ao WAHA só as mensagens fromMe (recarga leve de uma lacuna de enviadas). */
+  so_enviadas?: boolean;
 }
 
 /**
@@ -96,6 +99,9 @@ function sessoesIgnoradas(): Set<string> {
 
 const TABELAS_ATACADO = ['2', '5'];
 const EMPRESA = 3;
+
+/** 'aaaa-mm-dd' no fuso de Cuiabá (o dia do orçamento e o da conversa têm de bater). */
+const diaCuiaba = (d: Date) => d.toLocaleDateString('sv-SE', { timeZone: 'America/Cuiaba' });
 
 /**
  * Chave de casamento: DDD + últimos 8 dígitos. Sobrevive ao 9º dígito (o mesmo
@@ -144,6 +150,8 @@ export class WhatsappService {
    * mensagem. Precisa de WA_API_URL (e WA_API_KEY, se a API tiver chave).
    */
   private lidCache = new Map<string, string>();
+  private agendaCache = new Map<string, string | null>();
+  private sugestoesCache: { chave: string; em: number; valor: unknown } | null = null;
   private transcrevendo = false;
   private historicos = new Map<string, HistoricoEstado>();
 
@@ -224,8 +232,11 @@ export class WhatsappService {
    */
   private async gravarEvento(sessao: string, p: PayloadWaha) {
     // fromMe define a direção e, com ela, qual lado do par é o interlocutor.
+    // WEBJS: enviada vem com from=eu e to=contato. NOWEB: `from` é SEMPRE o chat
+    // (remoteJid do Baileys) e `to` vem vazio — sem o fallback, toda enviada
+    // caía no descarte de "grupo/broadcast" e o painel mostrava 0 enviadas.
     const direcao: MensagemRow['direcao'] = p.fromMe ? 'ENVIADA' : 'RECEBIDA';
-    const interlocutor = String((p.fromMe ? p.to : p.from) ?? '');
+    const interlocutor = String((p.fromMe ? p.to || p.from : p.from) ?? '');
     if (!interlocutor || CHATS_IGNORADOS.some((s) => interlocutor.includes(s))) {
       return { ignorado: 'grupo/broadcast' };
     }
@@ -440,7 +451,7 @@ export class WhatsappService {
    * Limite conhecido do engine WEBJS: só devolve o que o WhatsApp Web sincronizou
    * do aparelho — medir na primeira rodada.
    */
-  importarHistorico(sessao: string, desde?: string) {
+  importarHistorico(sessao: string, desde?: string, soEnviadas = false) {
     if (!sessao) throw new BadRequestException('sessao é obrigatória.');
     if (!this.wahaBase) throw new BadRequestException('WA_API_URL não configurada.');
     if (!sessoesComCorpo().has(sessao)) {
@@ -461,6 +472,7 @@ export class WhatsappService {
       gravadas: 0,
       midias: 0,
       erro: null,
+      so_enviadas: soEnviadas,
     };
     this.historicos.set(sessao, estado);
     void this.executarHistorico(estado, d);
@@ -499,7 +511,10 @@ export class WhatsappService {
         try {
           const r = await fetch(
             `${base}/api/${s}/chats/${encodeURIComponent(chatId)}/messages` +
-              `?limit=1000&downloadMedia=true&filter.timestamp.gte=${epoch}`,
+              `?limit=1000&downloadMedia=true&filter.timestamp.gte=${epoch}` +
+              // filter.fromMe=true: o WAHA devolve (e baixa mídia) só das enviadas —
+              // recarga da lacuna de 29/09→deploy sem repassar milhares de recebidas.
+              (estado.so_enviadas ? '&filter.fromMe=true' : ''),
             { headers: this.wahaHeaders(), signal: AbortSignal.timeout(180_000) },
           );
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -594,6 +609,182 @@ export class WhatsappService {
     return this.repo.pendentesVinculo(limite);
   }
 
+  /** "Não é cliente": o número sai da lista de vínculo (vincular depois desfaz). */
+  async ignorar(dto: { telefone: string; motivo?: string; usuario_nome?: string }) {
+    const bruto = String(dto?.telefone ?? '');
+    const chave = chaveTelefone(bruto) ?? bruto.replace(/\D/g, '');
+    if (!chave) throw new BadRequestException('telefone é obrigatório.');
+    this.sugestoesCache = null;
+    return this.repo.ignorar({ chave, telefone: bruto, motivo: dto.motivo ?? null, criado_por: dto.usuario_nome ?? null });
+  }
+
+  // ------------------------------------------- lista de vínculo com sugestão
+  /**
+   * Números sem cliente das sessões de vendedor, do mais ativo para o menos,
+   * cada um com o cliente sugerido e a evidência (ver sugestao-vinculo.ts).
+   * Cálculo pesado (ERP + orçamentos + agenda do WAHA): cache de 10 minutos,
+   * zerado a cada vínculo ou "não é cliente".
+   */
+  async sugestoesVinculo(limite = 50, dias = 30) {
+    const chaveCache = `${limite}|${dias}`;
+    if (this.sugestoesCache?.chave === chaveCache && Date.now() - this.sugestoesCache.em < 600_000) {
+      return this.sugestoesCache.valor;
+    }
+    const desde = new Date(Date.now() - dias * 86_400_000);
+    const ignoradas = await this.repo.chavesIgnoradas();
+    const todos = (await this.repo.semClientePorVolume()).filter((x) => !ignoradas.has(x.chave));
+    const alvo = todos.slice(0, limite);
+    const chaves = alvo.map((x) => x.chave);
+    const reps = [
+      ...new Set(alvo.flatMap((x) => x.sessoes.map((s) => this.repDaSessao(s))).filter((r): r is number => r != null)),
+    ];
+
+    const [textos, entregas, intranet, celta, clientes, agendas] = await Promise.all([
+      this.repo.textoDasChaves(chaves, desde),
+      this.repo.entregasNasChaves(chaves, desde).catch((e) => this.avisar('entregas', e, [] as Awaited<ReturnType<WhatsappRepository['entregasNasChaves']>>)),
+      this.repo.orcamentosIntranet(reps, desde).catch((e) => this.avisar('orçamentos da intranet', e, [] as Awaited<ReturnType<WhatsappRepository['orcamentosIntranet']>>)),
+      this.orcamentosCelta(reps, desde).catch((e) => this.avisar('orçamentos do Celta', e, [] as OrcamentoJanela[])),
+      this.clientesAtacado().catch((e) => this.avisar('clientes do ERP', e, [] as ClienteCadastro[])),
+      Promise.all(alvo.map((x) => this.nomeAgenda(x.sessoes[0], x.chave, x.telefone))),
+    ]);
+
+    const conversas: ConversaSemCliente[] = alvo.map((x, i) => ({
+      chave: x.chave,
+      rep: this.repDaSessao(x.sessoes[0]),
+      textoPorDia: new Map(),
+      nomeAgenda: agendas[i],
+    }));
+    const convDe = new Map(conversas.map((c) => [c.chave, c]));
+    for (const t of textos) {
+      const c = convDe.get(t.chave);
+      if (!c) continue;
+      const dia = diaCuiaba(t.timestamp);
+      c.textoPorDia.set(dia, `${c.textoPorDia.get(dia) ?? ''} ${t.corpo ?? ''} ${t.transcricao ?? ''}`);
+    }
+    const orcamentos: OrcamentoJanela[] = [
+      ...celta,
+      ...intranet
+        .filter((o) => o.rep_codigo != null)
+        .map((o) => ({
+          origem: 'INTRANET' as const,
+          numero: String(o.numero),
+          rep: o.rep_codigo as number,
+          cli: o.cli_codigo,
+          cliNome: o.cli_nome,
+          dia: diaCuiaba(o.created_at),
+          itens: o.itens.map((i) => i.descricao ?? ''),
+        })),
+    ];
+    const sugestoes = sugerirVinculos(
+      conversas,
+      orcamentos,
+      entregas.map((e) => ({
+        chave: e.chave,
+        rep: Number(e.rep),
+        cli: Number(e.cli),
+        cliNome: e.cli_nome,
+        numero: String(e.numero),
+        entregueEm: new Date(e.entregue_em),
+      })),
+      clientes,
+    );
+
+    const valor = {
+      gerado_em: new Date().toISOString(),
+      janela_dias: dias,
+      total_sem_cliente: todos.length,
+      mensagens_sem_cliente: todos.reduce((s, x) => s + x.mensagens, 0),
+      itens: alvo.map((x, i) => ({
+        chave: x.chave,
+        telefone: x.telefone,
+        lid: x.chave.length > 11,
+        sessoes: x.sessoes,
+        rep_codigos: [...new Set(x.sessoes.map((s) => this.repDaSessao(s)).filter((r) => r != null))],
+        mensagens: x.mensagens,
+        ultima_atividade: x.ultima,
+        nome_agenda: agendas[i],
+        ...(sugestoes.get(x.chave) ?? { confianca: null, sugestoes: [] }),
+      })),
+    };
+    this.sugestoesCache = { chave: chaveCache, em: Date.now(), valor };
+    return valor;
+  }
+
+  private avisar<T>(fonte: string, e: unknown, vazio: T): T {
+    this.logger.warn(`Sugestão de vínculo sem ${fonte}: ${(e as Error).message}`);
+    return vazio;
+  }
+
+  /** Nome do contato: o salvo na agenda do celular corporativo, senão o do perfil. */
+  private async nomeAgenda(sessao: string, chave: string, telefone: string): Promise<string | null> {
+    const k = `${sessao}|${chave}`;
+    if (this.agendaCache.has(k)) return this.agendaCache.get(k) ?? null;
+    if (!this.wahaBase) return null;
+    const contato = chave.length > 11 ? `${telefone}@lid` : telefone;
+    try {
+      const r = await fetch(
+        `${this.wahaBase}/api/contacts?contactId=${encodeURIComponent(contato)}&session=${encodeURIComponent(sessao)}`,
+        { headers: this.wahaHeaders(), signal: AbortSignal.timeout(10_000) },
+      );
+      const j = r.ok ? ((await r.json()) as { name?: string | null; pushname?: string | null }) : null;
+      const nome = (j?.name || j?.pushname || '').trim() || null;
+      this.agendaCache.set(k, nome);
+      return nome;
+    } catch {
+      return null; // WAHA fora: a sugestão segue sem o sinal do nome
+    }
+  }
+
+  /** Orçamentos do Celta dos vendedores na janela, com a descrição dos itens. */
+  private async orcamentosCelta(reps: number[], desde: Date): Promise<OrcamentoJanela[]> {
+    if (!reps.length) return [];
+    const cab = await this.erp.consultar<Record<string, any>>('orcamentos', {
+      empresa: EMPRESA,
+      campos: ['ORCAMENTO', 'EMISSAO', 'CLI_CODIGO', 'CLI_NOME', 'REP_CODIGO'],
+      filtros: [
+        { campo: 'EMISSAO', op: 'maior_igual', valor: desde.toISOString().slice(0, 10) },
+        { campo: 'REP_CODIGO', op: 'em', valor: reps },
+      ],
+      limite: 20_000,
+    });
+    const itens = new Map<number, string[]>();
+    const nums = cab.map((o) => Number(o.ORCAMENTO));
+    for (let i = 0; i < nums.length; i += 500) {
+      const lote = nums.slice(i, i + 500);
+      const r = await this.erp.consultar<Record<string, any>>('orcamentos-itens', {
+        empresa: EMPRESA,
+        campos: ['ORCAMENTO', 'PRO_DESCRICAO', 'CANCELADO'],
+        filtros: [{ campo: 'ORCAMENTO', op: 'em', valor: lote }],
+        limite: 20_000,
+      });
+      for (const it of r) {
+        if (String(it.CANCELADO ?? '').trim() === 'S') continue;
+        const n = Number(it.ORCAMENTO);
+        (itens.get(n) ?? itens.set(n, []).get(n)!).push(String(it.PRO_DESCRICAO ?? ''));
+      }
+    }
+    return cab.map((o) => ({
+      origem: 'CELTA' as const,
+      numero: String(o.ORCAMENTO),
+      rep: Number(o.REP_CODIGO),
+      cli: Number(o.CLI_CODIGO),
+      cliNome: o.CLI_NOME ?? null,
+      dia: String(o.EMISSAO).slice(0, 10),
+      itens: itens.get(Number(o.ORCAMENTO)) ?? [],
+    }));
+  }
+
+  /** Clientes do atacado (nome e pessoa de contato) — base do sinal do nome na agenda. */
+  private async clientesAtacado(): Promise<ClienteCadastro[]> {
+    const r = await this.erp.consultar<Record<string, any>>('clientes', {
+      empresa: EMPRESA,
+      campos: ['CLI_CODIGO', 'CLI_NOME', 'CONTATO'],
+      filtros: [{ campo: 'TABELA_PRECO', op: 'em', valor: TABELAS_ATACADO }],
+      limite: 20_000,
+    });
+    return r.map((c) => ({ cli: Number(c.CLI_CODIGO), nome: String(c.CLI_NOME ?? ''), contato: c.CONTATO ?? null }));
+  }
+
   /** 1 toque que aprende para sempre: vincula a chave e conserta o histórico. */
   async vincular(dto: {
     telefone: string;
@@ -606,6 +797,7 @@ export class WhatsappService {
     }
     const chave = chaveTelefone(dto.telefone) ?? dto.telefone.replace(/\D/g, '');
     if (!chave) throw new BadRequestException('Telefone inválido.');
+    this.sugestoesCache = null;
     return this.repo.vincular({
       chave,
       telefone: dto.telefone,

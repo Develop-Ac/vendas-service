@@ -248,6 +248,7 @@ describe('WhatsappService — conteúdo', () => {
       if (url.includes('/messages')) {
         expect(url).toContain(`filter.timestamp.gte=${epoch}`);
         expect(url).toContain('downloadMedia=true');
+        expect(url).toContain('filter.fromMe=true');
         return {
           ok: true,
           json: async () => [
@@ -270,6 +271,7 @@ describe('WhatsappService — conteúdo', () => {
       gravadas: 0,
       midias: 0,
       erro: null,
+      so_enviadas: true,
     };
     await service.executarHistorico(estado, desde);
     expect(estado).toMatchObject({ chats: 1, lidas: 1, gravadas: 1, erro: null });

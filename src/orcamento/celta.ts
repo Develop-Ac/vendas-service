@@ -49,6 +49,10 @@ export interface OrcamentoParaCelta {
   bolsa_pct_depois?: number | null;
   aprovado_por?: string | null;
   aprovado_em?: Date | string | null;
+  /** USUARIOS.USU_CODIGO do Celta de quem aprovou (sis_usuarios.codigo) */
+  aprovado_codigo?: number | null;
+  /** quem mandou o orçamento (sis_usuarios.id ou codigo) — o solicitante do bloqueio no Celta */
+  usuario_id?: string | null;
   itens?: ItemParaCelta[];
   /** piso da bolsa (custo × piso) vigente — para a conta da compensação na observação */
   piso_bolsa?: number | null;
@@ -56,7 +60,11 @@ export interface OrcamentoParaCelta {
   tributacao?: string | null;
   /** meia nota: imposto estimado sobre metade do valor; vai inteiro em despesas acessórias, sem regime */
   meia_nota?: boolean;
+  /** ajustes da bolsa negativa (produto avariado/usado/embalagem): motivo e justificativa vão na observação */
+  ajustes_bolsa?: Array<{ pro_codigo: number; motivo: string; justificativa: string; ajustado_por: string | null }>;
 }
+
+const MOTIVO_AJUSTE: Record<string, string> = { AVARIADO: 'Avariado', USADO: 'Usado', EMBALAGEM: 'Embalagem danificada', OUTRO: 'Outro' };
 
 /**
  * Compensação do orçamento: linhas que ficaram abaixo do limite em vigor SEM pedir aprovação
@@ -111,6 +119,10 @@ export function justificativaAlcada(o: OrcamentoParaCelta): string {
       : `Alçada: dentro do limite do vendedor${aprov ? ` (${aprov})` : ''}.`;
   const mes = o.bolsa_pct_antes != null && o.bolsa_pct_depois != null ? ` Desconto do mês: ${pct(o.bolsa_pct_antes)} -> ${pct(o.bolsa_pct_depois)}.` : '';
   linhas.push(`${alcada} Desconto total ${pct(o.desc_pct ?? 0)}.${mes}`);
+  // antes dos itens: o comprovante do bloqueio corta a justificativa em 500 caracteres
+  for (const a of o.ajustes_bolsa ?? []) {
+    linhas.push(`Bolsa ajustada${a.ajustado_por ? ` por ${a.ajustado_por}` : ''}: ${a.pro_codigo} ${MOTIVO_AJUSTE[a.motivo] ?? a.motivo} — ${a.justificativa.trim()}`);
+  }
   const comDesc = (o.itens ?? []).filter((i) => Number(i.desc_pct) > 0);
   if (comDesc.length) {
     const partes = comDesc.map((i) => {
@@ -139,6 +151,8 @@ export interface CorpoCelta {
   tributacao?: { regime: 'difal' | 'st' };
   /** Imposto cobrado do cliente que vai para "Desp. Acessórias" do orçamento no Celta e entra no TOTAL: o DIFAL (soma dos itens) e, na meia nota, também o ST. */
   desp_acessorias?: number;
+  /** comprovante de aprovação de desconto (JWT EdDSA assinado pela intranet) — só quando algum item passa do teto do ERP */
+  comprovante?: string;
   itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; valor_descto: number; difal?: number; icms_st?: number }>;
 }
 

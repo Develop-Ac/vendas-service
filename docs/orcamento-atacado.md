@@ -144,6 +144,17 @@ na empresa 1, itens com custo/tabela 2/estoque da empresa 3 e a sobra), `GET/POS
 /orcamento/oportunidade`, `PUT /orcamento/oportunidade/:id` (% do vendedor ou encerrar).
 SQL manual bloco 14. Função pura em `oportunidade.ts` (+ spec).
 
+### Extrato da bolsa por NF e bolsa do orçamento fechado (02/10/2026)
+
+No desfecho FECHADO o orçamento grava `piso_bolsa` e `bolsa_orcamento` (`calcularBolsa().orcamento`
+dos itens gravados); fechados antes disso são calculados na leitura com o piso de hoje
+(`bolsa_aprox: true`). `GET /orcamento` e `GET /orcamento/:id` trazem também `bolsa_nf`, a bolsa que
+as NFs casadas com o orçamento geraram. `GET /orcamento/vendedor/:rep/bolsa/extrato?ano=&mes=` abre a
+bolsa do mês NF a NF, com o orçamento de cada linha e a conferência com o card (`diferenca`, esperado 0).
+Regras do casamento orçamento → NF (NF do orçamento, NF do condicional, janela de 30 dias **sem
+condição de preço**), conciliação e contrato da rota: **[extrato-bolsa.md](extrato-bolsa.md)**.
+SQL manual `sql/2026-10-02_bolsa_fechado_postgres.sql`.
+
 ## Comissão estimada (ao lado da bolsa)
 
 `comissao` na resposta da bolsa: `atual` (mês como está) e `com_orcamento` (se o orçamento fechar),
@@ -201,7 +212,11 @@ Sempre **hoje + 7 dias** (`ORCAMENTO_VALIDADE_DIAS`). Com item em promoção, en
 SEM_ESTOQUE, CONCORRENTE, CLIENTE_ADIOU, CREDITO_BLOQUEADO) | `CANCELADO`.
 
 Editar um orçamento enviado o devolve a RASCUNHO. Ao salvar, preço de tabela, custo e saldo
-são relidos do ERP — o que a tela mostrou pode ter mudado. `GET /orcamento/:id/conferir`
+são relidos do ERP — o que a tela mostrou pode ter mudado. A alçada também é recalculada a
+cada salvar com a bolsa de agora: um orçamento em `APROVACAO` salvo com os mesmos itens que
+já cabe na alçada (a bolsa do mês cresceu) e sem pedido de ajuste pendente passa a `ENVIADO`
+sozinho — o mesmo que `/enviar` faria. O ajuste da bolsa já gravado entra na compensação do
+orçamento nesse recálculo, como na tela. `GET /orcamento/:id/conferir`
 re-avalia um orçamento salvo (saldo que sumiu, tabela que mudou) sem gravar.
 
 **O orçamento NÃO é gravado no Celta** (não existe escrita de orçamento no ERP; a única
@@ -218,11 +233,12 @@ como hoje e registra o número em "Fechado".
 | GET | `/clientes?q=&todos=` | a mesma busca na forma antiga (só o array) — mantida para a tela publicada |
 | GET | `/clientes/:cli` | cabeçalho: cadastro ao vivo + crédito + histórico |
 | GET | `/vendedor/:rep/bolsa?total=&desconto=&custo=&sem_custo=&m1a..m1d=&m23=` | bolsa do mês (+ projeção) e comissão estimada do mês / com o orçamento |
+| GET | `/vendedor/:rep/bolsa/extrato?ano=&mes=` | extrato da bolsa por NF num dos últimos 6 meses comissionais, com o orçamento casado e a conferência com o card (ver [extrato-bolsa.md](extrato-bolsa.md)) |
 | GET | `/vendedor/:rep/bolsa/cliente/:cli?meses=6` | bolsa que o cliente gerou para o vendedor nos meses comissionais fechados (1 a 12, mais recente primeiro) + total; **piso de hoje em todos os meses** — compara o cliente, não reproduz o fechamento |
 | GET | `/produtos?q=&tabela=&cli=` | busca já avaliada na régua |
 | GET | `/produtos/:codigo[/equivalentes|/relacionados]` | detalhe, equivalentes, vendem juntos |
 | POST | `/relacionados/recalcular` | reapura os pares no BI |
-| GET/POST | `/` | lista / cria |
+| GET/POST | `/` | lista / cria. Lista: `?rep=&cli=&status=&de=&ate=&numero=&produto=&flag=&page=&pageSize=` — `de`/`ate` YYYY-MM-DD sobre a criação, em dias de Cuiabá (`ate` inclusivo); `numero` casa o nº da intranet **ou** o do Celta; `produto` só com dígitos = código do produto, senão trecho da descrição (sem caixa) — orçamentos com ao menos um item assim; `flag` = `SEM_CELTA` (fechado sem nº do Celta), `ACIMA_ALCADA` ou `AGUARDANDO` (em aprovação). Parâmetro inválido é ignorado |
 | GET/PUT/DELETE | `/:id` | obtém / regrava / cancela |
 | POST | `/:id/enviar` · `/:id/aprovar` · `/:id/desfecho` | ciclo |
 

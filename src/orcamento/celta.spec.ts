@@ -34,6 +34,18 @@ describe('corpoParaCelta', () => {
     );
   });
 
+  it('ajuste da bolsa: motivo e justificativa na observação, antes dos itens e só em ASCII', () => {
+    const c = corpoParaCelta({
+      ...base,
+      aprovado_por: 'Carlos',
+      ajustes_bolsa: [{ pro_codigo: 40381, motivo: 'AVARIADO', justificativa: 'caixa amassada, peça ok', ajustado_por: 'Carlos' }],
+    });
+    expect(c.observacao).toContain('Bolsa ajustada por Carlos: 40381 Avariado - caixa amassada, peca ok\nItens com desconto');
+    expect(justificativaAlcada({ ...base, ajustes_bolsa: [{ pro_codigo: 1, motivo: 'EMBALAGEM', justificativa: 'embalagem rasgada', ajustado_por: null }] })).toContain(
+      'Bolsa ajustada: 1 Embalagem danificada — embalagem rasgada',
+    );
+  });
+
   it('omite pagamento vazio e nunca zera o item', () => {
     const c = corpoParaCelta({ ...base, cp_codigo: null, fp_codigo: ' ', observacao: null, itens: [{ ...base.itens[0], desc_pct: 1 }] });
     expect(c).not.toHaveProperty('cp_codigo');

@@ -179,14 +179,36 @@ describe('alcadaDoItem', () => {
     expect(alcadaDoItem({ ...base, preco: 930, saldo_apos: -10 }).precisa_aprovacao).toBe(false);
     expect(alcadaDoItem({ ...base, preco: 860, saldo_apos: null }).precisa_aprovacao).toBe(true);
   });
-  it('orçamento que se compensa sozinho não vai ao gestor, mesmo sem bolsa ou abaixo do piso', () => {
-    const semBolsa = alcadaDoItem({ ...base, preco: 860, saldo_apos: -10, compensa: true });
+  it('orçamento que se compensa sozinho dispensa só o piso absoluto', () => {
+    // piso absoluto acima do limite em vigor: dentro da escala, a compensação cobre o piso
+    const semBolsa = alcadaDoItem({ ...base, piso_bolsa: 950, preco: 930, saldo_apos: -10, compensa: true });
+    expect(semBolsa.abaixo_piso).toBe(true);
     expect(semBolsa.precisa_aprovacao).toBe(false);
     expect(semBolsa.compensa).toBe(true);
-    expect(semBolsa.minimo_vigente).toBe(925); // o limite informado continua o da escala; só a aprovação cai
-    const piso = alcadaDoItem({ ...base, preco: 800, saldo_apos: 9999, compensa: true });
-    expect(piso.abaixo_piso).toBe(true);
-    expect(piso.precisa_aprovacao).toBe(false);
+    const comBolsa = alcadaDoItem({ ...base, piso_bolsa: 900, preco: 860, saldo_apos: 9999, compensa: true });
+    expect(comBolsa.precisa_aprovacao).toBe(false);
+  });
+  it('compensar não libera desconto acima da escala por quantidade nem do máximo da faixa', () => {
+    // sem bolsa: 1 unidade vale 925 (escala); 860 está dentro do máximo da faixa, mas fora da escala
+    expect(alcadaDoItem({ ...base, preco: 860, saldo_apos: -10, compensa: true }).precisa_aprovacao).toBe(true);
+    expect(alcadaDoItem({ ...base, preco: 849, saldo_apos: -10, compensa: true }).precisa_aprovacao).toBe(true);
+    // com bolsa: o máximo da faixa (850) continua valendo
+    expect(alcadaDoItem({ ...base, preco: 800, saldo_apos: 9999, compensa: true }).precisa_aprovacao).toBe(true);
+  });
+  it('vendedor sem bolsa: canal ≥ 0 com o orçamento mantém a escala; canal negativo, qualquer desconto é gestor', () => {
+    const semBolsa = { ...base, tabela: 1000, saldo_apos: -10 };
+    // canal positivo depois do desconto: escala por quantidade, como sempre
+    expect(alcadaDoItem({ ...semBolsa, preco: 930, canal_apos: 500 }).precisa_aprovacao).toBe(false);
+    // canal negativo: 930 (dentro da escala) já pede aprovação; o limite vira a tabela
+    const neg = alcadaDoItem({ ...semBolsa, preco: 930, canal_apos: -1 });
+    expect(neg.canal_negativo).toBe(true);
+    expect(neg.minimo_vigente).toBe(1000);
+    expect(neg.precisa_aprovacao).toBe(true);
+    // pelo preço de tabela não é desconto: preço da empresa, segue
+    expect(alcadaDoItem({ ...semBolsa, preco: 1000, canal_apos: -1 }).precisa_aprovacao).toBe(false);
+    // com bolsa do vendedor o canal não entra; canal desconhecido não trava
+    expect(alcadaDoItem({ ...base, tabela: 1000, preco: 860, saldo_apos: 120, canal_apos: -1 }).precisa_aprovacao).toBe(false);
+    expect(alcadaDoItem({ ...semBolsa, preco: 930, canal_apos: null }).precisa_aprovacao).toBe(false);
   });
   it('promoção: a empresa absorve metade da falta contra o piso', () => {
     expect(absorcaoPromocao(120, 100, 1.5, 2)).toBe(30); // falta 30 por un × 2 un / 2
@@ -197,6 +219,14 @@ describe('alcadaDoItem', () => {
     expect(b.saldo_apos).toBe(-175); // −160 + (120 − 150) + 15
     expect(b.orcamento).toBe(-15);
     expect(b.acima_linha).toBe(-200); // prêmio é sobre o lucro real: sem a metade da empresa
+  });
+  it('ajuste da bolsa negativa: efetivo do mês e o assumido no orçamento entram no saldo, não na linha do prêmio', () => {
+    const b = calcularBolsa({ receita_mtd: 1000, custo_mtd: 800, desconto_mtd: 0, receita_orc: 120, custo_orc: 100, ajuste_mtd: 25, ajuste_orc: 10, piso: 1.5, linha: 1.5 } as Parameters<typeof calcularBolsa>[0]);
+    expect(b.saldo).toBe(-175); // 1000 − 1200 + 25
+    expect(b.saldo_apos).toBe(-195); // −175 + (120 − 150) + 10
+    expect(b.ajuste_mtd).toBe(25);
+    expect(b.ajuste_orc).toBe(10);
+    expect(b.acima_linha).toBe(-200);
   });
   it('calcularBolsa expõe quanto só o orçamento rende contra o piso', () => {
     const b = calcularBolsa({ receita_mtd: 0, custo_mtd: 0, desconto_mtd: 0, receita_orc: 1600, custo_orc: 1000, piso: 1.5 } as Parameters<typeof calcularBolsa>[0]);

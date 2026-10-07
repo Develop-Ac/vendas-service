@@ -14,6 +14,20 @@ import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } fro
    EQUIVALENTES) e os pares "vendem juntos" apurados no BI.
    ============================================================================= */
 
+/** Filtros da lista de orçamentos (GET /orcamento); `de`/`ate` em YYYY-MM-DD, já validados no controller. */
+export type FiltroListaOrcamento = {
+  rep_codigo?: number;
+  cli_codigo?: number;
+  status?: string;
+  page?: number;
+  pageSize?: number;
+  de?: string;
+  ate?: string;
+  numero?: number;
+  produto?: string;
+  flag?: 'SEM_CELTA' | 'ACIMA_ALCADA' | 'AGUARDANDO';
+};
+
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
 const nn = (v: unknown): number | null => (v == null ? null : Number(v));
 /** Início e fim (exclusivo) do dia de HOJE em Cuiabá (UTC−4, sem horário de verão), como instantes UTC. */
@@ -634,6 +648,23 @@ export class OrcamentoPrismaRepository {
       promocao_fim: i.promocao_fim ? new Date(i.promocao_fim).toISOString().slice(0, 10) : null,
       qtd_encomenda: n(i.qtd_encomenda),
       fora_promocao: !!i.fora_promocao,
+      pedir_ajuste: !!i.pedir_ajuste,
+    };
+  }
+
+  private mapAjuste(a: any) {
+    const assumido = n(a.assumido_unit), qtd = n(a.quantidade);
+    return {
+      pro_codigo: a.pro_codigo as number,
+      quantidade: qtd,
+      assumido_unit: assumido,
+      // R$ da linha que AINDA sai da bolsa (o que foi digitado): negativo + o que a empresa assume
+      valor: round2(Math.min(0, n(a.negativo_linha) + assumido * qtd)),
+      negativo_linha: n(a.negativo_linha),
+      motivo: a.motivo as string,
+      justificativa: a.justificativa as string,
+      ajustado_por: (a.ajustado_por ?? null) as string | null,
+      ajustado_em: (a.updated_at ?? a.created_at) as Date,
     };
   }
 
@@ -668,8 +699,13 @@ export class OrcamentoPrismaRepository {
       acima_alcada: !!o.acima_alcada,
       bolsa_pct_antes: nn(o.bolsa_pct_antes),
       bolsa_pct_depois: nn(o.bolsa_pct_depois),
+      // bolsa congelada no desfecho FECHADO (nula nos fechados antes de 02/10/2026)
+      piso_bolsa: nn(o.piso_bolsa),
+      bolsa_orcamento: nn(o.bolsa_orcamento),
       aprovado_por: o.aprovado_por,
       aprovado_em: o.aprovado_em,
+      aprovado_codigo: o.aprovado_codigo ?? null,
+      aprovado_por_ajuste: !!o.aprovado_por_ajuste,
       enviado_em: o.enviado_em,
       desfecho_em: o.desfecho_em,
       desfecho_motivo: o.desfecho_motivo,
@@ -684,14 +720,37 @@ export class OrcamentoPrismaRepository {
       // null = sem divergência detectada · false = divergente aguardando gerência · true = liberado
       liberadogerencia: o.liberadogerencia ?? null,
       itens: Array.isArray(o.itens) ? o.itens.map((i: any) => this.mapItem(i)) : undefined,
+      ajustes_bolsa: Array.isArray(o.ven_bolsa_ajuste) ? o.ven_bolsa_ajuste.map((a: any) => this.mapAjuste(a)) : undefined,
     };
   }
 
-  async listar(f: { rep_codigo?: number; cli_codigo?: number; status?: string; page?: number; pageSize?: number }) {
+  async listar(f: FiltroListaOrcamento) {
     const where: Prisma.ven_orcamentoWhereInput = {};
     if (f.rep_codigo != null) where.rep_codigo = f.rep_codigo;
     if (f.cli_codigo != null) where.cli_codigo = f.cli_codigo;
     if (f.status) where.status = f.status;
+    // Período pela criação, em dias de Cuiabá (UTC−4 fixo, como diaCuiaba): `ate` vale até 23:59:59 do dia.
+    if (f.de || f.ate) {
+      where.created_at = {
+        ...(f.de && { gte: new Date(`${f.de}T00:00:00-04:00`) }),
+        ...(f.ate && { lt: new Date(new Date(`${f.ate}T00:00:00-04:00`).getTime() + 86_400_000) }),
+      };
+    }
+    const and: Prisma.ven_orcamentoWhereInput[] = [];
+    // O vendedor conhece o orçamento pelo nº da intranet ou pelo do Celta: um campo só procura nos dois.
+    if (f.numero != null) and.push({ OR: [{ numero: f.numero }, { celta_orcamento: f.numero }] });
+    // Produto: código exato (índice em pro_codigo; até 9 dígitos para caber no INT) ou trecho da descrição;
+    // o `some` vira EXISTS na mesma consulta, sem ida extra por orçamento.
+    if (f.produto) {
+      and.push({
+        itens: { some: /^\d+$/.test(f.produto) && f.produto.length <= 9 ? { pro_codigo: Number(f.produto) } : { descricao: { contains: f.produto, mode: 'insensitive' } } },
+      });
+    }
+    // Sinais que a supervisão persegue: fechado sem nº do Celta (não importado), acima da alçada e na fila de aprovação.
+    if (f.flag === 'SEM_CELTA') and.push({ status: 'FECHADO', celta_orcamento: null });
+    else if (f.flag === 'ACIMA_ALCADA') and.push({ acima_alcada: true });
+    else if (f.flag === 'AGUARDANDO') and.push({ status: 'APROVACAO' });
+    if (and.length) where.AND = and;
     const page = Math.max(1, f.page ?? 1);
     const pageSize = Math.min(200, Math.max(1, f.pageSize ?? 50));
     const [total, rows] = await this.prisma.$transaction([
@@ -706,10 +765,35 @@ export class OrcamentoPrismaRepository {
     return { total, page, pageSize, itens: rows.map((r) => this.mapOrcamento(r)) };
   }
 
+  /* ----------------------------------------------- usuários (aprovação no Celta) */
+
+  /** Usuário da intranet por id (cuid) ou código (o mesmo USU_CODIGO do Celta), com as permissões. */
+  usuarioPorRef(ref: string | null | undefined) {
+    const r = (ref ?? '').trim();
+    if (!r) return Promise.resolve(null);
+    return this.prisma.sis_usuarios.findFirst({
+      where: { trash: 0, OR: [{ id: r }, { codigo: r }] },
+      select: { id: true, codigo: true, nome: true, vendas_rep_codigo: true, sis_permissoes: { select: { tela: true, editar: true, criar: true } } },
+    });
+  }
+
+  /** Usuário da intranet dono da carteira do representante. */
+  usuarioDoRep(rep: number | null | undefined) {
+    if (rep == null) return Promise.resolve(null);
+    return this.prisma.sis_usuarios.findFirst({ where: { trash: 0, vendas_rep_codigo: rep }, select: { codigo: true } });
+  }
+
+  /** Usuário da intranet pelo nome gravado em aprovado_por (orçamentos aprovados antes do código). */
+  usuarioPorNome(nome: string | null | undefined) {
+    const n = (nome ?? '').trim();
+    if (!n) return Promise.resolve(null);
+    return this.prisma.sis_usuarios.findFirst({ where: { trash: 0, nome: { equals: n, mode: 'insensitive' } }, select: { codigo: true } });
+  }
+
   async obter(id: string) {
     const o = await this.prisma.ven_orcamento.findUnique({
       where: { id },
-      include: { itens: { orderBy: { item: 'asc' } } },
+      include: { itens: { orderBy: { item: 'asc' } }, ven_bolsa_ajuste: { orderBy: { pro_codigo: 'asc' } } },
     });
     return o ? this.mapOrcamento(o) : null;
   }
@@ -801,26 +885,43 @@ export class OrcamentoPrismaRepository {
   async criar(cab: Prisma.ven_orcamentoUncheckedCreateInput, itens: Prisma.ven_orcamento_itemUncheckedCreateInput[]) {
     const o = await this.prisma.ven_orcamento.create({
       data: { ...cab, itens: { create: itens.map(({ orcamento_id: _o, ...i }) => i) } },
-      include: { itens: { orderBy: { item: 'asc' } } },
+      include: { itens: { orderBy: { item: 'asc' } }, ven_bolsa_ajuste: true },
     });
     return this.mapOrcamento(o);
   }
 
-  /** Regrava cabeçalho e itens (os itens são substituídos por inteiro). */
+  /** Regrava só o DIFAL dos itens (por nº do item) e o total de DIFAL do cabeçalho; o resto do orçamento não muda. */
+  async atualizarDifal(id: string, itens: Array<{ item: number; difal: number; difal_pct: number | null }>, difal: number) {
+    const o = await this.prisma.$transaction(async (tx) => {
+      for (const i of itens) {
+        await tx.ven_orcamento_item.updateMany({ where: { orcamento_id: id, item: i.item }, data: { difal: i.difal, difal_pct: i.difal_pct } });
+      }
+      return tx.ven_orcamento.update({
+        where: { id },
+        data: { difal, updated_at: new Date() },
+        include: { itens: { orderBy: { item: 'asc' } }, ven_bolsa_ajuste: { orderBy: { pro_codigo: 'asc' } } },
+      });
+    });
+    return this.mapOrcamento(o);
+  }
+
+  /** Regrava cabeçalho e itens (os itens são substituídos por inteiro); `limparAjustes` apaga os ajustes da bolsa junto. */
   async atualizar(
     id: string,
     cab: Prisma.ven_orcamentoUncheckedUpdateInput,
     itens?: Prisma.ven_orcamento_itemUncheckedCreateInput[],
+    limparAjustes = false,
   ) {
     const o = await this.prisma.$transaction(async (tx) => {
       if (itens) {
         await tx.ven_orcamento_item.deleteMany({ where: { orcamento_id: id } });
         if (itens.length) await tx.ven_orcamento_item.createMany({ data: itens });
       }
+      if (limparAjustes) await tx.ven_bolsa_ajuste.deleteMany({ where: { orcamento_id: id } });
       return tx.ven_orcamento.update({
         where: { id },
         data: cab,
-        include: { itens: { orderBy: { item: 'asc' } } },
+        include: { itens: { orderBy: { item: 'asc' } }, ven_bolsa_ajuste: { orderBy: { pro_codigo: 'asc' } } },
       });
     });
     return this.mapOrcamento(o);
@@ -896,6 +997,104 @@ export class OrcamentoPrismaRepository {
       select: { pro_codigo: true },
     });
     return new Set(rows.map((r) => r.pro_codigo));
+  }
+
+  /* ------------------------------------------------ ajuste da bolsa negativa */
+
+  /** Grava (ou regrava) o ajuste da linha e, se vier, a aprovação no cabeçalho — juntos. */
+  async salvarAjuste(
+    a: Omit<Prisma.ven_bolsa_ajusteUncheckedCreateInput, 'id' | 'created_at' | 'updated_at'>,
+    cab: Prisma.ven_orcamentoUncheckedUpdateInput,
+  ) {
+    await this.prisma.$transaction([
+      this.prisma.ven_bolsa_ajuste.upsert({
+        where: { orcamento_id_pro_codigo: { orcamento_id: a.orcamento_id, pro_codigo: a.pro_codigo } },
+        create: a,
+        update: { ...a, updated_at: new Date() },
+      }),
+      this.prisma.ven_orcamento.update({ where: { id: a.orcamento_id }, data: cab }),
+    ]);
+  }
+
+  async apagarAjuste(orcamentoId: string, proCodigo: number) {
+    await this.prisma.ven_bolsa_ajuste.deleteMany({ where: { orcamento_id: orcamentoId, pro_codigo: proCodigo } });
+  }
+
+  /**
+   * Ajustes com o orçamento e a linha (preço do orçamento): por vendedor e importados no Celta
+   * desde `importadosDesde` (bolsa do mês), ou pelo período do ajuste (listagem).
+   */
+  async ajustes(f: { rep?: number; importadosDesde?: Date; de?: Date; ate?: Date; ajustador?: string; motivo?: string; pro?: number }) {
+    const where: Prisma.ven_bolsa_ajusteWhereInput = {};
+    if (f.rep != null) where.rep_codigo = f.rep;
+    if (f.pro != null) where.pro_codigo = f.pro;
+    if (f.motivo) where.motivo = f.motivo;
+    if (f.ajustador) where.ajustado_por = { contains: f.ajustador, mode: 'insensitive' };
+    if (f.de || f.ate) where.created_at = { ...(f.de ? { gte: f.de } : {}), ...(f.ate ? { lt: f.ate } : {}) };
+    if (f.importadosDesde) where.ven_orcamento = { celta_importado_em: { gte: f.importadosDesde } };
+    const rows = await this.prisma.ven_bolsa_ajuste.findMany({
+      where,
+      orderBy: { created_at: 'desc' },
+      take: 2000,
+      include: {
+        ven_orcamento: {
+          select: {
+            numero: true, celta_orcamento: true, celta_importado_em: true, cli_nome: true, rep_nome: true,
+            itens: { select: { pro_codigo: true, descricao: true, preco_unit: true } },
+          },
+        },
+      },
+    });
+    return rows.map((r) => {
+      const item = r.ven_orcamento.itens.find((i) => i.pro_codigo === r.pro_codigo);
+      return {
+        ...this.mapAjuste(r),
+        id: r.id,
+        orcamento_id: r.orcamento_id,
+        cli_codigo: r.cli_codigo,
+        rep_codigo: r.rep_codigo,
+        orcamento_numero: r.ven_orcamento.numero,
+        celta_orcamento: r.ven_orcamento.celta_orcamento,
+        celta_importado_em: r.ven_orcamento.celta_importado_em,
+        cli_nome: r.ven_orcamento.cli_nome,
+        rep_nome: r.ven_orcamento.rep_nome,
+        descricao: item?.descricao ?? null,
+        preco_unit: n(item?.preco_unit),
+      };
+    });
+  }
+
+  /** FECHADOS do vendedor com desfecho desde `desde`, com os itens — o que o extrato casa com as NFs. */
+  async fechadosParaCasar(rep: number, desde: Date) {
+    const rows = await this.prisma.ven_orcamento.findMany({
+      where: { rep_codigo: rep, status: 'FECHADO', desfecho_em: { gte: desde } },
+      select: {
+        id: true, numero: true, cli_codigo: true, rep_codigo: true, celta_orcamento: true, celta_importado_em: true, desfecho_em: true,
+        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, custo_ref: true }, orderBy: { item: 'asc' } },
+      },
+    });
+    return rows.map((r) => ({ ...r, itens: r.itens.map((i) => ({ pro_codigo: i.pro_codigo, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), custo_ref: nn(i.custo_ref) })) }));
+  }
+
+  /** Itens e ajustes da bolsa dos orçamentos — a bolsa do orçamento recalculada na leitura. */
+  async itensParaBolsa(ids: string[]) {
+    const rows = await this.prisma.ven_orcamento.findMany({
+      where: { id: { in: ids } },
+      select: {
+        id: true,
+        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, total: true, custo_ref: true, promocao_codigo: true, fora_promocao: true } },
+        ven_bolsa_ajuste: { select: { quantidade: true, assumido_unit: true } },
+      },
+    });
+    return new Map(
+      rows.map((r) => [
+        r.id,
+        {
+          itens: r.itens.map((i) => ({ ...i, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), total: n(i.total), custo_ref: nn(i.custo_ref) })),
+          ajustes: r.ven_bolsa_ajuste.map((a) => ({ quantidade: n(a.quantidade), assumido_unit: n(a.assumido_unit) })),
+        },
+      ]),
+    );
   }
 
   /** Orçamentos abertos deste vendedor (ENVIADO/APROVACAO) — para a bolsa projetada. */

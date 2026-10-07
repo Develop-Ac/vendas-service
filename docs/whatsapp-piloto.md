@@ -116,6 +116,9 @@ depois de conectá-la:
 curl -X POST http://vendas-service.acacessorios.local/whatsapp/historico -H 'Content-Type: application/json' -d '{"sessao":"rep-163"}'
 ```
 
+`"so_enviadas": true` no corpo pede ao WAHA só as mensagens `fromMe` (recarga
+leve de uma lacuna de enviadas, como a de 29/09→07/10/2026 no NOWEB). Rode uma
+sessão por vez e espere `terminado_em` antes da próxima — `scripts/recarregar-enviadas.ps1`.
 Roda em segundo plano (`GET /whatsapp/historico` mostra chats, lidas, gravadas,
 mídias, erro). Repetir é seguro: a chave única `(sessao, message_id)` ignora o
 que já entrou. Limite do engine WEBJS: só devolve o que o WhatsApp Web
@@ -128,3 +131,25 @@ liberadas, mensagens com corpo, com mídia e áudios por status.
 **Checklist para ligar:** DDL aplicado → bucket criado no MinIO → WAHA com
 download de mídia → `WA_CORPO_SESSOES` + `S3_*` + `WA_TRANSCRICAO_*` no
 vendas-service → deploy → histórico por sessão.
+
+## 7. Lista de vínculo com sugestão
+
+Tela: Vendas → Carteirização → aba **Contatos WhatsApp** (mesma permissão da
+aba Supervisão). Mostra os 50 números sem cliente das sessões `rep-*` com mais
+mensagens, cada um com o cliente provável e a evidência. Vincular corrige todo
+o histórico do número; **Não é cliente** (colega, transportadora, fornecedor)
+tira da lista e é desfeito por um vínculo posterior.
+
+- `GET /whatsapp/contatos/sugestoes?limite=50&dias=30` — cache de 10 min,
+  zerado a cada vínculo ou marcação.
+- `POST /whatsapp/contatos/ignorar {telefone, motivo?, usuario_nome?}`.
+- Tabela nova `ven_wa_contato_ignorado` em `sql/whatsapp_conversas_postgres.sql`
+  (aplicar antes do deploy; sem ela a lista funciona, mas "Não é cliente" falha).
+
+Sinais (motor em `src/whatsapp/sugestao-vinculo.ts`, medidos em set/26 nos
+números já vinculados): produto distintivo citado no mesmo dia do orçamento do
+cliente, 70% de acerto sozinho; mensagem enviada no minuto da entrega do
+orçamento da intranet, 57%; nome salvo na agenda do celular (não medido).
+Dois ou mais sinais no mesmo cliente = **Forte** (91%). Dia em comum sozinho
+não vota (8%). Fontes: orçamentos do Celta pela erp-firebird-api, orçamentos da
+intranet, `GET /api/contacts` do WAHA; cada fonte fora do ar só tira o sinal dela.
