@@ -16,23 +16,27 @@ import {
 import { Type } from 'class-transformer';
 import { VendaCasadaItemDto } from './add-pecas-cotadas.dto';
 
+/**
+ * Peça encomendada. A tela só deixa digitar o código; descrição e referência ela
+ * preenche pela busca do produto e manda aqui, onde são gravadas como vieram.
+ */
 export class EncomendaPecaItemDto {
+  @ApiProperty({
+    description: 'Código do produto no Celta. Obrigatório e precisa existir no ERP.',
+    example: 2321,
+  })
+  @IsDefined()
+  @Type(() => Number)
+  @IsInt()
+  @IsPositive()
+  pro_codigo!: number;
+
   @ApiProperty({ description: 'Descrição da peça', example: 'LAN T GOL /86 LE FUME' })
   @IsDefined()
   @IsString()
   @IsNotEmpty()
   @MaxLength(255)
   peca!: string;
-
-  @ApiProperty({
-    description: 'Código do produto no ERP. Se não informado, o backend usa 99999.',
-    required: false,
-    example: 2321,
-  })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  pro_codigo?: number;
 
   @ApiProperty({ description: 'Referência do produto', required: false, example: '2204' })
   @IsOptional()

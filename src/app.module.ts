@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ErpApiModule } from './common/erp-api/erp-api.module';
+import { ComprasApiModule } from './common/compras-api/compras-api.module';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
 
 import { AppController } from './app.controller';
@@ -20,6 +21,7 @@ import { CATALOGO_VENDAS } from './avisos.catalogo';
 @Module({
   imports: [
     ErpApiModule,
+    ComprasApiModule,
     PrismaModule,
     BuscaItensModule,
     S3Module,

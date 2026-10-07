@@ -21,6 +21,12 @@ export interface ClienteEncomenda {
   CELULAR: string | null;
 }
 
+/** Fornecedor do Celta — código e nome, como a tela mostra no item cotado. */
+export interface FornecedorEncomenda {
+  FOR_CODIGO: number;
+  FOR_NOME: string | null;
+}
+
 /** Recorte da ordem de serviço — só o que decide se a encomenda é de oficina. */
 export interface OrdemServicoEncomenda {
   ORDEM_SERVICO: number;
@@ -70,6 +76,23 @@ export class EncomendaPecasErpRepository {
       CLI_NOME: linha.CLI_NOME ?? null,
       FONE: linha.FONE ?? null,
       CELULAR: linha.CELULAR ?? null,
+    };
+  }
+
+  async fornecedorPorCodigo(
+    forCodigo: number,
+    empresa = EMPRESA_PADRAO,
+  ): Promise<FornecedorEncomenda | null> {
+    const r = await this.erp.buscar<Record<string, any>>(
+      `/erp/encomenda-pecas/fornecedores/${forCodigo}?empresa=${empresa}`,
+    );
+    const linha = r.dados?.[0];
+    if (!linha) return null;
+
+    return {
+      FOR_CODIGO: Number(linha.FOR_CODIGO),
+      // CHAR do Firebird volta preenchido com espaços até o tamanho declarado
+      FOR_NOME: linha.FOR_NOME == null ? null : String(linha.FOR_NOME).trim() || null,
     };
   }
 

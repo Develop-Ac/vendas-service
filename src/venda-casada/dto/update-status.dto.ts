@@ -41,4 +41,15 @@ export class UpdateStatusDto {
   @IsOptional()
   @IsString()
   prazo?: string | null;
+
+  @ApiProperty({
+    description:
+      'Usuário que fez a mudança. Vai para o log do pedido de compra gerado ao marcar "Comprado".',
+    required: false,
+    example: 'gabriel',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(120)
+  usuario?: string;
 }
