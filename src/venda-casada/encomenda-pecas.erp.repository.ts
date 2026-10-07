@@ -21,10 +21,11 @@ export interface ClienteEncomenda {
   CELULAR: string | null;
 }
 
-/** Fornecedor do Celta — código e nome, como a tela mostra no item cotado. */
+/** Fornecedor do Celta. A tela mostra o nome fantasia; a razão social fica de reserva. */
 export interface FornecedorEncomenda {
   FOR_CODIGO: number;
   FOR_NOME: string | null;
+  NOME_FANTASIA: string | null;
 }
 
 /** Recorte da ordem de serviço — só o que decide se a encomenda é de oficina. */
@@ -89,10 +90,12 @@ export class EncomendaPecasErpRepository {
     const linha = r.dados?.[0];
     if (!linha) return null;
 
+    // CHAR do Firebird volta preenchido com espaços até o tamanho declarado
+    const texto = (v: unknown) => (v == null ? null : String(v).trim() || null);
     return {
       FOR_CODIGO: Number(linha.FOR_CODIGO),
-      // CHAR do Firebird volta preenchido com espaços até o tamanho declarado
-      FOR_NOME: linha.FOR_NOME == null ? null : String(linha.FOR_NOME).trim() || null,
+      FOR_NOME: texto(linha.FOR_NOME),
+      NOME_FANTASIA: texto(linha.NOME_FANTASIA),
     };
   }
 

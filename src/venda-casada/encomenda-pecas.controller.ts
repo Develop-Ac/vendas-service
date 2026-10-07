@@ -80,8 +80,8 @@ export class EncomendaPecasController {
   @ApiOperation({
     summary: 'Busca um fornecedor no ERP pelo código',
     description:
-      'Consulta a erp-firebird-api e devolve FOR_CODIGO e FOR_NOME. Usado pela tela do item ' +
-      'cotado para mostrar o nome ao digitar o código do fornecedor.',
+      'Consulta a erp-firebird-api e devolve FOR_CODIGO, FOR_NOME e NOME_FANTASIA. A tela do ' +
+      'item cotado mostra o nome fantasia (razão social só como reserva).',
   })
   @ApiParam({ name: 'for_codigo', type: Number, description: 'Código do fornecedor no ERP' })
   @ApiQuery({ name: 'empresa', type: Number, required: false, description: 'Empresa do ERP (padrão: 3)' })

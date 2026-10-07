@@ -601,7 +601,11 @@ export class EncomendaPecasService {
       fornecedor = encontrado;
       cache.set(codigo, fornecedor);
     }
-    return { for_codigo: codigo, fornecedor: fornecedor.FOR_NOME ?? String(codigo) };
+    // Na tela vai o nome fantasia; sem ele, a razão social
+    return {
+      for_codigo: codigo,
+      fornecedor: fornecedor.NOME_FANTASIA ?? fornecedor.FOR_NOME ?? String(codigo),
+    };
   }
 
   /** Campo numérico opcional do item cotado: vazio vira null; texto não numérico é 400. */
@@ -968,7 +972,7 @@ export class EncomendaPecasService {
     return produto;
   }
 
-  /** Fornecedor do Celta por código (FOR_CODIGO/FOR_NOME), para a tela do item cotado. */
+  /** Fornecedor do Celta por código (FOR_CODIGO, FOR_NOME, NOME_FANTASIA), para a tela do item cotado. */
   async buscarFornecedor(forCodigo: number, empresa?: number): Promise<FornecedorEncomenda> {
     const fornecedor = await this.erpRepository.fornecedorPorCodigo(forCodigo, empresa);
     if (!fornecedor) {

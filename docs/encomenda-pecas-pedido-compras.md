@@ -12,7 +12,8 @@ e o rastreio SSW de cada uma.
   campos são travados e preenchidos pela busca do código). O sentinela 99999 não é mais usado.
 - **Fornecedor do item cotado é código, obrigatório.** `for_codigo` (ou `fornecedor` só com
   dígitos) precisa existir no Celta (`/erp/encomenda-pecas/fornecedores/:cod?empresa=3`);
-  o nome vem da API e é gravado em `fornecedor`. Texto livre dá 400. Na edição, sem os
+  o nome fantasia (ou a razão social, se não houver) vem da API e é gravado em
+  `fornecedor`. Texto livre dá 400. Na edição, sem os
   dois campos o fornecedor gravado é mantido. A tela busca o nome em
   `GET /encomenda-pecas/fornecedores/:cod`. Cotações antigas (fornecedor só texto) podem
   ganhar o código por `PATCH /encomenda-pecas/item_cotado/:id/fornecedor` em qualquer
