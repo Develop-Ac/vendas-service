@@ -138,7 +138,10 @@ export class EncomendaPecasRepository {
     });
   }
 
-  /** `motivoDenaoCotar`/`prazo` undefined não alteram a coluna (o Prisma ignora campos undefined). */
+  /**
+   * `motivoDenaoCotar`/`prazo`/`pedido_compras` undefined não alteram a coluna (o Prisma
+   * ignora campos undefined).
+   */
   async updateStatus(
     id: number,
     data: {
@@ -146,6 +149,8 @@ export class EncomendaPecasRepository {
       motivoCancelamento: string | null;
       motivoDenaoCotar?: string | null;
       prazo?: Date | null;
+      /** Número do pedido gerado no compras-service ao marcar "Comprado". */
+      pedido_compras?: number | null;
     } & Partial<Record<ColunaEtapa, Date>>,
   ): Promise<VendaCasadaComItens> {
     const encomenda = await this.prisma.ven_encomenda_pecas.update({
@@ -180,6 +185,10 @@ export class EncomendaPecasRepository {
       where: { id },
       data,
     });
+  }
+
+  async deleteItemCotado(id: number): Promise<ven_encomenda_pecas_itens_cotados> {
+    return this.prisma.ven_encomenda_pecas_itens_cotados.delete({ where: { id } });
   }
 
   async updateItemCotadoAutorizado(

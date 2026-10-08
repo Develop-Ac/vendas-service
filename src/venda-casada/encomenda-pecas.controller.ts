@@ -1,5 +1,6 @@
 import {
   Controller,
+  Delete,
   Get,
   Post,
   Patch,
@@ -29,6 +30,7 @@ import { CreateVendaCasadaDto } from './dto/create-encomenda-pecas.dto';
 import { AddPecasCotadasDto, VendaCasadaItemDto } from './dto/add-pecas-cotadas.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { UpdateItemCotadoDto } from './dto/update-item-cotado.dto';
+import { UpdateItemCotadoFornecedorDto } from './dto/update-item-cotado-fornecedor.dto';
 import { UpdateNfeDto } from './dto/update-nfe.dto';
 
 @ApiTags('Encomenda de Peças')
@@ -74,6 +76,24 @@ export class EncomendaPecasController {
     return this.service.buscarProduto(proCodigo, empresa);
   }
 
+  @Get('fornecedores/:for_codigo')
+  @ApiOperation({
+    summary: 'Busca um fornecedor no ERP pelo código',
+    description:
+      'Consulta a erp-firebird-api e devolve FOR_CODIGO, FOR_NOME e NOME_FANTASIA. A tela do ' +
+      'item cotado mostra o nome fantasia (razão social só como reserva).',
+  })
+  @ApiParam({ name: 'for_codigo', type: Number, description: 'Código do fornecedor no ERP' })
+  @ApiQuery({ name: 'empresa', type: Number, required: false, description: 'Empresa do ERP (padrão: 3)' })
+  @ApiResponse({ status: 200, description: 'Fornecedor encontrado' })
+  @ApiResponse({ status: 404, description: 'Fornecedor não encontrado no ERP' })
+  buscarFornecedor(
+    @Param('for_codigo', ParseIntPipe) forCodigo: number,
+    @Query('empresa', new ParseIntPipe({ optional: true })) empresa?: number,
+  ) {
+    return this.service.buscarFornecedor(forCodigo, empresa);
+  }
+
   @Get('clientes/:cli_codigo')
   @ApiOperation({
     summary: 'Busca um cliente no ERP pelo código',
@@ -96,6 +116,24 @@ export class EncomendaPecasController {
     return this.service.buscarCliente(cliCodigo, empresa);
   }
 
+  @Get('pedidos/:id')
+  @ApiOperation({
+    summary: 'Pedidos de compra da encomenda, com NFs e rastreio SSW',
+    description:
+      'Lê no compras-service os pedidos gerados ao marcar a encomenda como "Comprado" ' +
+      '(um por fornecedor, número "E-100001"): fornecedor, status, número no Celta, itens, ' +
+      'NFs vinculadas e, por NF, o CT-e com o rastreio SSW (status, domínio, previsão e ' +
+      'eventos). Antes do "Comprado" devolve `pedidos: null`. É o mesmo bloco que o ' +
+      'GET /:id já traz em `pedidos`; esta rota serve para atualizar só o rastreio.',
+  })
+  @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
+  @ApiResponse({ status: 200, description: 'Pedidos da encomenda (ou null antes do "Comprado")' })
+  @ApiResponse({ status: 404, description: 'Encomenda de peça não encontrada' })
+  async pedidosDeCompra(@Param('id', ParseIntPipe) id: number) {
+    const venda = await this.service.findById(id);
+    return { pedidos: venda.pedidos, pedidos_erro: venda.pedidos_erro };
+  }
+
   @Get(':id')
   @ApiOperation({
     summary: 'Busca uma encomenda de peça pelo ID',
@@ -103,7 +141,9 @@ export class EncomendaPecasController {
       'Retorna a encomenda com `pecas` (ven_encomenda_pecas_itens_encomendados), ' +
       '`pecas_cotadas` (ven_encomenda_pecas_itens_cotados) e `anexos` (ven_encomenda_pecas_anexos), ' +
       'cada anexo com `tipo`: "carro" (imagens da criação) ou "comprovante" (enviados depois). ' +
-      '`prazo` vem como "YYYY-MM-DD" (ou null).',
+      '`prazo` vem como "YYYY-MM-DD" (ou null). Depois do "Comprado" traz também `pedidos` ' +
+      '(pedidos de compra do compras-service com NFs e rastreio SSW) ou `pedidos_erro` se o ' +
+      'compras-service não respondeu.',
   })
   @ApiParam({ name: 'id', type: Number, description: 'ID da venda casada' })
   @ApiResponse({ status: 200, description: 'Registro encontrado' })
@@ -132,14 +172,14 @@ export class EncomendaPecasController {
           type: 'array',
           items: {
             type: 'object',
-            required: ['peca'],
+            required: ['pro_codigo', 'peca'],
             properties: {
-              peca: { type: 'string', example: 'LAN T GOL /86 LE FUME' },
               pro_codigo: {
                 type: 'integer',
                 example: 2321,
-                description: 'Se não informado, o backend usa 99999.',
+                description: 'Código do produto no Celta (obrigatório, precisa existir).',
               },
+              peca: { type: 'string', example: 'LAN T GOL /86 LE FUME' },
               referencia: { type: 'string', example: '2204' },
               quantidade: { type: 'integer', example: 12, default: 1 },
             },
@@ -157,7 +197,17 @@ export class EncomendaPecasController {
               nome: { type: 'string', example: 'Pastilha de freio' },
               valor: { type: 'number', example: 199.9 },
               prazo: { type: 'string', example: '15 dias' },
-              fornecedor: { type: 'string' },
+              for_codigo: {
+                type: 'integer',
+                example: 250,
+                description: 'Código do fornecedor no Celta; o nome vem do ERP e é gravado em `fornecedor`.',
+              },
+              fornecedor: { type: 'string', description: 'Preenchido pelo servidor a partir de for_codigo.' },
+              pro_codigo: {
+                type: 'integer',
+                example: 2321,
+                description: 'Produto do Celta ao qual a cotação se refere (uma das peças).',
+              },
               marca: { type: 'string' },
               transpostadora: { type: 'string' },
               custo: { type: 'number', example: 120.5 },
@@ -188,7 +238,7 @@ export class EncomendaPecasController {
     },
   })
   @ApiResponse({ status: 201, description: 'Encomenda de peça criada com sucesso' })
-  @ApiResponse({ status: 400, description: 'Sem peças, sem ano, cliente ausente/inexistente no ERP ou OS inválida/não encontrada' })
+  @ApiResponse({ status: 400, description: 'Sem peças, peça sem pro_codigo ou inexistente no Celta, sem ano, cliente ausente/inexistente no ERP, fornecedor cotado inexistente ou OS inválida/não encontrada' })
   create(
     @Body() dto: CreateVendaCasadaDto,
     @UploadedFiles() files?: UploadedFileData[],
@@ -201,8 +251,11 @@ export class EncomendaPecasController {
     summary: 'Adiciona peças cotadas a uma encomenda de peça',
     description:
       'Cria registros em ven_encomenda_pecas_itens_cotados já vinculados à encomenda ' +
-      '(encomenda_pecas_id) e devolve a encomenda atualizada com as duas listas de itens.',
+      '(encomenda_pecas_id) e devolve a encomenda atualizada com as duas listas de itens. ' +
+      '`for_codigo` precisa existir no Celta (o nome vem do ERP para `fornecedor`); ' +
+      '`pro_codigo`, se vier, precisa ser uma das peças da encomenda.',
   })
+  @ApiResponse({ status: 400, description: 'Item sem nome/valor, fornecedor inexistente no Celta ou pro_codigo fora das peças da encomenda' })
   @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
   @ApiBody({ type: AddPecasCotadasDto })
   @ApiResponse({ status: 201, description: 'Peças cotadas adicionadas com sucesso' })
@@ -225,12 +278,17 @@ export class EncomendaPecasController {
       'na coluna `prazo` com a mesma regra; vazio ou null limpa. Sem `prazo`, o servidor aplica ' +
       'hoje (Cuiabá) + 7 dias ao sair de "Em cotação" ou "Aguardando Sup. Compras 2" para ' +
       '"Aguardando Sup. Compras 1"/"Aguardando Vendedor". Grava a hora de entrada na nova etapa ' +
-      'e devolve a encomenda como no GET /:id (com `etapas` e `prazo_vencido`).',
+      'e devolve a encomenda como no GET /:id (com `etapas` e `prazo_vencido`). Ao entrar em ' +
+      '"Comprado", gera no compras-service um pedido de compra por fornecedor dos itens cotados ' +
+      'selecionados (autorizado = true), todos com o mesmo número "E-100001", gravado em ' +
+      '`pedido_compras`; cada item selecionado precisa ter `for_codigo` e produto do Celta, ' +
+      'senão 400 e o status não muda. `usuario` (opcional) vai para o log do pedido.',
   })
   @ApiParam({ name: 'id', type: Number, description: 'ID da encomenda de peça' })
   @ApiBody({ type: UpdateStatusDto })
   @ApiResponse({ status: 200, description: 'Status atualizado com sucesso' })
-  @ApiResponse({ status: 400, description: 'Status vazio, cancelamento sem motivo ou prazo inválido' })
+  @ApiResponse({ status: 400, description: 'Status vazio, cancelamento sem motivo, prazo inválido ou "Comprado" sem item selecionado/sem fornecedor/sem produto do Celta' })
+  @ApiResponse({ status: 502, description: 'compras-service não respondeu ao gerar o pedido (status não muda)' })
   @ApiResponse({ status: 404, description: 'Encomenda de peça não encontrada' })
   updateStatus(
     @Param('id', ParseIntPipe) id: number,
@@ -275,6 +333,39 @@ export class EncomendaPecasController {
     @Body() dto: VendaCasadaItemDto,
   ) {
     return this.service.updateItemCotado(id, dto);
+  }
+
+  @Delete('item_cotado/:id')
+  @ApiOperation({
+    summary: 'Exclui um item cotado',
+    description: 'Só é permitido com a encomenda em "Em cotação".',
+  })
+  @ApiParam({ name: 'id', type: Number, description: 'ID do item cotado' })
+  @ApiResponse({ status: 200, description: 'Item cotado excluído' })
+  @ApiResponse({ status: 400, description: 'Encomenda fora de "Em cotação"' })
+  @ApiResponse({ status: 404, description: 'Item cotado não encontrado' })
+  excluirItemCotado(@Param('id', ParseIntPipe) id: number) {
+    return this.service.deleteItemCotado(id);
+  }
+
+  @Patch('item_cotado/:id/fornecedor')
+  @ApiOperation({
+    summary: 'Troca o fornecedor (texto) de um item cotado pelo código do Celta',
+    description:
+      'Para cotações antigas em que `fornecedor` é texto livre (sem `for_codigo`). Grava ' +
+      '`for_codigo` e o nome vindo do ERP em `fornecedor`. Permitido em qualquer etapa até ' +
+      '"Liberado para comprar"; item que já tem código é recusado (edite em "Em cotação").',
+  })
+  @ApiParam({ name: 'id', type: Number, description: 'ID do item cotado' })
+  @ApiBody({ type: UpdateItemCotadoFornecedorDto })
+  @ApiResponse({ status: 200, description: 'Fornecedor atualizado' })
+  @ApiResponse({ status: 400, description: 'Item já com código, etapa após "Liberado para comprar" ou fornecedor inexistente no Celta' })
+  @ApiResponse({ status: 404, description: 'Item cotado não encontrado' })
+  updateItemCotadoFornecedor(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateItemCotadoFornecedorDto,
+  ) {
+    return this.service.updateItemCotadoFornecedor(id, dto);
   }
 
   @Patch('item_cotado/:id')

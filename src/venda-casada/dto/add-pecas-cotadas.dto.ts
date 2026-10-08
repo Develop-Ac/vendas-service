@@ -3,6 +3,7 @@ import {
   IsArray,
   IsBoolean,
   IsDefined,
+  IsInt,
   IsNotEmpty,
   IsNumber,
   IsOptional,
@@ -32,11 +33,39 @@ export class VendaCasadaItemDto {
   @MaxLength(100)
   prazo?: string;
 
-  @ApiProperty({ description: 'Fornecedor', required: false })
+  @ApiProperty({
+    description:
+      'Código do fornecedor no Celta (FOR_CODIGO), obrigatório ao cadastrar o item. Precisa ' +
+      'existir no ERP: o nome é buscado na API e gravado em `fornecedor`. Na edição, se não ' +
+      'vier (nem `fornecedor`), mantém o gravado.',
+    required: false,
+    example: 250,
+  })
+  @IsOptional()
+  @IsInt()
+  for_codigo?: number;
+
+  @ApiProperty({
+    description:
+      'Nome do fornecedor. Preenchido pelo servidor a partir de `for_codigo`; se vier só um ' +
+      'número aqui (sem `for_codigo`), é tratado como o código. Texto livre é recusado (400).',
+    required: false,
+  })
   @IsOptional()
   @IsString()
   @MaxLength(255)
   fornecedor?: string;
+
+  @ApiProperty({
+    description:
+      'Produto do Celta ao qual a cotação se refere: precisa ser uma das peças da encomenda. ' +
+      'Opcional quando a encomenda tem uma peça só.',
+    required: false,
+    example: 2321,
+  })
+  @IsOptional()
+  @IsInt()
+  pro_codigo?: number;
 
   @ApiProperty({ description: 'Marca', required: false })
   @IsOptional()

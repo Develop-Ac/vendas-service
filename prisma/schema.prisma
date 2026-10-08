@@ -96,6 +96,9 @@ model avi_regra {
   acao_url_template String?
   acao_rotulo       String?      @db.VarChar(40)
   acao_permite_nao  Boolean      @default(true)
+  tarefa_usuario_id String?      @db.VarChar(36)
+  tarefa_prazo_dias Int?         @db.SmallInt
+  tarefa_etiqueta   String?      @db.VarChar(40)
   avi_avisos        avi_avisos[]
 }
 
@@ -691,10 +694,12 @@ model com_nfse_evento {
 }
 
 model com_pagamento_guia {
-  chave_nfe      String   @id
-  data_pagamento DateTime @default(now())
-  valor          Float    @default(0.0)
-  observacoes    String   @default("")
+  chave_nfe           String    @id
+  data_pagamento      DateTime  @default(now())
+  valor               Float     @default(0.0)
+  observacoes         String    @default("")
+  tarefa_criada_em    DateTime? @db.Timestamptz(6)
+  tarefa_concluida_em DateTime? @db.Timestamptz(6)
 }
 
 model com_pedido {
@@ -717,12 +722,16 @@ model com_pedido {
   garantia_valor         Decimal?                 @db.Decimal(15, 2)
   garantia_verificada_em DateTime?                @db.Timestamp(6)
   previsao_chegada       DateTime?                @db.Timestamptz(6)
+  pedido_carteira        Int?
+  origem                 String                   @default("cotacao") @db.VarChar(20)
+  encomenda_pecas_id     Int?
   com_pedido_itens       com_pedido_itens[]
   com_pedido_nfe_vinculo com_pedido_nfe_vinculo[]
 
   @@unique([pedido_cotacao, for_codigo])
   @@index([for_codigo])
   @@index([pedido_cotacao])
+  @@index([encomenda_pecas_id], map: "idx_com_pedido_encomenda_pecas")
 }
 
 model com_pedido_intranet_celta {
@@ -2034,6 +2043,8 @@ model ven_encomenda_pecas {
   comprado                               DateTime?                                @db.Timestamp(6)
   chegou                                 DateTime?                                @db.Timestamp(6)
   cancelado                              DateTime?                                @db.Timestamp(6)
+  /// Número do pedido gerado no compras-service ao marcar "Comprado" (exibido como "E-100001").
+  pedido_compras                         Int?
   ven_encomenda_pecas_anexos             ven_encomenda_pecas_anexos[]
   ven_encomenda_pecas_itens_cotados      ven_encomenda_pecas_itens_cotados[]
   ven_encomenda_pecas_itens_encomendados ven_encomenda_pecas_itens_encomendados[]
@@ -2063,6 +2074,10 @@ model ven_encomenda_pecas_itens_cotados {
   margem              Float?
   frete               Float?
   imposto             Float?
+  /// Código do fornecedor no Celta (FOR_CODIGO); `fornecedor` guarda o nome vindo da API do ERP.
+  for_codigo          Int?
+  /// Produto do Celta ao qual a cotação se refere (vira o item do pedido de compra).
+  pro_codigo          Int?
   ven_encomenda_pecas ven_encomenda_pecas? @relation(fields: [encomenda_pecas_id], references: [id], onDelete: Cascade, map: "fk_ven_enc_pecas_itens_cotados_encomenda")
 
   @@index([encomenda_pecas_id], map: "idx_ven_enc_pecas_itens_cotados_encomenda_id")
@@ -2122,59 +2137,56 @@ model ven_meta_vendedor {
 }
 
 model ven_orcamento {
-  id                 String               @id @default(cuid())
-  numero             Int                  @unique @default(autoincrement())
-  empresa            Int                  @default(3)
-  cli_codigo         Int
-  cli_nome           String?
-  tabela_preco       String?
-  rep_codigo         Int?
-  rep_nome           String?
-  status             String               @default("RASCUNHO")
-  validade           DateTime?            @db.Date
-  observacao         String?
-  subtotal           Decimal              @default(0) @db.Decimal(15, 2)
-  desconto_total     Decimal              @default(0) @db.Decimal(15, 2)
-  total              Decimal              @default(0) @db.Decimal(15, 2)
-  desc_pct           Decimal              @default(0) @db.Decimal(6, 4)
-  acima_alcada       Boolean              @default(false)
-  bolsa_pct_antes    Decimal?             @db.Decimal(6, 4)
-  bolsa_pct_depois   Decimal?             @db.Decimal(6, 4)
-  aprovado_por       String?
-  aprovado_em        DateTime?            @db.Timestamptz(6)
-  aprovado_codigo    Int?
-  /// a aprovação veio do ajuste da bolsa (dentro da alçada): cai se o orçamento passar da alçada ou o ajuste sair
-  aprovado_por_ajuste Boolean             @default(false)
-  enviado_em         DateTime?            @db.Timestamptz(6)
-  desfecho_em        DateTime?            @db.Timestamptz(6)
-  desfecho_motivo    String?
-  desfecho_ref       String?
-  usuario_id         String?
-  usuario_nome       String?
-  created_at         DateTime             @default(now()) @db.Timestamptz(6)
-  updated_at         DateTime             @default(now()) @db.Timestamptz(6)
-  entregue_canal     String?
-  entregue_em        DateTime?            @db.Timestamptz(6)
-  celta_orcamento    Int?                 @map("orcamentoCelta")
-  cp_codigo          Int?
-  cp_descricao       String?
-  fp_codigo          String?
-  fp_descricao       String?
-  celta_importado_em DateTime?            @db.Timestamptz(6)
-  comparado          Boolean              @default(false)
-  liberadogerencia   Boolean?
-  presencial         Boolean              @default(false)
-  tributacao         String?
-  icms_st            Decimal              @default(0) @db.Decimal(15, 2)
-  difal              Decimal              @default(0) @db.Decimal(15, 2)
-  meia_nota          Boolean              @default(false)
-  /// piso da bolsa em vigor no desfecho FECHADO (nulo nos fechados antes de 02/10/2026)
-  piso_bolsa         Decimal?             @db.Decimal(8, 4)
-  /// R$ do orçamento contra custo × piso no fechamento (calcularBolsa().orcamento)
-  bolsa_orcamento    Decimal?             @db.Decimal(14, 2)
-  itens              ven_orcamento_item[]
-  ven_venda_perdida  ven_venda_perdida[]
-  ven_bolsa_ajuste   ven_bolsa_ajuste[]
+  id                  String               @id @default(cuid())
+  numero              Int                  @unique @default(autoincrement())
+  empresa             Int                  @default(3)
+  cli_codigo          Int
+  cli_nome            String?
+  tabela_preco        String?
+  rep_codigo          Int?
+  rep_nome            String?
+  status              String               @default("RASCUNHO")
+  validade            DateTime?            @db.Date
+  observacao          String?
+  subtotal            Decimal              @default(0) @db.Decimal(15, 2)
+  desconto_total      Decimal              @default(0) @db.Decimal(15, 2)
+  total               Decimal              @default(0) @db.Decimal(15, 2)
+  desc_pct            Decimal              @default(0) @db.Decimal(6, 4)
+  acima_alcada        Boolean              @default(false)
+  bolsa_pct_antes     Decimal?             @db.Decimal(6, 4)
+  bolsa_pct_depois    Decimal?             @db.Decimal(6, 4)
+  aprovado_por        String?
+  aprovado_em         DateTime?            @db.Timestamptz(6)
+  enviado_em          DateTime?            @db.Timestamptz(6)
+  desfecho_em         DateTime?            @db.Timestamptz(6)
+  desfecho_motivo     String?
+  desfecho_ref        String?
+  usuario_id          String?
+  usuario_nome        String?
+  created_at          DateTime             @default(now()) @db.Timestamptz(6)
+  updated_at          DateTime             @default(now()) @db.Timestamptz(6)
+  entregue_canal      String?
+  entregue_em         DateTime?            @db.Timestamptz(6)
+  celta_orcamento     Int?                 @map("orcamentoCelta")
+  cp_codigo           Int?
+  cp_descricao        String?
+  fp_codigo           String?
+  fp_descricao        String?
+  celta_importado_em  DateTime?            @db.Timestamptz(6)
+  comparado           Boolean              @default(false)
+  liberadogerencia    Boolean?
+  presencial          Boolean              @default(false)
+  tributacao          String?
+  icms_st             Decimal              @default(0) @db.Decimal(15, 2)
+  difal               Decimal              @default(0) @db.Decimal(15, 2)
+  meia_nota           Boolean              @default(false)
+  aprovado_codigo     Int?
+  aprovado_por_ajuste Boolean              @default(false)
+  piso_bolsa          Decimal?             @db.Decimal(8, 4)
+  bolsa_orcamento     Decimal?             @db.Decimal(14, 2)
+  ven_bolsa_ajuste    ven_bolsa_ajuste[]
+  itens               ven_orcamento_item[]
+  ven_venda_perdida   ven_venda_perdida[]
 
   @@index([cli_codigo], map: "idx_ven_orcamento_cli")
   @@index([created_at], map: "idx_ven_orcamento_created")
@@ -2238,7 +2250,6 @@ model ven_orcamento_item {
   icms_st            Decimal       @default(0) @db.Decimal(15, 2)
   difal              Decimal       @default(0) @db.Decimal(15, 2)
   difal_pct          Decimal?      @db.Decimal(6, 4)
-  /// vendedor pede ajuste da bolsa nesta linha (produto avariado/usado/embalagem): enviar leva a APROVACAO
   pedir_ajuste       Boolean       @default(false)
   ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
@@ -2339,7 +2350,7 @@ model ven_produto_dia {
   gerado_em           DateTime  @default(now()) @db.Timestamptz(6)
   gerado_por          String?
 
-  @@index([data, posicao])
+  @@index([data, posicao], map: "ven_produto_dia_data_idx")
 }
 
 model ven_regua_item_excecao {
@@ -2616,6 +2627,220 @@ model ven_bolsa_oportunidade {
   updated_at   DateTime  @default(now()) @db.Timestamptz(6)
 
   @@index([pro_codigo], map: "ven_bolsa_oportunidade_pro_idx")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model com_precificacao_conferencia {
+  id                                Int                                 @id @default(autoincrement())
+  empresa                           Int                                 @default(3)
+  nfe                               Int
+  nota_fiscal                       Int
+  serie                             String?                             @db.VarChar(10)
+  chave_nfe                         String?                             @db.VarChar(44)
+  for_codigo                        Int?
+  for_nome                          String?                             @db.VarChar(255)
+  opf_codigo                        Int?
+  dt_entrada                        DateTime                            @db.Date
+  total_nota                        Decimal?                            @db.Decimal(15, 2)
+  status                            String                              @default("pendente") @db.VarChar(12)
+  itens_total                       Int                                 @default(0)
+  itens_abaixo                      Int                                 @default(0)
+  itens_sem_custo                   Int                                 @default(0)
+  conferido_por                     String?                             @db.VarChar(120)
+  conferido_em                      DateTime?                           @db.Timestamp(6)
+  observacao                        String?
+  removida_motivo                   String?                             @db.VarChar(120)
+  criado_em                         DateTime                            @default(now()) @db.Timestamp(6)
+  atualizado_em                     DateTime                            @default(now()) @db.Timestamp(6)
+  com_precificacao_conferencia_item com_precificacao_conferencia_item[]
+
+  @@unique([empresa, nfe], map: "uq_com_precificacao_conferencia_nfe")
+  @@index([status, dt_entrada(sort: Desc)], map: "idx_com_precificacao_conferencia_fila")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model com_precificacao_conferencia_item {
+  id                           Int                          @id @default(autoincrement())
+  conferencia_id               Int
+  pro_codigo                   Int
+  pro_descricao                String?                      @db.VarChar(255)
+  quantidade                   Decimal?                     @db.Decimal(15, 4)
+  saldo_anterior               Decimal?                     @db.Decimal(15, 4)
+  preco_custo                  Decimal?                     @db.Decimal(15, 4)
+  custo_medio                  Decimal?                     @db.Decimal(15, 4)
+  custo_base                   Decimal?                     @db.Decimal(15, 4)
+  custo_base_origem            String                       @db.VarChar(8)
+  preco_varejo                 Decimal?                     @db.Decimal(15, 2)
+  preco_atacado_esp            Decimal?                     @db.Decimal(15, 2)
+  preco_atacado                Decimal?                     @db.Decimal(15, 2)
+  preco_ant_varejo             Decimal?                     @db.Decimal(15, 2)
+  preco_ant_atacado_esp        Decimal?                     @db.Decimal(15, 2)
+  preco_ant_atacado            Decimal?                     @db.Decimal(15, 2)
+  piso_varejo                  Decimal?                     @db.Decimal(15, 2)
+  piso_atacado_esp             Decimal?                     @db.Decimal(15, 2)
+  piso_atacado                 Decimal?                     @db.Decimal(15, 2)
+  semaforo_varejo              String                       @db.VarChar(10)
+  semaforo_atacado_esp         String                       @db.VarChar(10)
+  semaforo_atacado             String                       @db.VarChar(10)
+  semaforo_item                String                       @db.VarChar(10)
+  justificativa                String?
+  criado_em                    DateTime                     @default(now()) @db.Timestamp(6)
+  com_precificacao_conferencia com_precificacao_conferencia @relation(fields: [conferencia_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([conferencia_id, pro_codigo], map: "uq_com_precificacao_conferencia_item")
+}
+
+model pes_agendamento {
+  id               String         @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  usuario_id       String         @db.VarChar(36)
+  titulo           String
+  pedido           String
+  recorrencia      String?        @db.VarChar(100)
+  proxima_em       DateTime       @db.Timestamp(6)
+  ativo            Boolean        @default(true)
+  executando_desde DateTime?      @db.Timestamp(6)
+  tentativa        Int            @default(0) @db.SmallInt
+  created_at       DateTime       @default(now()) @db.Timestamp(6)
+  updated_at       DateTime       @default(now()) @db.Timestamp(6)
+  trash            Int            @default(0) @db.SmallInt
+  pes_execucao     pes_execucao[]
+}
+
+model pes_aviso {
+  id              String           @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  usuario_id      String           @db.VarChar(36)
+  texto           String
+  proxima_em      DateTime         @db.Timestamp(6)
+  recorrencia     String?          @db.VarChar(100)
+  ativo           Boolean          @default(true)
+  ultimo_envio_em DateTime?        @db.Timestamp(6)
+  visto_em        DateTime?        @db.Timestamp(6)
+  compromisso_id  String?          @db.VarChar(36)
+  created_at      DateTime         @default(now()) @db.Timestamp(6)
+  updated_at      DateTime         @default(now()) @db.Timestamp(6)
+  trash           Int              @default(0) @db.SmallInt
+  para            String[]         @default([])
+  pes_compromisso pes_compromisso? @relation(fields: [compromisso_id], references: [id], onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model pes_compromisso {
+  id         String      @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  usuario_id String      @db.VarChar(36)
+  titulo     String
+  inicio     DateTime    @db.Timestamp(6)
+  fim        DateTime?   @db.Timestamp(6)
+  local      String?
+  obs        String?
+  avisar_min Int?
+  created_at DateTime    @default(now()) @db.Timestamp(6)
+  updated_at DateTime    @default(now()) @db.Timestamp(6)
+  trash      Int         @default(0) @db.SmallInt
+  avisos_min Int[]       @default([])
+  pes_aviso  pes_aviso[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model pes_execucao {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  agendamento_id  String          @db.VarChar(36)
+  usuario_id      String          @db.VarChar(36)
+  inicio          DateTime        @db.Timestamp(6)
+  fim             DateTime?       @db.Timestamp(6)
+  status          String          @db.VarChar(10)
+  resultado       String?
+  erro            String?
+  created_at      DateTime        @default(now()) @db.Timestamp(6)
+  updated_at      DateTime        @default(now()) @db.Timestamp(6)
+  trash           Int             @default(0) @db.SmallInt
+  pes_agendamento pes_agendamento @relation(fields: [agendamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([agendamento_id, inicio(sort: Desc)], map: "ix_pes_execucao_agendamento")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model pes_fato {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  usuario_id String   @db.VarChar(36)
+  texto      String
+  origem     String   @default("chat") @db.VarChar(10)
+  ativo      Boolean  @default(true)
+  created_at DateTime @default(now()) @db.Timestamp(6)
+  updated_at DateTime @default(now()) @db.Timestamp(6)
+  trash      Int      @default(0) @db.SmallInt
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model pes_fonte {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  usuario_id String   @db.VarChar(36)
+  nome       String
+  url        String
+  grupo      String   @default("geral") @db.VarChar(10)
+  ativo      Boolean  @default(true)
+  created_at DateTime @default(now()) @db.Timestamp(6)
+  updated_at DateTime @default(now()) @db.Timestamp(6)
+  trash      Int      @default(0) @db.SmallInt
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model pes_nota {
+  id            String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  usuario_id    String    @db.VarChar(36)
+  tipo          String    @default("nota") @db.VarChar(10)
+  titulo        String
+  texto         String
+  assunto       String?
+  pesquisa      String?
+  pesquisada_em DateTime? @db.Timestamp(6)
+  created_at    DateTime  @default(now()) @db.Timestamp(6)
+  updated_at    DateTime  @default(now()) @db.Timestamp(6)
+  trash         Int       @default(0) @db.SmallInt
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model pes_noticia {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  usuario_id   String    @db.VarChar(36)
+  fonte_nome   String
+  grupo        String    @default("geral")
+  titulo       String
+  resumo       String?
+  link         String
+  imagem_url   String?
+  publicada_em DateTime? @db.Timestamp(6)
+  coletada_em  DateTime  @default(now()) @db.Timestamp(6)
+  destaque     Boolean   @default(false)
+  porque       String?
+  created_at   DateTime  @default(now()) @db.Timestamp(6)
+  updated_at   DateTime  @default(now()) @db.Timestamp(6)
+  trash        Int       @default(0) @db.SmallInt
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model pes_preferencia {
+  usuario_id   String   @id @db.VarChar(36)
+  fundo_url    String?
+  created_at   DateTime @default(now()) @db.Timestamp(6)
+  updated_at   DateTime @default(now()) @db.Timestamp(6)
+  vidro        Int      @default(60) @db.SmallInt
+  ordem_grupos String[] @default([])
+}
+
+model pes_tarefa {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.VarChar(36)
+  usuario_id String    @db.VarChar(36)
+  titulo     String
+  obs        String?
+  prazo      DateTime? @db.Date
+  feita_em   DateTime? @db.Timestamp(6)
+  created_at DateTime  @default(now()) @db.Timestamp(6)
+  updated_at DateTime  @default(now()) @db.Timestamp(6)
+  trash      Int       @default(0) @db.SmallInt
+  chave      String?   @db.VarChar(120)
+  ref        String?   @db.VarChar(80)
+  link       String?
+  etiqueta   String?   @db.VarChar(40)
 }
 
 /// Ajuste da bolsa negativa: por item do orçamento, quanto por unidade a empresa assume da linha
