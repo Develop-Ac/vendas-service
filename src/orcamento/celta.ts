@@ -10,6 +10,7 @@
  * orçamento do Celta).
  */
 import { round2 } from './regua';
+import { baseDoCliente, cobradoDe, descBaseAcimaDoMaximo } from './preco-base';
 
 export interface ItemParaCelta {
   pro_codigo: number;
@@ -20,6 +21,9 @@ export interface ItemParaCelta {
   /** total da linha na intranet (unitário cobrado × quantidade) — o que o Celta tem de reproduzir */
   total?: number;
   desc_pct: number;
+  /** unitário base acima da tabela que o cliente vê (preco-base.ts) e o desconto sobre ele */
+  preco_base?: number | null;
+  desc_base_pct?: number | null;
   desc_max_pct?: number | null;
   acima_alcada?: boolean;
   faixa?: string | null;
@@ -112,8 +116,11 @@ export function justificativaAlcada(o: OrcamentoParaCelta): string {
   linhas.push(`Intranet ORC-${String(o.numero).padStart(6, '0')}${vend ? ` · vendedor ${vend}` : ''}`);
   const aprov = o.aprovado_por ? `aprovado por ${o.aprovado_por}${dataBr(o.aprovado_em) ? ` em ${dataBr(o.aprovado_em)}` : ''}` : '';
   const comp = compensacaoOrcamento(o);
+  // só o desconto sobre o preço base passou do máximo (o preço final não ficou abaixo do mínimo)
+  const acima = (o.itens ?? []).filter((i) => i.acima_alcada);
+  const soBase = acima.length > 0 && acima.every((i) => descBaseAcimaDoMaximo(i) && cobradoDe(i) >= Number(i.preco_minimo ?? 0) - 0.005);
   const alcada = o.acima_alcada
-    ? `Alçada: abaixo do mínimo da régua${aprov ? `, ${aprov}` : ' — SEM aprovação registrada'}.`
+    ? `Alçada: ${soBase ? 'desconto sobre preço acima da tabela passa do máximo' : 'abaixo do mínimo da régua'}${aprov ? `, ${aprov}` : ' — SEM aprovação registrada'}.`
     : comp
       ? `Alçada: ${comp.itens.length === 1 ? '1 item abaixo do limite' : `${comp.itens.length} itens abaixo do limite`}, compensado no próprio orçamento (o conjunto fecha no piso ou acima), sem aprovação.`
       : `Alçada: dentro do limite do vendedor${aprov ? ` (${aprov})` : ''}.`;
@@ -123,11 +130,19 @@ export function justificativaAlcada(o: OrcamentoParaCelta): string {
   for (const a of o.ajustes_bolsa ?? []) {
     linhas.push(`Bolsa ajustada${a.ajustado_por ? ` por ${a.ajustado_por}` : ''}: ${a.pro_codigo} ${MOTIVO_AJUSTE[a.motivo] ?? a.motivo} — ${a.justificativa.trim()}`);
   }
-  const comDesc = (o.itens ?? []).filter((i) => Number(i.desc_pct) > 0);
+  const comBase = (i: ItemParaCelta) => Number(i.preco_base ?? 0) > 0;
+  const comDesc = (o.itens ?? []).filter((i) => Number(i.desc_pct) > 0 || (comBase(i) && Number(i.desc_base_pct ?? 0) > 0));
   if (comDesc.length) {
     const partes = comDesc.map((i) => {
       const max = i.desc_max_pct;
       const faixa = [i.faixa, i.classe].filter(Boolean).join(' ');
+      if (comBase(i)) {
+        // o Celta vê o % sobre a base; o que vale para a régua é o preço final contra a tabela
+        const real = Number(i.preco_tabela) > 0 ? cobradoDe(i) / Number(i.preco_tabela) - 1 : 0;
+        const liq = Math.abs(real) < 0.00005 ? 'liq. na tabela' : `liq. ${pct(Math.abs(real))} ${real > 0 ? 'acima' : 'abaixo'} da tabela`;
+        const situacao = descBaseAcimaDoMaximo(i) ? 'acima do máximo' : i.acima_alcada ? 'abaixo do mínimo' : comp?.itens.includes(i.pro_codigo) ? 'compensado' : 'ok';
+        return `${i.pro_codigo} ${pct(Number(i.desc_base_pct ?? 0))} s/ preço base (${liq}, máx ${pct(max)}${faixa ? `, ${faixa}` : ''}, ${situacao})`;
+      }
       const situacao = i.acima_alcada ? 'abaixo do mínimo' : comp?.itens.includes(i.pro_codigo) ? 'compensado' : max != null && Number(i.desc_pct) > Number(max) + 1e-9 ? 'usa a bolsa' : 'ok';
       return `${i.pro_codigo} ${pct(Number(i.desc_pct))} (máx ${pct(max)}${faixa ? `, ${faixa}` : ''}, ${situacao})`;
     });
@@ -177,9 +192,10 @@ export function corpoParaCelta(o: OrcamentoParaCelta, comTributacao = false): Co
   const regime = meia ? null : comTributacao && o.tributacao === 'ST' ? 'st' : comTributacao && o.tributacao === 'DIFAL' ? 'difal' : null;
   const itens = (o.itens ?? []).map((i) => {
     const quantidade = Number(i.quantidade);
-    const cobrado = Number(i.preco_unit ?? 0) > 0 ? Number(i.preco_unit) : round2(Number(i.preco_tabela) * (1 - Number(i.desc_pct)));
-    // item com acréscimo vai pelo unitário cobrado (desconto zero); os demais, pela tabela
-    const unitario = round2(Math.max(Number(i.preco_tabela), cobrado));
+    const cobrado = cobradoDe(i);
+    // bruto = o unitário que o cliente vê: a tabela, o preço base acima dela (o desconto sobre
+    // ela vai em valor_descto e o Celta faz o bloqueio se passar do teto) ou o cobrado com acréscimo
+    const unitario = round2(Math.max(Number(i.preco_tabela), baseDoCliente(i).base, cobrado));
     const bruto = round2(unitario * quantidade);
     const total = i.total != null && Number(i.total) > 0 ? Number(i.total) : round2(cobrado * quantidade);
     // desconto = o que falta do bruto até o total da intranet; o Celta não aceita item zerado

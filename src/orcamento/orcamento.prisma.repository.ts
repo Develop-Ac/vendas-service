@@ -629,6 +629,8 @@ export class OrcamentoPrismaRepository {
       tabela_coluna: i.tabela_coluna,
       preco_unit: n(i.preco_unit),
       desc_pct: n(i.desc_pct),
+      preco_base: nn(i.preco_base),
+      desc_base_pct: nn(i.desc_base_pct),
       total: n(i.total),
       custo_ref: nn(i.custo_ref),
       icms_st: n(i.icms_st),
@@ -687,6 +689,9 @@ export class OrcamentoPrismaRepository {
       fp_descricao: o.fp_descricao ?? null,
       subtotal: n(o.subtotal),
       desconto_total: n(o.desconto_total),
+      // o que o cliente vê (Σ preço base); orçamento anterior à coluna cai no interno
+      subtotal_cliente: o.subtotal_cliente != null ? n(o.subtotal_cliente) : n(o.subtotal),
+      desconto_cliente: o.desconto_cliente != null ? n(o.desconto_cliente) : n(o.desconto_total),
       total: n(o.total),
       desc_pct: n(o.desc_pct),
       // imposto fora do estado: ST e DIFAL (despesa acessória) vão ao cliente — total_cliente soma os dois

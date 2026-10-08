@@ -27,10 +27,31 @@ vai para aprovação do supervisor. Abaixo do custo é recusado.
 | Último preço pago pelo cliente | BI | última nota do cliente com o item |
 | Promoção | ERP `PROMOCOES` + `PROMOCOES_ITENS` | vigente (ATIVA, período) **e com preço na tabela do cliente** (`PROM_VALOR2`/`PROM_VALOR5`; zero = não vale). O preço passa a ser o promocional, sem desconto por cima. `PROM_VALOR` (balcão) nunca vale para cliente 2/5; para cliente de outra tabela (varejo) vale quando a tabela dele não tem preço promocional |
 
+## Preço base acima da tabela (08/10/2026)
+
+O vendedor digita um unitário **acima** da tabela (B) e dá um desconto sobre ele (d). O cliente
+vê "B com d%" no PDF e no Celta/NF; o preço final é `L = B × (1 − d)`.
+
+- Gravado no item: `preco_base` (só quando B > tabela; nulo = a base é a tabela) e `desc_base_pct`.
+  `preco_unit` (= L), `desc_pct` (contra a tabela) e `acrescimo` seguem como antes, e régua,
+  alçada, bolsa e comissão continuam medindo L contra a tabela.
+- Unitário digitado **abaixo** da tabela não é base: B = tabela e a diferença vira desconto.
+- Na tela: mudar B mantém o d; mudar o d mantém B; total da linha, "fechar total em" e o preço
+  neutro da bolsa mantêm B e recalculam o d. Promoção fica fora (vendida fora da promoção, vale).
+- **Alçada:** d acima do máximo em vigor da linha (o "Máx" da tela: com bolsa o máximo inteiro,
+  canal negativo zero) vai para aprovação, **sem** a compensação do orçamento liberar.
+- **Celta:** `unitario = B` e `valor_descto = (B − L) × qtd`. Acima do teto do ERP o bloqueio é
+  gravado como sempre (dentro da alçada, liberado pelo INTRANET-ORÇ); o comparativo bate porque
+  compara o total da linha. A justificativa mostra o % sobre a base e L contra a tabela.
+  Importar do Celta um item com unitário acima da tabela e desconto traz B e d de volta.
+- **Cabeçalho:** `subtotal_cliente`/`desconto_cliente` (Σ B × qtd) para PDF e mensagem;
+  `subtotal`/`desconto_total` continuam os internos (o desconto do mês não conta o d sobre B).
+
 ## Regra do preço mínimo (a que o vendedor decide sozinho)
 
-O vendedor **nunca digita preço**: só quantidade e desconto (%). `preco = tabela × (1 − desc_pct)`;
-`desc_max` da linha = máximo da faixa × fração liberada pela quantidade (nunca acima do máximo) —
+O preço nasce de quantidade e desconto (%): `preco = tabela × (1 − desc_pct)`. O vendedor também
+pode fechar o unitário (ou o total da linha): abaixo da tabela vira desconto contra a tabela;
+**acima** dela vira **preço base** (ver "Preço base acima da tabela"). `desc_max` da linha = máximo da faixa × fração liberada pela quantidade (nunca acima do máximo) —
 fração que só se aplica quando o vendedor está **sem bolsa** (ver "Alçada" abaixo).
 
 ```

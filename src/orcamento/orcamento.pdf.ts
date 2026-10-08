@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { LOGO_AC } from './orcamento.logo';
+import { baseDoCliente } from './preco-base';
 
 /**
  * PDF DO ORÇAMENTO — o leiaute que o cliente já conhece.
@@ -12,9 +13,9 @@ import { LOGO_AC } from './orcamento.logo';
  * caixa, Observações. Marca da AC no cabeçalho e SEM menção ao sistema de origem.
  *
  * Dois modos de apresentar o desconto (`modo`):
- * - `item`  — colunas Tabela · Desc.% · Unitário líquido em cada linha; o
+ * - `item`  — colunas Unitário · Desc.% · Unitário líquido em cada linha; o
  *             Subtotal já é líquido e o bloco de totais não repete o desconto.
- * - `geral` — a linha mostra só o unitário de tabela e o total de tabela; o
+ * - `geral` — a linha mostra só o unitário e o total sem desconto; o
  *             desconto aparece uma vez, abaixo do Subtotal, ao lado do Acréscimo.
  *
  * A4 retrato, fontes internas do pdfkit (Helvetica) — sem dependência de
@@ -54,6 +55,9 @@ export interface PdfItem {
   preco_tabela: number;
   desc_pct: number;
   preco_unit: number;
+  /** unitário base acima da tabela e o desconto sobre ele (preco-base.ts) */
+  preco_base?: number | null;
+  desc_base_pct?: number | null;
   total: number;
   promocao_fim: string | null; // dd/mm/aaaa
   /** preço "de" quando o item está em promoção (preço original da tabela). */
@@ -138,9 +142,9 @@ function colunas(modo: ModoDesconto): Col[] {
     ['Marca', M + 205, 75, 'left'],
     ['Unid.', M + 280, 28, 'left'],
     ['Qtde.', M + 308, 32, 'right'],
-    ['Tabela', M + 340, 50, 'right'],
+    ['Unitário', M + 340, 50, 'right'],
     ['Desc.%', M + 390, 40, 'right'],
-    ['Unitário', M + 430, 50, 'right'],
+    ['Unit. Líq.', M + 430, 50, 'right'],
     ['T O T A L', M + 480, LARG - 480, 'right'],
   ];
 }
@@ -245,15 +249,16 @@ function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem, cols: Col[],
   cel(1, it.marca ?? '');
   cel(2, it.unidade ?? 'UN');
   cel(3, qtd(it.quantidade));
-  // item com acréscimo aparece pelo preço cobrado, como se fosse o de tabela
-  const cheio = Math.max(it.preco_tabela, it.preco_unit);
+  // unitário que o cliente vê: a tabela, o preço base acima dela (com o desconto sobre ele)
+  // ou o cobrado com acréscimo, como se fosse o de tabela
+  const { base: cheio, desc } = baseDoCliente(it);
   if (modo === 'geral') {
-    // preço de tabela na linha; o desconto vai uma vez só, no bloco de totais
+    // unitário cheio na linha; o desconto vai uma vez só, no bloco de totais
     cel(4, brl(cheio));
     cel(5, brl(cheio * it.quantidade));
   } else {
     cel(4, brl(it.preco_original ?? cheio));
-    cel(5, it.promocao_fim ? '—' : it.desc_pct > 0 ? pct(it.desc_pct) : '');
+    cel(5, it.promocao_fim ? '—' : desc > 0 ? pct(desc) : '');
     cel(6, brl(it.preco_unit));
     cel(7, brl(it.total));
   }
