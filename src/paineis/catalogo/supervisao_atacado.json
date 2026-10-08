@@ -1,0 +1,1290 @@
+{
+  "hub": "SUPERVISAO_ATACADO",
+  "dashboard": 18,
+  "aba": "Painel de Vendas",
+  "cards": [
+    {
+      "dashcard": 370,
+      "card": 353,
+      "titulo": "Vendas Mes Canal",
+      "display": "bar",
+      "row": 0,
+      "col": 0,
+      "size_x": 18,
+      "size_y": 6,
+      "visualization_settings": {
+        "graph.show_goal": false,
+        "graph.y_axis.title_text": "Total de Vendas",
+        "graph.show_values": true,
+        "graph.series_order_dimension": null,
+        "graph.x_axis.title_text": "Mês",
+        "graph.metrics": [
+          "total_vendas"
+        ],
+        "graph.show_stack_values": "total",
+        "graph.label_value_formatting": "auto",
+        "graph.series_order": null,
+        "series_settings": {
+          "BALCÃO": {
+            "color": "#88BF4D"
+          },
+          "ATACADO": {
+            "color": "#509EE3"
+          },
+          "VAREJO-SERVIÇO": {
+            "color": "#ED8535"
+          }
+        },
+        "graph.x_axis.scale": "ordinal",
+        "graph.dimensions": [
+          "mes_label",
+          "local_venda_1"
+        ],
+        "stackable.stack_type": "stacked",
+        "visualization": {
+          "display": "bar",
+          "columnValuesMapping": {
+            "COLUMN_1": [
+              {
+                "sourceId": "card:353",
+                "originalName": "mes_label",
+                "name": "COLUMN_1"
+              }
+            ],
+            "COLUMN_2": [
+              {
+                "sourceId": "card:353",
+                "originalName": "local_venda_1",
+                "name": "COLUMN_2"
+              }
+            ],
+            "COLUMN_3": [
+              {
+                "sourceId": "card:353",
+                "originalName": "total_vendas",
+                "name": "COLUMN_3"
+              }
+            ]
+          },
+          "settings": {
+            "graph.show_goal": false,
+            "graph.y_axis.title_text": "Total de Vendas",
+            "graph.show_values": true,
+            "graph.series_order_dimension": null,
+            "graph.x_axis.title_text": "Mês",
+            "card.title": "Vendas_Mes_Canal",
+            "graph.metrics": [
+              "COLUMN_3"
+            ],
+            "graph.show_stack_values": "total",
+            "graph.label_value_formatting": "auto",
+            "graph.series_order": null,
+            "series_settings": {
+              "BALCÃO": {
+                "color": "#88BF4D"
+              },
+              "ATACADO": {
+                "color": "#509EE3"
+              },
+              "VAREJO-SERVIÇO": {
+                "color": "#ED8535"
+              }
+            },
+            "graph.x_axis.scale": "ordinal",
+            "graph.dimensions": [
+              "COLUMN_1",
+              "COLUMN_2"
+            ],
+            "stackable.stack_type": "stacked"
+          }
+        }
+      },
+      "sql": "vendas-mes-canal.sql",
+      "cols": [
+        {
+          "name": "mes_ref",
+          "display_name": "mes_ref",
+          "base_type": "type/Date"
+        },
+        {
+          "name": "mes_label",
+          "display_name": "mes_label",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "local_venda_1",
+          "display_name": "local_venda_1",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "total_vendas",
+          "display_name": "total_vendas",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 371,
+      "card": 360,
+      "titulo": "Total das Vendas",
+      "display": "scalar",
+      "row": 0,
+      "col": 18,
+      "size_x": 6,
+      "size_y": 2,
+      "visualization_settings": {
+        "card.title": "Total das Vendas",
+        "table.pagination": true,
+        "table.columns": [
+          {
+            "name": "sum",
+            "enabled": true
+          }
+        ],
+        "card.description": "",
+        "column_settings": {
+          "[\"name\",\"sum\"]": {
+            "text_align": "middle",
+            "number_style": "currency",
+            "currency": "BRL",
+            "currency_in_header": false,
+            "number_separators": ",.",
+            "decimals": 2,
+            "column_title": "Total de Vendas"
+          }
+        }
+      },
+      "sql": "total-vendas.sql",
+      "cols": [
+        {
+          "name": "sum",
+          "display_name": "Soma de liquido_produto",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 373,
+      "card": 363,
+      "titulo": "Vendas - Meta",
+      "display": "scalar",
+      "row": 2,
+      "col": 18,
+      "size_x": 6,
+      "size_y": 2,
+      "visualization_settings": {
+        "card.title": "Vendas - Meta",
+        "column_settings": {
+          "[\"name\",\"kpi_vendas_menos_meta\"]": {
+            "number_style": "currency"
+          }
+        }
+      },
+      "sql": "vendas-meta.sql",
+      "cols": [
+        {
+          "name": "kpi_vendas_menos_meta",
+          "display_name": "kpi_vendas_menos_meta",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 372,
+      "card": 355,
+      "titulo": "Meta de Vendas",
+      "display": "scalar",
+      "row": 4,
+      "col": 18,
+      "size_x": 6,
+      "size_y": 2,
+      "visualization_settings": {
+        "table.pivot_column": "",
+        "card.title": "Meta de Vendas",
+        "column_settings": {
+          "[\"name\",\"meta_total\"]": {
+            "number_style": "currency"
+          }
+        }
+      },
+      "sql": "kpi-meta-de-vendas.sql",
+      "cols": [
+        {
+          "name": "meta_total",
+          "display_name": "meta_total",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 378,
+      "card": 365,
+      "titulo": "Média de Vendas Diárias",
+      "display": "scalar",
+      "row": 6,
+      "col": 0,
+      "size_x": 5,
+      "size_y": 2,
+      "visualization_settings": {
+        "column_settings": {
+          "[\"name\",\"media_vendas_diaria_ate_data_final\"]": {
+            "number_style": "currency"
+          }
+        }
+      },
+      "sql": "media-de-vendas-diarias.sql",
+      "cols": [
+        {
+          "name": "media_vendas_diaria_ate_data_final",
+          "display_name": "media_vendas_diaria_ate_data_final",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 377,
+      "card": 343,
+      "titulo": "Meta diária",
+      "display": "scalar",
+      "row": 6,
+      "col": 5,
+      "size_x": 5,
+      "size_y": 2,
+      "visualization_settings": {
+        "card.title": "Meta diária",
+        "column_settings": {
+          "[\"name\",\"meta_diaria\"]": {
+            "number_style": "currency",
+            "decimals": 2
+          }
+        }
+      },
+      "sql": "meta-diaria.sql",
+      "cols": [
+        {
+          "name": "meta_diaria",
+          "display_name": "meta_diaria",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 374,
+      "card": 354,
+      "titulo": "Ticket Médio de Venda",
+      "display": "scalar",
+      "row": 6,
+      "col": 10,
+      "size_x": 4,
+      "size_y": 2,
+      "visualization_settings": {
+        "card.title": "Ticket Médio de Venda",
+        "column_settings": {
+          "[\"name\",\"Ticket Médio\"]": {
+            "number_style": "currency"
+          }
+        }
+      },
+      "sql": "valor-medio-venda.sql",
+      "cols": [
+        {
+          "name": "Ticket Médio",
+          "display_name": "Ticket Médio",
+          "base_type": "type/Float"
+        }
+      ]
+    },
+    {
+      "dashcard": 376,
+      "card": 361,
+      "titulo": "% Converção de Orçamentos",
+      "display": "scalar",
+      "row": 6,
+      "col": 14,
+      "size_x": 4,
+      "size_y": 2,
+      "visualization_settings": {
+        "card.title": "% Converção de Orçamentos",
+        "column_settings": {
+          "[\"name\",\"conversao_rel\"]": {
+            "number_style": "percent"
+          }
+        }
+      },
+      "sql": "taxa-convercao-orcamentos.sql",
+      "sqlManual": true,
+      "cols": [
+        {
+          "name": "conversao_rel",
+          "display_name": "conversao_rel",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 375,
+      "card": 348,
+      "titulo": "Total Orcamento",
+      "display": "scalar",
+      "row": 6,
+      "col": 18,
+      "size_x": 6,
+      "size_y": 2,
+      "visualization_settings": {
+        "card.title": "Total Orcamento",
+        "column_settings": {
+          "[\"name\",\"sum\"]": {
+            "number_style": "currency",
+            "decimals": 2
+          }
+        }
+      },
+      "sql": "total-orcamento.sql",
+      "cols": [
+        {
+          "name": "sum",
+          "display_name": "Soma de total",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 389,
+      "card": 349,
+      "titulo": "Saldo Projetado",
+      "display": "scalar",
+      "row": 8,
+      "col": 0,
+      "size_x": 5,
+      "size_y": 2,
+      "visualization_settings": {
+        "scalar.field": "proj_total",
+        "column_settings": {
+          "[\"name\",\"proj_total\"]": {
+            "number_style": "currency"
+          }
+        }
+      },
+      "sql": "saldo-projetado.sql",
+      "cols": [
+        {
+          "name": "mes_ref",
+          "display_name": "mes_ref",
+          "base_type": "type/Date"
+        },
+        {
+          "name": "vendedor",
+          "display_name": "vendedor",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "vendas_acumuladas",
+          "display_name": "vendas_acumuladas",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "dias_uteis_decorridos",
+          "display_name": "dias_uteis_decorridos",
+          "base_type": "type/Integer"
+        },
+        {
+          "name": "dias_uteis_restantes",
+          "display_name": "dias_uteis_restantes",
+          "base_type": "type/Integer"
+        },
+        {
+          "name": "media_diaria_realizada",
+          "display_name": "media_diaria_realizada",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "proj_adicional",
+          "display_name": "proj_adicional",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "proj_total",
+          "display_name": "proj_total",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 383,
+      "card": 362,
+      "titulo": "Quantidade de Orçamentos",
+      "display": "scalar",
+      "row": 8,
+      "col": 5,
+      "size_x": 3,
+      "size_y": 2,
+      "visualization_settings": {},
+      "sql": "quantidade-de-orcamentos.sql",
+      "cols": [
+        {
+          "name": "count",
+          "display_name": "Valores distintos de orcamento",
+          "base_type": "type/Integer"
+        }
+      ]
+    },
+    {
+      "dashcard": 382,
+      "card": 358,
+      "titulo": "Quantidade de Vendas",
+      "display": "scalar",
+      "row": 8,
+      "col": 8,
+      "size_x": 3,
+      "size_y": 2,
+      "visualization_settings": {
+        "card.title": "Quantidade de Vendas",
+        "column_settings": {
+          "[\"name\",\"count\"]": {
+            "decimals": 0
+          }
+        }
+      },
+      "sql": "qtde-vendas.sql",
+      "cols": [
+        {
+          "name": "count",
+          "display_name": "Valores distintos de nfs",
+          "base_type": "type/Integer"
+        }
+      ]
+    },
+    {
+      "dashcard": 384,
+      "card": 345,
+      "titulo": "Taxa de Conversão de Orçamento",
+      "display": "scalar",
+      "row": 8,
+      "col": 11,
+      "size_x": 4,
+      "size_y": 2,
+      "visualization_settings": {
+        "column_settings": {
+          "[\"name\",\"conversao_rel\"]": {
+            "number_style": "percent"
+          }
+        }
+      },
+      "sql": "taxa-de-conversao-de-orcamento.sql",
+      "sqlManual": true,
+      "cols": [
+        {
+          "name": "conversao_rel",
+          "display_name": "conversao_rel",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 379,
+      "card": 366,
+      "titulo": "Dias Úteis Filtrados",
+      "display": "scalar",
+      "row": 8,
+      "col": 15,
+      "size_x": 3,
+      "size_y": 2,
+      "visualization_settings": {
+        "card.title": "Dias Úteis Filtrados"
+      },
+      "sql": "dias-uteis-no-periodo.sql",
+      "cols": [
+        {
+          "name": "count",
+          "display_name": "Contagem",
+          "base_type": "type/Integer"
+        }
+      ]
+    },
+    {
+      "dashcard": 380,
+      "card": 364,
+      "titulo": "Dias Úteis Mês Comissional",
+      "display": "scalar",
+      "row": 8,
+      "col": 18,
+      "size_x": 3,
+      "size_y": 2,
+      "visualization_settings": {},
+      "sql": "dias-uteis-mes-comissional.sql",
+      "cols": [
+        {
+          "name": "dias_uteis_totais_comissional",
+          "display_name": "dias_uteis_totais_comissional",
+          "base_type": "type/Integer"
+        }
+      ]
+    },
+    {
+      "dashcard": 381,
+      "card": 351,
+      "titulo": "Dias Úteis Restantes",
+      "display": "scalar",
+      "row": 8,
+      "col": 21,
+      "size_x": 3,
+      "size_y": 2,
+      "visualization_settings": {},
+      "sql": "dias-uteis-restantes.sql",
+      "cols": [
+        {
+          "name": "dias_uteis_restantes",
+          "display_name": "dias_uteis_restantes",
+          "base_type": "type/Integer"
+        }
+      ]
+    },
+    {
+      "dashcard": 392,
+      "card": 359,
+      "titulo": "Qtde de Clientes em Carteira",
+      "display": "scalar",
+      "row": 10,
+      "col": 0,
+      "size_x": 3,
+      "size_y": 2,
+      "visualization_settings": {},
+      "sql": "qtde-de-clientes-em-carteira.sql",
+      "cols": [
+        {
+          "name": "clientes_total_ultima_data",
+          "display_name": "clientes_total_ultima_data",
+          "base_type": "type/Integer"
+        }
+      ]
+    },
+    {
+      "dashcard": 393,
+      "card": 352,
+      "titulo": "Qtde de Clientes com vendas",
+      "display": "scalar",
+      "row": 10,
+      "col": 3,
+      "size_x": 3,
+      "size_y": 2,
+      "visualization_settings": {},
+      "sql": "qtde-de-clientes-com-vendas.sql",
+      "cols": [
+        {
+          "name": "clientes_unicos",
+          "display_name": "clientes_unicos",
+          "base_type": "type/Integer"
+        }
+      ]
+    },
+    {
+      "dashcard": 394,
+      "card": 356,
+      "titulo": "Positivação de Carteira",
+      "display": "scalar",
+      "row": 10,
+      "col": 6,
+      "size_x": 3,
+      "size_y": 2,
+      "visualization_settings": {
+        "scalar.field": "razao_fracionaria",
+        "column_settings": {
+          "[\"name\",\"razao_fracionaria\"]": {
+            "number_style": "percent"
+          }
+        }
+      },
+      "sql": "positivacao-de-carteira.sql",
+      "sqlManual": true,
+      "cols": [
+        {
+          "name": "clientes_unicos",
+          "display_name": "clientes_unicos",
+          "base_type": "type/Integer"
+        },
+        {
+          "name": "clientes_carteira",
+          "display_name": "clientes_carteira",
+          "base_type": "type/Integer"
+        },
+        {
+          "name": "razao_fracionaria",
+          "display_name": "razao_fracionaria",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "razao_percentual",
+          "display_name": "razao_percentual",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 388,
+      "card": 350,
+      "titulo": "Dias Acima da Meta",
+      "display": "scalar",
+      "row": 10,
+      "col": 9,
+      "size_x": 3,
+      "size_y": 2,
+      "visualization_settings": {
+        "scalar.field": "dias_acima_da_meta"
+      },
+      "sql": "dias-acima-da-meta-350.sql",
+      "cols": [
+        {
+          "name": "mes_ref",
+          "display_name": "mes_ref",
+          "base_type": "type/Date"
+        },
+        {
+          "name": "mes_label",
+          "display_name": "mes_label",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "vendedor",
+          "display_name": "vendedor",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "dias_acima_da_meta",
+          "display_name": "dias_acima_da_meta",
+          "base_type": "type/Integer"
+        },
+        {
+          "name": "dias_uteis_avaliados",
+          "display_name": "dias_uteis_avaliados",
+          "base_type": "type/Integer"
+        }
+      ]
+    },
+    {
+      "dashcard": 453,
+      "card": 420,
+      "titulo": "Comissão Por Mix e Faixa",
+      "display": "table",
+      "row": 10,
+      "col": 12,
+      "size_x": 12,
+      "size_y": 10,
+      "visualization_settings": {
+        "table.columns": [
+          {
+            "name": "mix",
+            "enabled": true
+          },
+          {
+            "name": "faixa",
+            "enabled": true
+          },
+          {
+            "name": "valor_vendido",
+            "enabled": true
+          },
+          {
+            "name": "pct_comissao",
+            "enabled": true
+          },
+          {
+            "name": "valor_comissao",
+            "enabled": true
+          }
+        ],
+        "table.row_index": true,
+        "table.pivot_column": "mix",
+        "table.cell_column": "valor_vendido",
+        "column_settings": {
+          "[\"name\",\"mix\"]": {
+            "column_title": "Mix"
+          },
+          "[\"name\",\"faixa\"]": {
+            "column_title": "Faixa"
+          },
+          "[\"name\",\"valor_vendido\"]": {
+            "number_style": "currency",
+            "decimals": 2,
+            "column_title": "Valor Vendas"
+          },
+          "[\"name\",\"pct_comissao\"]": {
+            "number_style": "percent",
+            "decimals": 2,
+            "column_title": "% Comissão"
+          },
+          "[\"name\",\"valor_comissao\"]": {
+            "number_style": "currency",
+            "decimals": 2,
+            "column_title": "Valor Comissão"
+          }
+        }
+      },
+      "sql": "comissao-por-mix-e-faixa-420.sql",
+      "sqlManual": true,
+      "cols": [
+        {
+          "name": "mix",
+          "display_name": "mix",
+          "base_type": "type/Integer"
+        },
+        {
+          "name": "faixa",
+          "display_name": "faixa",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "valor_vendido",
+          "display_name": "valor_vendido",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "pct_comissao",
+          "display_name": "pct_comissao",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "valor_comissao",
+          "display_name": "valor_comissao",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 448,
+      "card": 415,
+      "titulo": "% Mix Faixa 1",
+      "display": "gauge",
+      "row": 12,
+      "col": 0,
+      "size_x": 4,
+      "size_y": 3,
+      "visualization_settings": {
+        "gauge.segments": [
+          {
+            "min": 0,
+            "max": 0.15,
+            "color": "hsla(358, 71%, 62%, 1)",
+            "label": "Ruim"
+          },
+          {
+            "min": 0.15,
+            "max": 0.3,
+            "color": "#F9CF48",
+            "label": "Quase"
+          },
+          {
+            "min": 0.3,
+            "max": 1,
+            "color": "#84BB4C",
+            "label": "Ótimo"
+          }
+        ],
+        "column_settings": {
+          "[\"name\",\"pct_mix1\"]": {
+            "number_style": "percent"
+          }
+        },
+        "card.title": "% Mix Faixa 1"
+      },
+      "sql": "mix-faixa-1.sql",
+      "cols": [
+        {
+          "name": "pct_mix1",
+          "display_name": "pct_mix1",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 451,
+      "card": 418,
+      "titulo": "% Mix Faixa 2",
+      "display": "gauge",
+      "row": 12,
+      "col": 4,
+      "size_x": 4,
+      "size_y": 3,
+      "visualization_settings": {
+        "gauge.segments": [
+          {
+            "min": 0,
+            "max": 0.2,
+            "color": "hsla(358, 71%, 62%, 1)",
+            "label": "Ruim"
+          },
+          {
+            "min": 0.2,
+            "max": 0.4,
+            "color": "#F9CF48",
+            "label": "Quase"
+          },
+          {
+            "min": 0.4,
+            "max": 1,
+            "color": "#84BB4C",
+            "label": "Ótimo"
+          }
+        ],
+        "column_settings": {
+          "[\"name\",\"pct_mix2\"]": {
+            "number_style": "percent"
+          }
+        }
+      },
+      "sql": "mix-faixa-2.sql",
+      "cols": [
+        {
+          "name": "pct_mix2",
+          "display_name": "pct_mix2",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 450,
+      "card": 417,
+      "titulo": "% Mix Faixa 3",
+      "display": "gauge",
+      "row": 12,
+      "col": 8,
+      "size_x": 4,
+      "size_y": 3,
+      "visualization_settings": {
+        "gauge.segments": [
+          {
+            "min": 0,
+            "max": 0.15,
+            "color": "#689636",
+            "label": "Excelente"
+          },
+          {
+            "min": 0.15,
+            "max": 0.3,
+            "color": "#F9CF48",
+            "label": "Bom"
+          },
+          {
+            "min": 0.3,
+            "max": 1,
+            "color": "hsla(358, 71%, 62%, 1)",
+            "label": "Ruim"
+          }
+        ],
+        "column_settings": {
+          "[\"name\",\"pct_mix3\"]": {
+            "number_style": "percent"
+          }
+        },
+        "card.title": "% Mix Faixa 3"
+      },
+      "sql": "mix-faixa-3.sql",
+      "cols": [
+        {
+          "name": "pct_mix3",
+          "display_name": "pct_mix3",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 452,
+      "card": 419,
+      "titulo": "Vendas por dia da Semana",
+      "display": "bar",
+      "row": 15,
+      "col": 0,
+      "size_x": 12,
+      "size_y": 5,
+      "visualization_settings": {
+        "series_settings": {
+          "valor_vendido": {
+            "color": "#227FD2"
+          }
+        },
+        "graph.x_axis.scale": "ordinal",
+        "graph.dimensions": [
+          "dia_semana"
+        ],
+        "graph.metrics": [
+          "valor_vendido"
+        ]
+      },
+      "sql": "vendas-por-dia-da-semana.sql",
+      "cols": [
+        {
+          "name": "dia_semana",
+          "display_name": "dia_semana",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "valor_vendido",
+          "display_name": "valor_vendido",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 387,
+      "card": 367,
+      "titulo": "Meta Valor Venda Diária",
+      "display": "bar",
+      "row": 20,
+      "col": 0,
+      "size_x": 16,
+      "size_y": 5,
+      "visualization_settings": {
+        "graph.dimensions": [
+          "data"
+        ],
+        "graph.series_order_dimension": null,
+        "graph.series_order": null,
+        "graph.y_axis.auto_split": false,
+        "graph.x_axis.title_text": "Dia",
+        "graph.y_axis.title_text": "Valor",
+        "graph.x_axis.scale": "ordinal",
+        "graph.metrics": [
+          "meta_diaria",
+          "vendas_dia"
+        ],
+        "visualization": {
+          "display": "bar",
+          "columnValuesMapping": {
+            "COLUMN_1": [
+              {
+                "sourceId": "card:367",
+                "originalName": "data",
+                "name": "COLUMN_1"
+              }
+            ],
+            "COLUMN_2": [
+              {
+                "sourceId": "card:367",
+                "originalName": "vendas_dia",
+                "name": "COLUMN_2"
+              }
+            ],
+            "COLUMN_3": [
+              {
+                "sourceId": "card:367",
+                "originalName": "meta_diaria",
+                "name": "COLUMN_3"
+              }
+            ]
+          },
+          "settings": {
+            "graph.y_axis.title_text": "Valor",
+            "graph.series_order_dimension": null,
+            "graph.x_axis.title_text": "Dia",
+            "card.title": "Meta Diária x Vendas do Dia",
+            "graph.y_axis.auto_split": false,
+            "graph.metrics": [
+              "COLUMN_3",
+              "COLUMN_2"
+            ],
+            "graph.series_order": null,
+            "series_settings": {
+              "COLUMN_3": {
+                "title": "Meta Diária"
+              },
+              "COLUMN_2": {
+                "title": "Vendas do Dia"
+              }
+            },
+            "graph.x_axis.scale": "ordinal",
+            "graph.dimensions": [
+              "COLUMN_1"
+            ]
+          }
+        }
+      },
+      "sql": "meta-valor-venda-diaria-367.sql",
+      "sqlManual": true,
+      "cols": [
+        {
+          "name": "data",
+          "display_name": "data",
+          "base_type": "type/Date"
+        },
+        {
+          "name": "vendedor",
+          "display_name": "vendedor",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "vendas_dia",
+          "display_name": "vendas_dia",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "meta_diaria",
+          "display_name": "meta_diaria",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 391,
+      "card": 344,
+      "titulo": "Mix de Produtos - Grupo",
+      "display": "row",
+      "row": 20,
+      "col": 16,
+      "size_x": 8,
+      "size_y": 5,
+      "visualization_settings": {
+        "graph.y_axis.title_text": "Valor das Vendas",
+        "funnel.metric": "pct_mix",
+        "graph.series_order_dimension": null,
+        "graph.x_axis.title_text": "Grupos",
+        "funnel.dimension": "grupo",
+        "graph.metrics": [
+          "valor_vendas"
+        ],
+        "graph.series_order": null,
+        "column_settings": {
+          "[\"name\",\"valor_vendas\"]": {
+            "number_style": "currency"
+          }
+        },
+        "series_settings": {
+          "valor_vendas": {
+            "title": "Valor de Vendas",
+            "color": "#689636"
+          }
+        },
+        "graph.dimensions": [
+          "grupo"
+        ],
+        "stackable.stack_type": null,
+        "card.title": "Mix de Produtos - Grupo"
+      },
+      "sql": "mix-de-produtos.sql",
+      "cols": [
+        {
+          "name": "grupo",
+          "display_name": "grupo",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "valor_vendas",
+          "display_name": "valor_vendas",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "Percentul_Mix",
+          "display_name": "Percentul_Mix",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 385,
+      "card": 347,
+      "titulo": "Vendas - Mato Grosso",
+      "display": "map",
+      "row": 25,
+      "col": 0,
+      "size_x": 16,
+      "size_y": 6,
+      "visualization_settings": {
+        "map.type": "region",
+        "map.latitude_column": "latitude",
+        "map.longitude_column": "longitude",
+        "map.pin_type": "markers",
+        "map.metric_column": "valor_venda",
+        "map.region": "c07fd35a-249a-abe6-52d5-ea376445e866",
+        "map.metric": "total_vendas",
+        "map.dimension": "codigo_ibge",
+        "map.colors": [
+          "rgb(235, 245, 224)",
+          "rgb(197, 215, 178)",
+          "rgb(159, 185, 132)",
+          "rgb(121, 154, 86)",
+          "hsl(88.80000000000001, 51.8%, 28%)"
+        ],
+        "card.title": "Vendas - Mato Grosso"
+      },
+      "sql": "mapa-de-calor.sql",
+      "sqlManual": true,
+      "cols": [
+        {
+          "name": "codigo_ibge",
+          "display_name": "codigo_ibge",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "uf",
+          "display_name": "uf",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "municipio",
+          "display_name": "municipio",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "total_vendas",
+          "display_name": "total_vendas",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 390,
+      "card": 346,
+      "titulo": "Mix de Produtos - Subgrupo",
+      "display": "row",
+      "row": 25,
+      "col": 16,
+      "size_x": 8,
+      "size_y": 6,
+      "visualization_settings": {
+        "graph.y_axis.title_text": "Valor das Vendas",
+        "funnel.metric": "pct_mix",
+        "graph.series_order_dimension": null,
+        "graph.x_axis.title_text": "Subgrupos",
+        "funnel.dimension": "grupo",
+        "graph.metrics": [
+          "valor_vendas"
+        ],
+        "graph.series_order": null,
+        "column_settings": {
+          "[\"name\",\"valor_vendas\"]": {
+            "number_style": "currency"
+          }
+        },
+        "series_settings": {
+          "valor_vendas": {
+            "title": "Valor de Vendas",
+            "color": "#227FD2"
+          }
+        },
+        "graph.dimensions": [
+          "subgrupo"
+        ],
+        "stackable.stack_type": null
+      },
+      "sql": "mix-de-produtos-subgrupo.sql",
+      "cols": [
+        {
+          "name": "subgrupo",
+          "display_name": "subgrupo",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "valor_vendas",
+          "display_name": "valor_vendas",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "Percentul_Mix",
+          "display_name": "Percentul_Mix",
+          "base_type": "type/Decimal"
+        }
+      ]
+    },
+    {
+      "dashcard": 480,
+      "card": 447,
+      "titulo": "Relatório de Vendas por Item com Comissão",
+      "display": "table",
+      "row": 31,
+      "col": 0,
+      "size_x": 24,
+      "size_y": 8,
+      "visualization_settings": {
+        "table.pivot_column": "mix_custo",
+        "table.cell_column": "cli_codigo",
+        "column_settings": {
+          "[\"name\",\"mix_custo\"]": {
+            "column_title": "MIX"
+          },
+          "[\"name\",\"liquido_produto\"]": {
+            "column_title": "Valor Vendas",
+            "number_style": "currency"
+          },
+          "[\"name\",\"valor_comissao_supervisor\"]": {
+            "column_title": "Valor Comissão",
+            "number_style": "currency"
+          },
+          "[\"name\",\"cli_codigo\"]": {
+            "column_title": "Cód.Cliente"
+          },
+          "[\"name\",\"pct_comissao_supervisor\"]": {
+            "column_title": "% Comissão",
+            "number_style": "percent",
+            "decimals": 2
+          },
+          "[\"name\",\"pro_codigo\"]": {
+            "column_title": "Cód.Produto"
+          },
+          "[\"name\",\"faixa_mix\"]": {
+            "column_title": "FAIXA"
+          },
+          "[\"name\",\"pro_descricao\"]": {
+            "column_title": "Descrição Produto"
+          },
+          "[\"name\",\"cli_nome\"]": {
+            "column_title": "Nome do Cliente"
+          },
+          "[\"name\",\"dt_emissao\"]": {
+            "column_title": "Emissão"
+          }
+        }
+      },
+      "sql": "relatorio-de-vendas-por-item-com-comissao-447.sql",
+      "cols": [
+        {
+          "name": "dt_emissao",
+          "display_name": "dt_emissao",
+          "base_type": "type/Date"
+        },
+        {
+          "name": "cli_codigo",
+          "display_name": "cli_codigo",
+          "base_type": "type/Integer"
+        },
+        {
+          "name": "cli_nome",
+          "display_name": "cli_nome",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "pro_codigo",
+          "display_name": "pro_codigo",
+          "base_type": "type/Integer"
+        },
+        {
+          "name": "pro_descricao",
+          "display_name": "pro_descricao",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "liquido_produto",
+          "display_name": "liquido_produto",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "mix_custo",
+          "display_name": "mix_custo",
+          "base_type": "type/Integer"
+        },
+        {
+          "name": "faixa_mix",
+          "display_name": "faixa_mix",
+          "base_type": "type/Text"
+        },
+        {
+          "name": "pct_comissao_supervisor",
+          "display_name": "pct_comissao_supervisor",
+          "base_type": "type/Decimal"
+        },
+        {
+          "name": "valor_comissao_supervisor",
+          "display_name": "valor_comissao_supervisor",
+          "base_type": "type/Decimal"
+        }
+      ]
+    }
+  ]
+}

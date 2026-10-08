@@ -5,7 +5,9 @@
   "compilerOptions": {
     "deleteOutDir": true,
     "assets": [
-      { "include": "assets/**/*", "outDir": "dist/assets" }
+      { "include": "assets/**/*", "outDir": "dist/assets" },
+      { "include": "paineis/catalogo/*.json", "watchAssets": true },
+      { "include": "paineis/sql/*.sql", "watchAssets": true }
     ]
   }
 }

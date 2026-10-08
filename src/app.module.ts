@@ -14,6 +14,7 @@ import { CarteirizacaoModule } from './carteirizacao/carteirizacao.module';
 import { MaisVendidosModule } from './mais-vendidos/mais-vendidos.module';
 import { WhatsappModule } from './whatsapp/whatsapp.module';
 import { OrcamentoModule } from './orcamento/orcamento.module';
+import { PaineisModule } from './paineis/paineis.module';
 import { AvisosModule } from './common/avisos/avisos.module';
 import { CATALOGO_VENDAS } from './avisos.catalogo';
 
@@ -30,6 +31,7 @@ import { CATALOGO_VENDAS } from './avisos.catalogo';
     MaisVendidosModule,
     WhatsappModule,
     OrcamentoModule,
+    PaineisModule,
     // Avisos da intranet (catálogo em src/avisos.catalogo.ts; regras nascem inativas)
     AvisosModule.forRoot({ servico: 'vendas', catalogo: CATALOGO_VENDAS }),
 

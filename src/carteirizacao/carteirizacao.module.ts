@@ -26,5 +26,6 @@ import { MssqlService } from 'src/common/mssql/mssql.service';
     ResgateService,
     MssqlService
   ],
+  exports: [CarteirizacaoService],
 })
 export class CarteirizacaoModule {}

@@ -1430,6 +1430,14 @@ export class CarteirizacaoService {
     };
   }
 
+  /** Período comissional vigente (26 -> 25), de d_calendario ou do fallback. */
+  async periodoComissionalVigente(): Promise<PeriodoComissionalRow> {
+    return (
+      (await this.sql.periodoComissionalAtual()) ??
+      this.periodoComissionalFallback(new Date().getFullYear(), new Date().getMonth() + 1)
+    );
+  }
+
   /**
    * Dados para o painel de vendas (Metabase) de um vendedor: nome para o filtro
    * `vendedor` e o intervalo do período comissional vigente (26 -> 25).

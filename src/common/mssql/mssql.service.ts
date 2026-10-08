@@ -116,4 +116,23 @@ export class MssqlService implements OnModuleInit, OnModuleDestroy {
     const result = await request.query<T>(text);
     return result.recordset ?? [];
   }
+
+  /**
+   * Como `query`, mas devolve linhas como arrays na ordem das colunas, com o metadado
+   * das colunas (nome e tipo SQL) — o formato que os painéis precisam para imitar o
+   * resultado do Metabase (nome de coluna repetido ou numérico não se perde).
+   */
+  async queryLinhas(
+    text: string,
+    params: Record<string, unknown> = {},
+  ): Promise<{ colunas: { name: string; type?: { declaration?: string } }[]; linhas: unknown[][] }> {
+    const pool = await this.getPool();
+    const request = pool.request();
+    request.arrayRowMode = true;
+    for (const [key, value] of Object.entries(params)) {
+      request.input(key, value as never);
+    }
+    const result: any = await request.query(text);
+    return { colunas: result.columns?.[0] ?? [], linhas: result.recordset ?? [] };
+  }
 }

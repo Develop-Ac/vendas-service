@@ -2269,6 +2269,25 @@ model ven_venda_perdida {
   @@index([pro_codigo], map: "idx_ven_venda_perdida_pro")
 }
 
+/// Ajustes de layout do painel de vendas por hub, por cima do catálogo extraído do Metabase
+/// (src/paineis/catalogo). Sem linha = posição, tamanho e título do catálogo. DDL: sql/2026-10-08_painel_layout.sql.
+model ven_painel_layout {
+  /// hub: VAREJO | ATACADO | SUPERVISAO_ATACADO | GERENCIA
+  painel         String   @db.VarChar(32)
+  dashcard       Int
+  row            Int
+  col            Int
+  size_x         Int
+  size_y         Int
+  oculto         Boolean  @default(false)
+  /// nulo = título do catálogo
+  titulo         String?  @db.VarChar(120)
+  atualizado_por String?  @db.VarChar(120)
+  atualizado_em  DateTime @default(now()) @db.Timestamptz(6)
+
+  @@id([painel, dashcard])
+}
+
 model ven_produto_relacionado {
   pro_codigo      Int
   pro_relacionado Int
