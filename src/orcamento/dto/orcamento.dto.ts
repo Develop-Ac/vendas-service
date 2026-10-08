@@ -24,7 +24,7 @@ export class ItemOrcamentoDto {
   @Min(0.001)
   quantidade: number;
 
-  @ApiProperty({ description: 'Unitário fechado pelo vendedor (veio do total da linha digitado) — vale quando 0 < preco_unit ≤ tabela; senão o preço é tabela × (1 − desc_pct). Obrigatório para item SEM preço na tabela.', required: false })
+  @ApiProperty({ description: 'Unitário cobrado fechado pelo vendedor (unitário ou total da linha digitado): vale por cima do desconto — abaixo da tabela é desconto, acima é acréscimo. Sem ele o preço é tabela × (1 − desc_pct), ou preco_base × (1 − desc_base_pct). Obrigatório para item SEM preço na tabela.', required: false })
   @IsOptional()
   @IsNumber()
   preco_unit?: number;
@@ -33,6 +33,18 @@ export class ItemOrcamentoDto {
   @IsOptional()
   @IsNumber()
   desc_pct?: number;
+
+  @ApiProperty({ description: 'Unitário base ACIMA da tabela que o cliente vê (PDF, Celta/NF); o desconto do cliente é desc_base_pct sobre ele. Igual ou abaixo da tabela é ignorado (a base é a tabela). Não vale em promoção.', required: false })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  preco_base?: number;
+
+  @ApiProperty({ description: 'Desconto em fração sobre preco_base (0.10 = 10%). Acima do máximo em vigor da linha vai para aprovação.', required: false })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  desc_base_pct?: number;
 
   @ApiProperty({ description: 'Código do item SEM saldo que este substitui (equivalente).', required: false })
   @IsOptional()

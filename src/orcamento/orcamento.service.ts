@@ -32,6 +32,7 @@ import { aplicarDecisoes, pendenciasSaldo } from './saldo';
 import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
 import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, justificativaAlcada, soAscii, type LinhaComparativo } from './celta';
 import { assinarComprovante, liberadorDoBloqueio } from './comprovante';
+import { descBaseAcimaDoMaximo, descSobre } from './preco-base';
 import { casarAjustes, validarAjuste, type AjusteParaCasar, type NfChave } from './ajuste-bolsa';
 import { atribuirAjustes, bolsaDoOrcamento, bolsaNfPorOrcamento, casarOrcamentos, conciliar, valoresLinha, type OrcParaCasar } from './extrato-bolsa';
 
@@ -1067,7 +1068,8 @@ export class OrcamentoService {
    * intranet: cada produto avaliado na régua para a TABELA DO CLIENTE de hoje,
    * com a quantidade do Celta e o desconto que o unitário praticado lá
    * representa sobre a tabela de hoje (nunca negativo — se o Celta cobrou
-   * acima da tabela, entra sem desconto). Item que não existe mais ou está
+   * acima da tabela, entra sem desconto; acima da tabela COM desconto, entra como
+   * preço base com o % sobre ele). Item que não existe mais ou está
    * inativo vem em `ignorados`, com o motivo.
    */
   async celtaItens(orcamento: number, tabelaPreco: string | null, cli?: number) {
@@ -1078,14 +1080,20 @@ export class OrcamentoService {
     const tabela = tabelaPreco ?? (await this.erp.clientePorCodigo(cliente))?.TABELA_PRECO ?? null;
     const produtos = itens.length ? await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), tabela, cliente) : [];
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
-    const prontos: Array<{ produto: ProdutoOrcamento; quantidade: number; desc_pct: number; unitario_celta: number }> = [];
+    const prontos: Array<{ produto: ProdutoOrcamento; quantidade: number; desc_pct: number; unitario_celta: number; preco_base?: number; desc_base_pct?: number }> = [];
     const ignorados: Array<{ pro_codigo: number; descricao: string; motivo: string }> = [];
     for (const i of itens) {
       const p = porCodigo.get(i.pro_codigo);
       if (!p) { ignorados.push({ pro_codigo: i.pro_codigo, descricao: i.descricao, motivo: 'produto não encontrado' }); continue; }
       if (p.inativo) { ignorados.push({ pro_codigo: i.pro_codigo, descricao: i.descricao, motivo: 'produto inativo' }); continue; }
       const desc = p.preco_tabela > 0 && i.unitario > 0 && i.unitario < p.preco_tabela ? Math.round((1 - i.unitario / p.preco_tabela) * 10000) / 10000 : 0;
-      prontos.push({ produto: p, quantidade: Math.max(1, i.quantidade), desc_pct: p.promocao ? 0 : desc, unitario_celta: i.unitario });
+      // Celta com unitário acima da tabela de hoje E desconto: é o preço base com o % sobre ele
+      // (o que a intranet manda ao Celta); o líquido sai do total do item
+      const liquido = i.quantidade > 0 ? round2(i.total / i.quantidade) : 0;
+      const base = !p.promocao && p.preco_tabela > 0 && i.unitario > p.preco_tabela + 0.005 && liquido > 0 && liquido < i.unitario - 0.005
+        ? { preco_base: i.unitario, desc_base_pct: descSobre(i.unitario, liquido) }
+        : {};
+      prontos.push({ produto: p, quantidade: Math.max(1, i.quantidade), desc_pct: p.promocao ? 0 : desc, unitario_celta: i.unitario, ...base });
     }
     return { orcamento: cab, cli_codigo: cliente, tabela_preco: tabela, itens: prontos, ignorados };
   }
@@ -1316,7 +1324,7 @@ export class OrcamentoService {
     const linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[] = [];
     // Insumos da alçada de cada linha; a decisão fica para depois de conhecer a bolsa (aplicarAlcada).
     const alcadas: Array<{ preco: number; tabela: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> = [];
-    let subtotal = 0, total = 0, custoOrc = 0, semCusto = 0, servicos = 0;
+    let subtotal = 0, subtotalCliente = 0, total = 0, custoOrc = 0, semCusto = 0, servicos = 0;
     // linhas em promoção (preço fechado da campanha): a bolsa absorve só metade da falta contra o piso
     const promos: Array<{ preco: number; custo: number | null; qtd: number }> = [];
 
@@ -1337,11 +1345,19 @@ export class OrcamentoService {
       // compra de oportunidade: a bolsa (e só ela) vê o custo com a reserva da empresa
       const custoBolsa = p.custo_bolsa ?? p.custo;
       const unitFechado = Number(i.preco_unit ?? 0);
+      // Preço base acima da tabela (preco-base.ts): o cliente vê "base com d%". Só fora da
+      // promoção; base que não passa da tabela não é base — é a tabela com desconto.
+      const emPromocao = !fora && !!p.promocao;
+      const basePedida = tabela > 0 && !emPromocao ? round2(Number(i.preco_base ?? 0)) : 0;
+      const comBase = basePedida > tabela + 0.005;
+      const descBasePedido = Math.min(1, Math.max(0, Number(i.desc_base_pct ?? 0)));
       let preco =
         tabela > 0
           ? unitFechado > 0
             ? round2(unitFechado)
-            : round2(tabela * (1 - descPedido))
+            : comBase
+              ? round2(basePedida * (1 - descBasePedido))
+              : round2(tabela * (1 - descPedido))
           : round2(unitFechado);
       if (!(preco > 0)) {
         erros.push(`Item ${idx + 1} (${p.descricao}): sem preço de tabela — informe o preço.`);
@@ -1352,6 +1368,10 @@ export class OrcamentoService {
         return;
       }
       const descPct = tabela > 0 ? Math.max(0, Math.round((1 - preco / tabela) * 10000) / 10000) : 0;
+      // unitário cobrado acima da base: a base sobe junto (sem desconto); o % digitado vale
+      // enquanto leva ao preço gravado — senão (total da linha digitado) sai do próprio preço
+      const base = comBase ? Math.max(basePedida, preco) : 0;
+      const descBase = !comBase ? null : round2(base * (1 - descBasePedido)) === preco ? descBasePedido : descSobre(base, preco);
       // Dois limites por linha: o desta quantidade (escala por volume) e o máximo
       // inteiro da faixa. Qual vale depende da bolsa — decidido em aplicarAlcada().
       const escala = av.escala_volume;
@@ -1376,6 +1396,8 @@ export class OrcamentoService {
       if (!fora && p.promocao) promos.push({ preco, custo: custoBolsa, qtd });
       // linha com acréscimo entra no subtotal pelo próprio preço: o acréscimo não abate o desconto das outras
       subtotal += round2(Math.max(tabela, preco) * qtd);
+      // o que o cliente vê: a base quando ela existe (o desconto sobre ela aparece como desconto)
+      subtotalCliente += round2((comBase ? base : Math.max(tabela, preco)) * qtd);
       total += linhaTotal;
       linhas.push({
         orcamento_id: '',
@@ -1392,6 +1414,8 @@ export class OrcamentoService {
         total: linhaTotal,
         // R$ cobrados acima da tabela na linha inteira; só no banco (relatório), nenhuma tela mostra
         acrescimo: tabela > 0 && preco > tabela ? round2((preco - tabela) * qtd) : 0,
+        preco_base: comBase ? base : null,
+        desc_base_pct: descBase,
         custo_ref: custoBolsa,
         classe: av.classe,
         mix: av.mix,
@@ -1415,7 +1439,7 @@ export class OrcamentoService {
       });
     });
     if (erros.length) throw new BadRequestException(erros);
-    subtotal = round2(subtotal); total = round2(total);
+    subtotal = round2(subtotal); subtotalCliente = round2(subtotalCliente); total = round2(total);
     const desconto = round2(subtotal - total);
     // imposto da venda para fora do estado, por linha (serviço fica fora do ICMS)
     const trib = await this.tributar(
@@ -1431,6 +1455,8 @@ export class OrcamentoService {
       total,
       desconto_total: desconto,
       desc_pct: subtotal > 0 ? Math.round((desconto / subtotal) * 10000) / 10000 : 0,
+      subtotal_cliente: subtotalCliente,
+      desconto_cliente: round2(subtotalCliente - total),
       alcadas,
       custo: round2(custoOrc),
       sem_custo: round2(semCusto),
@@ -1541,6 +1567,8 @@ export class OrcamentoService {
    * e devolve se o orçamento precisa do gestor (alguma linha abaixo do limite em
    * vigor ou do piso absoluto). Orçamento que se compensa sozinho (`compensa`) não
    * precisa: o que um item perde outro paga, e o resultado contra o piso é ≥ 0.
+   * Linha com preço base acima da tabela e desconto sobre ela acima do limite em
+   * vigor também vai ao gestor, com ou sem compensação.
    */
   private aplicarAlcada(
     m: { linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[]; alcadas: Array<{ preco: number; tabela: number; minimo_qtd: number; minimo_cheio: number; piso_bolsa: number; desc_max_qtd: number; desc_max_cheio: number }> },
@@ -1553,10 +1581,12 @@ export class OrcamentoService {
       const e = m.alcadas[i];
       if (!e) return;
       const a = alcadaDoItem({ preco: e.preco, tabela: e.tabela, minimo_qtd: e.minimo_qtd, minimo_cheio: e.minimo_cheio, piso_bolsa: e.piso_bolsa, saldo_apos: saldoApos, compensa, canal_apos: canalApos });
-      l.acima_alcada = a.precisa_aprovacao;
       l.preco_minimo = a.minimo_vigente;
       l.desc_max_pct = a.bolsa_cobre ? e.desc_max_cheio : a.canal_negativo ? 0 : e.desc_max_qtd;
-      precisa = precisa || a.precisa_aprovacao;
+      // desconto sobre a base acima da tabela passou do máximo em vigor: o cliente veria um % que o
+      // vendedor não dá sozinho — vai ao gestor, e a compensação do orçamento não libera
+      l.acima_alcada = a.precisa_aprovacao || descBaseAcimaDoMaximo({ preco_base: Number(l.preco_base ?? 0), desc_base_pct: Number(l.desc_base_pct ?? 0), desc_max_pct: Number(l.desc_max_pct) });
+      precisa = precisa || l.acima_alcada;
     });
     return precisa;
   }
@@ -1586,6 +1616,8 @@ export class OrcamentoService {
         ...pag,
         subtotal: m.subtotal,
         desconto_total: m.desconto_total,
+        subtotal_cliente: m.subtotal_cliente,
+        desconto_cliente: m.desconto_cliente,
         total: m.total,
         desc_pct: m.desc_pct,
         acima_alcada: this.aplicarAlcada(m, bolsa.saldo_apos, bolsa.compensa, bolsa.canal_apos),
@@ -1614,8 +1646,11 @@ export class OrcamentoService {
     // Editar os ITENS de um orçamento já enviado o devolve ao rascunho e derruba a aprovação:
     // o que o cliente recebeu (e o que o gerente liberou) mudou. Salvar sem mexer em produto,
     // quantidade e preço — só pagamento ou observação, como no "Fechou" — mantém os dois.
-    const chave = (l: { pro_codigo?: unknown; quantidade?: unknown; preco_unit?: unknown }) =>
-      `${Number(l.pro_codigo)}|${Number(l.quantidade)}|${Number(l.preco_unit).toFixed(2)}`;
+    // A base acima da tabela COM desconto também é o que o cliente lê: mudar só ela muda o orçamento.
+    // Base sem desconto é o próprio preço (o acréscimo de antes, lido como base, não muda nada).
+    const baseChave = (l: { preco_unit?: unknown; preco_base?: unknown }) => (Number(l.preco_base ?? 0) > Number(l.preco_unit) + 0.005 ? Number(l.preco_base) : 0);
+    const chave = (l: { pro_codigo?: unknown; quantidade?: unknown; preco_unit?: unknown; preco_base?: unknown }) =>
+      `${Number(l.pro_codigo)}|${Number(l.quantidade)}|${Number(l.preco_unit).toFixed(2)}|${baseChave(l).toFixed(2)}`;
     const antes = (atual.itens ?? []).map(chave).sort().join(';');
     const depois = m.linhas.map(chave).sort().join(';');
     const mesmosItens = atual.cli_codigo === dto.cli_codigo && antes === depois;
@@ -1647,6 +1682,8 @@ export class OrcamentoService {
         ...pag,
         subtotal: m.subtotal,
         desconto_total: m.desconto_total,
+        subtotal_cliente: m.subtotal_cliente,
+        desconto_cliente: m.desconto_cliente,
         total: m.total,
         desc_pct: m.desc_pct,
         acima_alcada: acimaAlcada,
@@ -1737,6 +1774,8 @@ export class OrcamentoService {
         preco_tabela: n(l.preco_tabela),
         desc_pct: n(l.desc_pct),
         preco_unit: n(l.preco_unit),
+        preco_base: l.preco_base == null ? null : n(l.preco_base),
+        desc_base_pct: l.desc_base_pct == null ? null : n(l.desc_base_pct),
         total: n(l.total),
         promocao_fim: promoFim,
         preco_original: promoFim && p && p.preco_original > n(l.preco_tabela) ? p.preco_original : null,
@@ -1751,9 +1790,10 @@ export class OrcamentoService {
       vendedor: `${repNome} (${dto.rep_codigo})`,
       cliente: this.clientePdf(cli, dto.cli_codigo, cliente.CLI_NOME, cliente.TABELA_PRECO),
       itens,
-      subtotal: m.subtotal,
-      desconto: m.desconto_total,
-      desc_pct: m.desc_pct,
+      // o cliente vê o subtotal pelo preço base: o desconto sobre ele aparece como desconto
+      subtotal: m.subtotal_cliente,
+      desconto: m.desconto_cliente,
+      desc_pct: pctDe(m.desconto_cliente, m.subtotal_cliente),
       total: m.total,
       icms_st: m.icms_st,
       difal: m.difal,
@@ -1821,6 +1861,8 @@ export class OrcamentoService {
         preco_tabela: n(i.preco_tabela),
         desc_pct: n(i.desc_pct),
         preco_unit: n(i.preco_unit),
+        preco_base: i.preco_base ?? null,
+        desc_base_pct: i.desc_base_pct ?? null,
         total: n(i.total),
         promocao_fim: promoFim,
         preco_original: promoFim && p && p.preco_original > n(i.preco_tabela) ? p.preco_original : null,
@@ -1836,9 +1878,10 @@ export class OrcamentoService {
       vendedor: o.rep_nome ? `${o.rep_nome}${o.rep_codigo != null ? ` (${o.rep_codigo})` : ''}` : o.rep_codigo != null ? String(o.rep_codigo) : '—',
       cliente: this.clientePdf(cli, o.cli_codigo, o.cli_nome, o.tabela_preco),
       itens: linhas,
-      subtotal: n(o.subtotal),
-      desconto: n(o.desconto_total),
-      desc_pct: n(o.desc_pct),
+      // o cliente vê o subtotal pelo preço base (anterior à coluna: o interno, via mapOrcamento)
+      subtotal: n(o.subtotal_cliente),
+      desconto: n(o.desconto_cliente),
+      desc_pct: pctDe(n(o.desconto_cliente), n(o.subtotal_cliente)),
       total: n(o.total),
       icms_st: n(o.icms_st),
       difal: n(o.difal),
@@ -2512,6 +2555,7 @@ export class OrcamentoService {
     const itens = (o.itens ?? []) as Array<{
       pro_codigo: number; descricao: string | null; quantidade: number; qtd_encomenda?: number | null;
       desc_pct: number; preco_tabela: number; preco_unit: number; substituto_de: number | null; observacao: string | null; fora_promocao?: boolean; pedir_ajuste?: boolean;
+      preco_base?: number | null; desc_base_pct?: number | null;
     }>;
     const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo);
     const { saldoPor } = await this.saldoComLiberacao(itens.map((i) => i.pro_codigo), produtos);
@@ -2542,8 +2586,11 @@ export class OrcamentoService {
         pro_codigo: i.pro_codigo,
         quantidade: i.quantidade,
         desc_pct: i.desc_pct,
-        // com tabela o preço renasce do desconto; o acréscimo (unitário acima da tabela) é mantido
-        preco_unit: i.preco_tabela > 0 && i.preco_unit <= i.preco_tabela ? undefined : i.preco_unit,
+        // com tabela o preço renasce do desconto; o acréscimo (unitário acima da tabela) e o
+        // preço da linha com base acima da tabela são mantidos
+        preco_unit: i.preco_tabela > 0 && i.preco_unit <= i.preco_tabela && !(Number(i.preco_base ?? 0) > 0) ? undefined : i.preco_unit,
+        preco_base: i.preco_base ?? undefined,
+        desc_base_pct: i.desc_base_pct ?? undefined,
         substituto_de: i.substituto_de ?? undefined,
         observacao: i.observacao ?? undefined,
         qtd_encomenda: i.qtd_encomenda ?? 0,
@@ -2554,6 +2601,9 @@ export class OrcamentoService {
     return { orcamento: salvo, sem_itens: false, venda_perdida: r.venda_perdida.length };
   }
 }
+
+/** Desconto em fração (4 casas) de `desconto` sobre `subtotal`. */
+const pctDe = (desconto: number, subtotal: number) => (subtotal > 0 ? Math.round((desconto / subtotal) * 10000) / 10000 : 0);
 
 /** Data (meia-noite local) cai no mês comissional (ano, mes). */
 const mesmoMes = (d: Date, m: { ano: number; mes: number }) => {

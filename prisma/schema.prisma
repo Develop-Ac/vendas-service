@@ -2150,6 +2150,9 @@ model ven_orcamento {
   observacao          String?
   subtotal            Decimal              @default(0) @db.Decimal(15, 2)
   desconto_total      Decimal              @default(0) @db.Decimal(15, 2)
+  /// subtotal e desconto que o cliente vê (Σ preço base × qtd); nulos nos orçamentos anteriores
+  subtotal_cliente    Decimal?             @db.Decimal(15, 2)
+  desconto_cliente    Decimal?             @db.Decimal(15, 2)
   total               Decimal              @default(0) @db.Decimal(15, 2)
   desc_pct            Decimal              @default(0) @db.Decimal(6, 4)
   acima_alcada        Boolean              @default(false)
@@ -2247,6 +2250,9 @@ model ven_orcamento_item {
   qtd_encomenda      Decimal       @default(0) @db.Decimal(15, 3)
   fora_promocao      Boolean       @default(false)
   acrescimo          Decimal       @default(0) @db.Decimal(15, 2)
+  /// unitário base acima da tabela que o cliente vê (nulo = a tabela); desc_base_pct = desconto sobre ele
+  preco_base         Decimal?      @db.Decimal(15, 2)
+  desc_base_pct      Decimal?      @db.Decimal(6, 4)
   icms_st            Decimal       @default(0) @db.Decimal(15, 2)
   difal              Decimal       @default(0) @db.Decimal(15, 2)
   difal_pct          Decimal?      @db.Decimal(6, 4)

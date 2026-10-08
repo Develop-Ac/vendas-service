@@ -354,3 +354,17 @@ SELECT u.id, 'Vendas', t.tela, true, true, false, false
  WHERE u.trash = 0
    AND (upper(coalesce(u.vendas_hub_inicial, '')) = 'GERENCIA' OR upper(coalesce(u.setor, '')) IN ('ADMIN', 'ADMINISTRADOR', 'DIRETORIA'))
    AND NOT EXISTS (SELECT 1 FROM sis_permissoes p WHERE p.usuario_id = u.id AND p.tela = t.tela);
+
+-- 18) Preço base acima da tabela (08/10/2026): o vendedor fecha o unitário ACIMA da tabela
+--     (B) e dá um desconto sobre ele (d); o cliente, o PDF e o Celta/NF veem "B com d%".
+--     `preco_base` só existe quando B > tabela (nulo = a base é a própria tabela) e
+--     `desc_base_pct` é o d sobre ele. `preco_unit`, `desc_pct` (contra a tabela) e
+--     `acrescimo` continuam como antes: régua, alçada, bolsa e comissão não mudam.
+--     No cabeçalho, o subtotal e o desconto que o CLIENTE vê (Σ base × qtd); `subtotal` e
+--     `desconto_total` seguem os internos (o desconto do mês não conta o desconto sobre B).
+--     Orçamentos anteriores ficam nulos (a leitura cai em subtotal/desconto_total).
+--     Rollback: DROP COLUMN das quatro.
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS preco_base    NUMERIC(15,2);
+ALTER TABLE ven_orcamento_item ADD COLUMN IF NOT EXISTS desc_base_pct NUMERIC(6,4);
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS subtotal_cliente NUMERIC(15,2);
+ALTER TABLE ven_orcamento ADD COLUMN IF NOT EXISTS desconto_cliente NUMERIC(15,2);
