@@ -1646,9 +1646,11 @@ export class OrcamentoService {
     // Editar os ITENS de um orçamento já enviado o devolve ao rascunho e derruba a aprovação:
     // o que o cliente recebeu (e o que o gerente liberou) mudou. Salvar sem mexer em produto,
     // quantidade e preço — só pagamento ou observação, como no "Fechou" — mantém os dois.
-    // a base acima da tabela e o % sobre ela são o que o cliente lê: mudar só eles também muda o orçamento
-    const chave = (l: { pro_codigo?: unknown; quantidade?: unknown; preco_unit?: unknown; preco_base?: unknown; desc_base_pct?: unknown }) =>
-      `${Number(l.pro_codigo)}|${Number(l.quantidade)}|${Number(l.preco_unit).toFixed(2)}|${Number(l.preco_base ?? 0).toFixed(2)}|${Number(l.desc_base_pct ?? 0).toFixed(4)}`;
+    // A base acima da tabela COM desconto também é o que o cliente lê: mudar só ela muda o orçamento.
+    // Base sem desconto é o próprio preço (o acréscimo de antes, lido como base, não muda nada).
+    const baseChave = (l: { preco_unit?: unknown; preco_base?: unknown }) => (Number(l.preco_base ?? 0) > Number(l.preco_unit) + 0.005 ? Number(l.preco_base) : 0);
+    const chave = (l: { pro_codigo?: unknown; quantidade?: unknown; preco_unit?: unknown; preco_base?: unknown }) =>
+      `${Number(l.pro_codigo)}|${Number(l.quantidade)}|${Number(l.preco_unit).toFixed(2)}|${baseChave(l).toFixed(2)}`;
     const antes = (atual.itens ?? []).map(chave).sort().join(';');
     const depois = m.linhas.map(chave).sort().join(';');
     const mesmosItens = atual.cli_codigo === dto.cli_codigo && antes === depois;
