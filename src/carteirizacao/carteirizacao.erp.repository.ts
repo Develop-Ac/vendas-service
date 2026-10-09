@@ -524,13 +524,35 @@ export class CarteirizacaoErpRepository {
     const ateEmissao = new Date(hoje);
     ateEmissao.setDate(ateEmissao.getDate() - carenciaDias);
     if (ateEmissao < desde) return [];
+    const todos = await this.orcamentosComFechamento(ymd(desde), ymd(ateEmissao), carenciaDias);
+    // Mais novo primeiro: o vendedor ainda lembra do orçamento recente — é onde
+    // o motivo marcado tem qualidade; o rabo antigo fica para o fim da lista.
+    return todos
+      .filter((o) => !o.fechou)
+      .map(({ fechou: _f, emissao_ymd: _e, ...o }) => o)
+      .sort((a, b) => b.emissao.getTime() - a.emissao.getTime() || b.total - a.total);
+  }
 
+  /**
+   * Orçamentos do atacado emitidos em [desde, ateEmissao], cada um com `fechou`
+   * = houve venda do mesmo cliente em até `carenciaDias` da emissão. É a base
+   * da fila "sem desfecho" (os que não fecharam) e da conversão em 7 dias da
+   * tela do supervisor (fechados / total) — a mesma inferência nos dois.
+   */
+  async orcamentosComFechamento(
+    desdeYmd: string,
+    ateEmissaoYmd: string,
+    carenciaDias = 7,
+  ): Promise<Array<OrcamentoSemDesfecho & { fechou: boolean; emissao_ymd: string }>> {
+    if (ateEmissaoYmd < desdeYmd) return [];
+    const hoje = new Date();
+    const ymd = (d: Date) => d.toISOString().slice(0, 10);
     const [orcs, vendas] = await Promise.all([
       this.erp.consultar<Record<string, any>>('orcamentos', {
         empresa: EMPRESA,
         campos: ['ORCAMENTO', 'EMISSAO', 'CLI_CODIGO', 'CLI_NOME', 'REP_CODIGO', 'TOTAL'],
         filtros: [
-          { campo: 'EMISSAO', op: 'entre', valor: [ymd(desde), ymd(ateEmissao)] },
+          { campo: 'EMISSAO', op: 'entre', valor: [desdeYmd, ateEmissaoYmd] },
           { campo: 'cliente.TABELA_PRECO', op: 'em', valor: TABELAS_ATACADO },
         ],
         limite: 20_000,
@@ -540,7 +562,7 @@ export class CarteirizacaoErpRepository {
       this.erp.consultar<{ CLI_CODIGO: number; DT_EMISSAO: string }>('nf-saida', {
         empresa: EMPRESA,
         filtros: [
-          { campo: 'DT_EMISSAO', op: 'maior_igual', valor: ymd(desde) },
+          { campo: 'DT_EMISSAO', op: 'maior_igual', valor: desdeYmd },
           { campo: 'DT_CANCELAMENTO', op: 'nulo' },
           { campo: 'OPF_CODIGO', op: 'em', valor: OPERACOES_VENDA },
           { campo: 'cliente.TABELA_PRECO', op: 'em', valor: TABELAS_ATACADO },
@@ -560,8 +582,7 @@ export class CarteirizacaoErpRepository {
       (diasComVenda.get(cli) ?? diasComVenda.set(cli, []).get(cli)!).push(dia);
     }
 
-    const semDesfecho: OrcamentoSemDesfecho[] = [];
-    for (const o of orcs) {
+    return orcs.map((o) => {
       const emissao = String(o.EMISSAO).slice(0, 10);
       const limite = new Date(emissao);
       limite.setDate(limite.getDate() + carenciaDias);
@@ -569,8 +590,7 @@ export class CarteirizacaoErpRepository {
       const fechou = (diasComVenda.get(Number(o.CLI_CODIGO)) ?? []).some(
         (dia) => dia >= emissao && dia <= limiteYmd,
       );
-      if (fechou) continue;
-      semDesfecho.push({
+      return {
         orcamento: Number(o.ORCAMENTO),
         emissao: new Date(o.EMISSAO),
         cli_codigo: Number(o.CLI_CODIGO),
@@ -578,13 +598,29 @@ export class CarteirizacaoErpRepository {
         rep_codigo: o.REP_CODIGO != null ? Number(o.REP_CODIGO) : null,
         total: Number(o.TOTAL ?? 0),
         dias_desde_emissao: Math.floor((hoje.getTime() - new Date(emissao).getTime()) / 86_400_000),
-      });
+        fechou,
+        emissao_ymd: emissao,
+      };
+    });
+  }
+
+  /**
+   * Receita líquida (venda − devolução) por cliente do atacado num período —
+   * a mesma medida de faturamento da Carteirização (TOTAL_NOTA), para os KPIs
+   * mensais da tela do supervisor.
+   */
+  async faturamentoPorClientePeriodo(iniYmd: string, fimYmd: string): Promise<Map<number, number>> {
+    const [venda, devolucao] = await Promise.all([
+      this.agregadoDeNotas(OPERACOES_VENDA, { desde: iniYmd, ate: fimYmd }),
+      this.agregadoDeNotas(OPERACOES_DEVOLUCAO, { desde: iniYmd, ate: fimYmd }),
+    ]);
+    const mapa = new Map<number, number>();
+    for (const l of venda) mapa.set(Number(l.CLI_CODIGO), Number(l.FAT ?? 0));
+    for (const l of devolucao) {
+      const cli = Number(l.CLI_CODIGO);
+      mapa.set(cli, (mapa.get(cli) ?? 0) - Number(l.FAT ?? 0));
     }
-    // Mais novo primeiro: o vendedor ainda lembra do orçamento recente — é onde
-    // o motivo marcado tem qualidade; o rabo antigo fica para o fim da lista.
-    return semDesfecho.sort(
-      (a, b) => b.emissao.getTime() - a.emissao.getTime() || b.total - a.total,
-    );
+    return mapa;
   }
 
   /**

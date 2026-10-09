@@ -74,6 +74,8 @@ describe('FilaService', () => {
     tarefasEmAndamento: jest.fn(async () => tarefasEmAndamento),
     ultimaMensagemEnviadaPorCliente: jest.fn(async () => msgEnviadaPorCliente),
     tarefasConcluidasDesde: jest.fn(async () => []),
+    escaladasDesde: jest.fn(async () => [{ rep_codigo: 10, rep_nome: 'ANA' }, { rep_codigo: 10, rep_nome: 'ANA' }, { rep_codigo: 10, rep_nome: 'ANA' }]),
+
     criarTarefas: jest.fn(async (rows: any[]) => {
       criadas.push(...rows);
       return { count: rows.length };
@@ -96,7 +98,7 @@ describe('FilaService', () => {
     snapshotCarteira: jest.fn(async () => clientes),
   } as unknown as CarteirizacaoService;
 
-  const avisosVendas = { filaDia: jest.fn(async () => undefined), filaEscalada: jest.fn(async () => undefined), resgateSla: jest.fn(async () => undefined), orcamentoVencendo: jest.fn(async () => undefined) } as unknown as AvisosVendasService;
+  const avisosVendas = { filaDia: jest.fn(async () => undefined), filaEscalada: jest.fn(async () => undefined), resgateSla: jest.fn(async () => undefined), orcamentoVencendo: jest.fn(async () => undefined), escaladasSupervisor: jest.fn(async () => undefined) } as unknown as AvisosVendasService;
   const service = new FilaService(carteirizacao, repo, avisosVendas);
 
   beforeEach(() => {
@@ -217,6 +219,8 @@ describe('FilaService', () => {
       { id: 't2', sinal: 'VENDA' },
     ]);
     expect(escaladas).toEqual(['t3']);
+    // a supervisão recebe as escaladas do dia num aviso só, por vendedor
+    expect((avisosVendas as any).escaladasSupervisor).toHaveBeenCalledWith(new Map([['ANA', 3]]));
   });
 
   it('mensagem enviada (sensor WAHA) é o terceiro sinal: conclui e evita gerar', async () => {

@@ -51,6 +51,41 @@ export class TransferirDto {
   usuario_nome?: string;
 }
 
+/**
+ * Troca de vendedor feita pela supervisão/gerência: grava no Celta e espelha.
+ * Um cliente ou vários (lote); o motivo é obrigatório e vai para o histórico.
+ */
+export class TrocarVendedorDto {
+  cli_codigos: number[];
+  rep_codigo: number;
+  motivo: string;
+  usuario_id?: string;
+  usuario_nome?: string;
+}
+
+/** Toda a carteira de `rep_origem` para `rep_codigo` (ex.: vendedor saiu). */
+export class TransferirCarteiraDto extends TrocarVendedorDto {
+  rep_origem: number;
+}
+
+/** Meta nova de um indicador da tela do supervisor (só a gerência grava). */
+export class GravarMetaAtacadoDto {
+  indicador: string;
+  valor: number;
+  faixa_amarela?: number;
+  vigente_desde?: string; // yyyy-mm-dd; padrão = início do mês comissional atual
+  observacao?: string;
+  usuario_id?: string;
+  usuario_nome?: string;
+}
+
+/** Confirmar carteirização (tela "Para carteirizar"): o vendedor é o sugerido. */
+export class ConfirmarCarteirizacaoDto {
+  cli_codigos: number[];
+  usuario_id?: string;
+  usuario_nome?: string;
+}
+
 export class RemoverDto {
   motivo?: string;
   usuario_id?: string;

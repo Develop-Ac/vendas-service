@@ -10,6 +10,9 @@ import { CarteirizacaoSyncScheduler } from './carteirizacao.sync.scheduler';
 import { FilaService } from './fila.service';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { ResgateService } from './resgate.service';
+import { TrocaVendedorService } from './troca-vendedor.service';
+import { CarteirizacaoCeltaClient } from './carteirizacao.celta.client';
+import { SupervisaoService } from './supervisao.service';
 import { MssqlService } from 'src/common/mssql/mssql.service';
  
 @Module({
@@ -24,6 +27,9 @@ import { MssqlService } from 'src/common/mssql/mssql.service';
     FilaService,
     AvisosVendasService,
     ResgateService,
+    TrocaVendedorService,
+    CarteirizacaoCeltaClient,
+    SupervisaoService,
     MssqlService
   ],
   exports: [CarteirizacaoService],

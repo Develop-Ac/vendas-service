@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import {
   CarteirizacaoSqlServerRepository,
   ClienteBaseRow,
@@ -114,7 +114,7 @@ const CONCEITO_MAP: Record<number, string> = {
 // Vendedor "pool": clientes inativos que saíram de outras carteiras são movidos
 // para a carteira do Lucas Barrada (rep_codigo 316) e ficam com status DISPONIVEL,
 // aguardando recarterização para o vendedor que voltar a vender para eles.
-const REP_DISPONIVEL = 316;
+export const REP_DISPONIVEL = 316;
 
 @Injectable()
 export class CarteirizacaoService {
@@ -578,7 +578,7 @@ export class CarteirizacaoService {
       .sort((a, b) => a.rep_nome.localeCompare(b.rep_nome));
   }
 
-  private async resolverNomeRep(rep_codigo: number): Promise<string | null> {
+  async resolverNomeRep(rep_codigo: number): Promise<string | null> {
     if (this.vendedorNomeCache.has(rep_codigo)) return this.vendedorNomeCache.get(rep_codigo)!;
     const nomes = await this.fonte.nomesRepresentantes([rep_codigo]);
     const nome = nomes[0]?.rep_nome ?? null;
@@ -810,6 +810,10 @@ export class CarteirizacaoService {
       if (erpRep != null) {
         // ERP tem vendedor
         if (ativoNoOverlay && ov!.rep_codigo === erpRep) continue; // sem mudança
+        // Troca feita pela intranet já foi gravada no Celta. Com a base vindo do
+        // BI (CARTEIRIZACAO_FONTE=bi), o DW pode ainda não ter recarregado o
+        // cliente e "desfaria" a troca: confia na intranet por alguns dias.
+        if (ativoNoOverlay && this.trocaRecenteDaIntranet(ov!)) continue;
         const tipo: Mudanca['tipo'] = ativoNoOverlay ? 'alterado' : 'novo';
         mudancas.push({
           tipo,
@@ -906,6 +910,12 @@ export class CarteirizacaoService {
     return { dryRun: false, lote_id, ...resumo };
   }
 
+  private trocaRecenteDaIntranet(ov: { origem: string; atribuido_em: Date }): boolean {
+    if (process.env.CARTEIRIZACAO_FONTE !== 'bi') return false; // ERP lido ao vivo: nada a proteger
+    if (!['MANUAL', 'LOTE', 'TRANSFERENCIA', 'RECUPERACAO'].includes(ov.origem)) return false;
+    return Date.now() - new Date(ov.atribuido_em).getTime() < 3 * 86_400_000;
+  }
+
   // -------------------------------------------------------- confirmar exclusão
   /**
    * Única escrita manual da carteira restante: confirma a exclusão de um cliente que
@@ -944,16 +954,36 @@ export class CarteirizacaoService {
    * venda de OUTRO vendedor APÓS entrarem no pool (corte = atribuido_em). Sugere o vendedor
    * da venda mais recente, para apoiar a manutenção da carteira no ERP.
    */
+  /**
+   * Representantes ativos no cadastro de comissão (dbo.ComissaoRepresentante,
+   * tela Representantes). Sem o BI não há como saber quem está ativo: a lista
+   * para carteirizar falha clara em vez de sugerir vendedor inativo.
+   */
+  async representantesAtivos(): Promise<Set<number>> {
+    try {
+      const papeis = await this.sql.papeisPorRep();
+      return new Set(papeis.filter((p) => !p.inativo).map((p) => Number(p.rep_codigo)));
+    } catch (e) {
+      throw new ServiceUnavailableException(
+        `Cadastro de representantes indisponível (BI): não dá para sugerir só vendedores ativos agora. ${(e as Error).message}`,
+      );
+    }
+  }
+
   async clientesParaCarteirizar() {
     const carteira = await this.overlay.listarCarteira();
     const pool = carteira.filter((c) => c.trash === 0 && c.rep_codigo === REP_DISPONIVEL);
     if (!pool.length) return { itens: [], total: 0 };
 
     const cortes = pool.map((c) => ({ cli_codigo: c.cli_codigo, cutoff: this.ymd(c.atribuido_em) }));
-    const [vendas, base] = await Promise.all([
+    const [todas, base, ativos] = await Promise.all([
       this.fonte.vendasAposCarteira(cortes),
       this.getBase(),
+      this.representantesAtivos(),
     ]);
+    // Só vendedor ATIVO no cadastro de representantes pode ser sugerido: venda
+    // de quem saiu (ou está inativo) não devolve o cliente para a carteira dele.
+    const vendas = todas.filter((v) => ativos.has(v.rep_codigo));
     const baseMap = new Map(base.map((b) => [b.cli_codigo, b]));
     const entradaMap = new Map(pool.map((c) => [c.cli_codigo, c.atribuido_em]));
 

@@ -20,6 +20,9 @@ const ymdHoje = () => new Date(Date.now() - 4 * 3_600_000).toISOString().slice(0
  */
 const SETORES_GESTAO = ['Gerência', 'Admin', 'admin', 'Controladoria', 'Desenvolvimento'];
 
+/** Sem a Estação, a fila do vendedor mora no bloco de tarefas da tela de Orçamentos. */
+const LINK_TAREFAS_HOJE = '/vendas/orcamento?tarefas=hoje';
+
 @Injectable()
 export class AvisosVendasService {
   private readonly logger = new Logger(AvisosVendasService.name);
@@ -49,7 +52,7 @@ export class AvisosVendasService {
   async filaDia(rep: number, resumo: { total: number; resgates: number; escaladas: number }) {
     const usuarios = await this.usuariosDoRep(rep);
     if (!usuarios.length || !resumo.total) return;
-    this.avisos.emitir('fila.dia', { ref: `${rep}:${ymdHoje()}`, vars: resumo, usuarios });
+    this.avisos.emitir('fila.dia', { ref: `${rep}:${ymdHoje()}`, vars: resumo, usuarios, link: LINK_TAREFAS_HOJE });
   }
 
   /** Tarefa passou do prazo e virou ESCALADA. */
@@ -61,6 +64,38 @@ export class AvisosVendasService {
       ref: t.id,
       vars: { cliente: t.cli_nome ?? `Cliente ${t.cli_codigo}`, cli: t.cli_codigo, dias, motivo: t.motivo_geracao ?? '' },
       usuarios,
+      link: LINK_TAREFAS_HOJE,
+    });
+  }
+
+  /**
+   * Supervisão: as escaladas do dia num aviso só (ref = data, agrupado — a
+   * contagem se atualiza ao longo do dia em vez de um aviso por tarefa).
+   */
+  async escaladasSupervisor(porVendedor: Map<string, number>) {
+    const total = [...porVendedor.values()].reduce((s, n) => s + n, 0);
+    if (!total) return;
+    const usuarios = await this.gestaoAtacado();
+    if (!usuarios.length) return;
+    const vendedores = [...porVendedor].sort((a, b) => b[1] - a[1]).map(([nome, n]) => `${nome}: ${n}`).join(' · ');
+    this.avisos.emitir('fila.escalada.supervisor', {
+      ref: ymdHoje(),
+      vars: { total, vendedores },
+      usuarios,
+      link: '/vendas/supervisao-atacado',
+    });
+  }
+
+  /** Resumo diário dos orçamentos sem desfecho do vendedor (ref = rep:data). */
+  async semDesfechoResumo(rep: number, resumo: { total: number; valor: number }) {
+    if (!resumo.total) return;
+    const usuarios = await this.usuariosDoRep(rep);
+    if (!usuarios.length) return;
+    this.avisos.emitir('orcamento.sem_desfecho.resumo', {
+      ref: `${rep}:${ymdHoje()}`,
+      vars: { total: resumo.total, valor: brl(resumo.valor) },
+      usuarios,
+      link: '/vendas/orcamento?tarefas=sem-desfecho',
     });
   }
 
@@ -72,6 +107,7 @@ export class AvisosVendasService {
       ref: resgateId,
       vars: { cliente: cli.cli_nome ?? `Cliente ${cli.cli_codigo}`, cli: cli.cli_codigo, horas: slaHoras + Math.max(0, horasAtraso), sla: slaHoras },
       usuarios,
+      link: LINK_TAREFAS_HOJE,
     });
   }
 

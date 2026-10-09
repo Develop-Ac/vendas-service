@@ -266,11 +266,43 @@ export class CarteirizacaoPrismaRepository {
     });
   }
 
+  /** Tarefas escaladas a partir de um corte (o aviso do dia ao supervisor conta todas). */
+  async escaladasDesde(desde: Date) {
+    return this.prisma.ven_fila_tarefa.findMany({
+      where: { escalada_em: { gte: desde } },
+      select: { rep_codigo: true, rep_nome: true },
+    });
+  }
+
+  /** Tarefas em andamento de um cliente (troca de vendedor cancela todas). */
+  async tarefasEmAndamentoDoCliente(cli_codigo: number) {
+    return this.prisma.ven_fila_tarefa.findMany({
+      where: { cli_codigo, status: { in: ['ABERTA', 'ESCALADA'] } },
+    });
+  }
+
   // ===================================== esteira de resgate (fase 1, S3)
   /** Episódios em andamento (tudo que não é RECUPERADO/PERDIDO). */
   async resgatesAbertos() {
     return this.prisma.ven_resgate.findMany({
       where: { estagio: { notIn: ['RECUPERADO', 'PERDIDO'] } },
+    });
+  }
+
+  /** Episódio em andamento de um cliente (no máximo um por construção). */
+  async resgateAbertoDoCliente(cli_codigo: number) {
+    return this.prisma.ven_resgate.findFirst({
+      where: { cli_codigo, estagio: { notIn: ['RECUPERADO', 'PERDIDO'] } },
+    });
+  }
+
+  /** Usuário da intranet (id ou código) com o papel de vendas — quem pode mexer na carteira. */
+  async usuarioVendas(ref: string | null | undefined) {
+    const r = (ref ?? '').trim();
+    if (!r) return null;
+    return this.prisma.sis_usuarios.findFirst({
+      where: { trash: 0, OR: [{ id: r }, { codigo: r }] },
+      select: { id: true, codigo: true, nome: true, setor: true, vendas_hub_inicial: true },
     });
   }
 
@@ -297,7 +329,8 @@ export class CarteirizacaoPrismaRepository {
       contatado_em?: Date;
       proposta_em?: Date;
       fechado_em?: Date;
-      sla_cumprido?: boolean;
+      sla_cumprido?: boolean | null;
+      sla_em?: Date | null;
       rep_codigo?: number | null;
       rep_nome?: string | null;
     },
@@ -352,6 +385,71 @@ export class CarteirizacaoPrismaRepository {
       where: { created_at: { gte: desde } },
       _count: { _all: true },
     });
+  }
+
+  // ================================ tela do supervisor do atacado (metas/KPIs)
+  /**
+   * Todas as linhas de meta do departamento (são poucas: ~13 indicadores × trocas).
+   * Sem a tabela (DDL ainda não aplicado) devolve vazio e valem as metas padrão.
+   */
+  async metasAtacado() {
+    try {
+      const rows = await this.prisma.ven_atacado_meta.findMany({ orderBy: [{ vigente_desde: 'desc' }, { created_at: 'desc' }] });
+      return rows.map((r) => ({
+        ...r,
+        valor: Number(r.valor),
+        faixa_amarela: Number(r.faixa_amarela),
+        vigente_desde: r.vigente_desde.toISOString().slice(0, 10),
+      }));
+    } catch {
+      return [];
+    }
+  }
+
+  /** Meta nova (append-only: mudar a meta é inserir outra linha). */
+  async inserirMetaAtacado(data: {
+    indicador: string;
+    valor: number;
+    faixa_amarela: number;
+    vigente_desde: Date;
+    observacao?: string | null;
+    criado_por?: string | null;
+    criado_por_nome?: string | null;
+  }) {
+    return this.prisma.ven_atacado_meta.create({ data });
+  }
+
+  /**
+   * Tarefas da fila que "venceram ou fecharam" na janela — o universo do
+   * "fila no prazo": prazo dentro da janela, ou concluída dentro dela.
+   * Canceladas (troca de vendedor, cliente saiu) não contam.
+   */
+  async tarefasDaJanela(desde: Date, ate: Date) {
+    return this.prisma.ven_fila_tarefa.findMany({
+      where: {
+        status: { not: 'CANCELADA' },
+        OR: [{ prazo_em: { gte: desde, lte: ate } }, { concluida_em: { gte: desde, lte: ate } }],
+      },
+      select: { rep_codigo: true, status: true, prazo_em: true, concluida_em: true },
+    });
+  }
+
+  /** Resgates com SLA (curva A) abertos na janela, com o resultado do prazo. */
+  async resgatesComSlaNaJanela(desde: Date, ate: Date) {
+    return this.prisma.ven_resgate.findMany({
+      where: { sla_em: { not: null }, aberto_em: { gte: desde, lte: ate } },
+      select: { rep_codigo: true, sla_cumprido: true, sla_em: true },
+    });
+  }
+
+  /** Quando cada orçamento recebeu motivo (para o prazo de 3 dias úteis). */
+  async desfechosDosOrcamentos(orcamentos: number[], empresa = 3): Promise<Map<number, Date>> {
+    if (!orcamentos.length) return new Map();
+    const rows = await this.prisma.ven_orcamento_desfecho.findMany({
+      where: { empresa, orcamento: { in: orcamentos } },
+      select: { orcamento: true, created_at: true },
+    });
+    return new Map(rows.map((r) => [r.orcamento, r.created_at]));
   }
 
   // ================================== sensor WhatsApp (terceiro sinal da fila)
