@@ -3,7 +3,10 @@ import { CarteirizacaoService, ClienteCarteira, REP_DISPONIVEL } from './carteir
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { CarteirizacaoCeltaClient } from './carteirizacao.celta.client';
 import { ehGestaoVendas } from './papel';
-import { TransferirCarteiraDto, TrocarVendedorDto } from './dto/carteirizacao.dto';
+import { ConfirmarCarteirizacaoDto, TransferirCarteiraDto, TrocarVendedorDto } from './dto/carteirizacao.dto';
+
+/** Observação gravada no histórico de quem sai do pool pela tela "Para carteirizar". */
+export const MOTIVO_RECUPERADO = 'Cliente recuperado pelo vendedor';
 
 const DIA_MS = 86_400_000;
 const LOTE_PARALELO = 4;
@@ -75,10 +78,44 @@ export class TrocaVendedorService {
     return this.executar(clis, dto, 'TRANSFERENCIA');
   }
 
+  /**
+   * "Para carteirizar": cliente do pool que voltou a comprar vai para o vendedor
+   * que vendeu. O vendedor de cada um é o SUGERIDO recalculado aqui (ativo no
+   * cadastro, venda mais recente depois de entrar no pool) — a tela só diz
+   * quais clientes. Sem tarefa de contato: o vendedor acabou de vender.
+   */
+  async confirmarCarteirizacao(dto: ConfirmarCarteirizacaoDto): Promise<ResultadoTroca[]> {
+    const pedidos = new Set((dto?.cli_codigos ?? []).map(Number).filter((n) => Number.isInteger(n) && n > 0));
+    if (!pedidos.size) throw new BadRequestException('Informe ao menos um cliente.');
+    const { itens } = await this.carteirizacao.clientesParaCarteirizar();
+    const porRep = new Map<number, number[]>();
+    const fora: ResultadoTroca['falhas'] = [];
+    for (const cli of pedidos) {
+      const item = itens.find((i) => i.cli_codigo === cli);
+      if (!item) {
+        fora.push({ cli_codigo: cli, erro: 'Não está mais na lista para carteirizar (já saiu do pool ou o vendedor ficou inativo).' });
+        continue;
+      }
+      porRep.set(item.rep_sugerido_codigo, [...(porRep.get(item.rep_sugerido_codigo) ?? []), cli]);
+    }
+    const resultados: ResultadoTroca[] = [];
+    for (const [rep, clis] of porRep) {
+      resultados.push(
+        await this.executar(clis, { cli_codigos: clis, rep_codigo: rep, motivo: MOTIVO_RECUPERADO, usuario_id: dto.usuario_id, usuario_nome: dto.usuario_nome }, 'RECUPERACAO'),
+      );
+    }
+    if (fora.length) {
+      if (resultados[0]) resultados[0].falhas.push(...fora);
+      else resultados.push({ ok: false, lote_id: '', rep_codigo: 0, rep_nome: null, trocados: [], falhas: fora });
+      resultados[0].ok = false;
+    }
+    return resultados;
+  }
+
   private async executar(
     clis: number[],
     dto: TrocarVendedorDto,
-    acao: 'ALTERACAO' | 'LOTE' | 'TRANSFERENCIA',
+    acao: 'ALTERACAO' | 'LOTE' | 'TRANSFERENCIA' | 'RECUPERACAO',
   ): Promise<ResultadoTroca> {
     const rep = Number(dto.rep_codigo);
     if (!Number.isInteger(rep) || rep <= 0) throw new BadRequestException('Informe o vendedor de destino.');
@@ -140,7 +177,7 @@ export class TrocaVendedorService {
       // 3) Fila e resgate seguem o novo dono. Falha aqui não desfaz a troca já
       // gravada no ERP: a carga diária reconcilia o que sobrar.
       try {
-        await this.seguirNovoDono(cli, rep, rep_nome, porCli.get(cli), motivo);
+        await this.seguirNovoDono(cli, rep, rep_nome, porCli.get(cli), motivo, acao !== 'RECUPERACAO');
       } catch (e) {
         this.logger.warn(`Troca do cliente ${cli} gravada, mas fila/resgate não acompanharam: ${(e as Error).message}`);
       }
@@ -165,6 +202,7 @@ export class TrocaVendedorService {
     rep_nome: string | null,
     snap: ClienteCarteira | undefined,
     motivo: string,
+    gerarTarefa = true,
   ) {
     const agora = Date.now();
     for (const t of await this.repo.tarefasEmAndamentoDoCliente(cli)) {
@@ -184,8 +222,9 @@ export class TrocaVendedorService {
       });
     }
 
-    // O pool não trabalha cliente: nada de tarefa para ele.
-    if (rep === REP_DISPONIVEL) return;
+    // O pool não trabalha cliente: nada de tarefa para ele. Nem para quem
+    // recuperou o cliente vendendo — o contato já aconteceu.
+    if (rep === REP_DISPONIVEL || !gerarTarefa) return;
     await this.repo.criarTarefas([
       {
         tipo: resgate ? 'RESGATE' : 'CONTATO',

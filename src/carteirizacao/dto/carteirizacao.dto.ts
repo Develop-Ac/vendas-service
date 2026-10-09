@@ -79,6 +79,13 @@ export class GravarMetaAtacadoDto {
   usuario_nome?: string;
 }
 
+/** Confirmar carteirização (tela "Para carteirizar"): o vendedor é o sugerido. */
+export class ConfirmarCarteirizacaoDto {
+  cli_codigos: number[];
+  usuario_id?: string;
+  usuario_nome?: string;
+}
+
 export class RemoverDto {
   motivo?: string;
   usuario_id?: string;

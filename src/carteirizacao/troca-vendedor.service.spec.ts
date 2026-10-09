@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException } from '@nestjs/common';
-import { TrocaVendedorService } from './troca-vendedor.service';
+import { MOTIVO_RECUPERADO, TrocaVendedorService } from './troca-vendedor.service';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { CarteirizacaoCeltaClient } from './carteirizacao.celta.client';
@@ -32,6 +32,13 @@ describe('TrocaVendedorService', () => {
   const carteirizacao = {
     resolverNomeRep: jest.fn(async () => 'NOVO'),
     snapshotCarteira: jest.fn(async () => [{ cli_codigo: 1, cli_nome: 'CLI 1', curva_abc: 'B' }]),
+    clientesParaCarteirizar: jest.fn(async () => ({
+      itens: [
+        { cli_codigo: 1, rep_sugerido_codigo: 20 },
+        { cli_codigo: 2, rep_sugerido_codigo: 30 },
+      ],
+      total: 2,
+    })),
   };
   const celta = {
     trocarRepresentante: jest.fn(async (empresa: number, cli: number, rep: number) => {
@@ -127,5 +134,17 @@ describe('TrocaVendedorService', () => {
     await svc.trocar({ cli_codigos: [1], rep_codigo: 316, motivo: 'Inativo', usuario_id: 'u1' });
     expect(overlay.get(1).rep_codigo).toBe(316);
     expect(tarefasCriadas).toEqual([]);
+  });
+
+  it('confirmar carteirização usa o vendedor sugerido, grava a observação e não gera tarefa', async () => {
+    const r = await svc.confirmarCarteirizacao({ cli_codigos: [1, 2, 99], usuario_id: 'u1' });
+
+    expect(celtaChamadas.map(([, cli, rep]) => [cli, rep]).sort()).toEqual([[1, 20], [2, 30]]);
+    expect(historico.every((h) => h.motivo === MOTIVO_RECUPERADO && h.acao === 'RECUPERACAO')).toBe(true);
+    expect(overlay.get(1)).toMatchObject({ rep_codigo: 20, origem: 'RECUPERACAO' });
+    expect(tarefasCriadas).toEqual([]);
+    expect(canceladas).toEqual(['t1']); // tarefa antiga do pool/vendedor anterior sai
+    const falhas = r.flatMap((x) => x.falhas);
+    expect(falhas).toEqual([expect.objectContaining({ cli_codigo: 99 })]);
   });
 });

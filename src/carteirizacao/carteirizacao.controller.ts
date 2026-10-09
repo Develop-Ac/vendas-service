@@ -18,6 +18,7 @@ import { TrocaVendedorService } from './troca-vendedor.service';
 import { SupervisaoService } from './supervisao.service';
 import {
   ConfigVendedorDto,
+  ConfirmarCarteirizacaoDto,
   ConfirmarExclusaoDto,
   DesfechoOrcamentoDto,
   GravarMetaAtacadoDto,
@@ -65,11 +66,18 @@ export class CarteirizacaoController {
     return this.service.listarVendedores();
   }
 
-  // Clientes disponíveis (pool 203) que já têm venda de outro vendedor após entrarem no
-  // pool — lista de apoio à manutenção da carteira no ERP, com o vendedor sugerido.
+  // Clientes disponíveis (pool 316) que voltaram a comprar de um vendedor ATIVO no
+  // cadastro de representantes depois de entrarem no pool, com o vendedor sugerido.
   @Get('para-carteirizar')
   paraCarteirizar() {
     return this.service.clientesParaCarteirizar();
+  }
+
+  // Confirma a carteirização dos clientes escolhidos com o vendedor sugerido:
+  // grava no Celta e no histórico ("Cliente recuperado pelo vendedor").
+  @Post('para-carteirizar/confirmar')
+  confirmarCarteirizacao(@Body() dto: ConfirmarCarteirizacaoDto) {
+    return this.troca.confirmarCarteirizacao(dto);
   }
 
   @Get('cliente/:cli/historico')
