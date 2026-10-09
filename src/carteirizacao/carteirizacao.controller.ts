@@ -14,14 +14,19 @@ import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
 import { ResgateService } from './resgate.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
+import { TrocaVendedorService } from './troca-vendedor.service';
+import { SupervisaoService } from './supervisao.service';
 import {
   ConfigVendedorDto,
   ConfirmarExclusaoDto,
   DesfechoOrcamentoDto,
+  GravarMetaAtacadoDto,
   ListarClientesQuery,
   MetaVendedorDto,
   SincronizarDto,
   StatusCliente,
+  TransferirCarteiraDto,
+  TrocarVendedorDto,
 } from './dto/carteirizacao.dto';
 
 const toBool = (v: unknown) => v === true || v === 'true' || v === '1';
@@ -35,6 +40,8 @@ export class CarteirizacaoController {
     private readonly fila: FilaService,
     private readonly resgate: ResgateService,
     private readonly whatsapp: WhatsappService,
+    private readonly troca: TrocaVendedorService,
+    private readonly supervisao: SupervisaoService,
   ) {}
 
   @Get('clientes')
@@ -71,8 +78,8 @@ export class CarteirizacaoController {
   }
 
   // Carga/reconciliação com o ERP (fonte da verdade). Usada pelo botão "Atualizar"
-  // e pela carga diária automática. A manutenção manual da carteira foi desabilitada:
-  // o ERP é a única origem de atribuição/movimentação.
+  // e pela carga diária automática. A troca manual (abaixo) grava primeiro no ERP,
+  // então a carga encontra o mesmo vendedor e não desfaz nada.
   @Post('sincronizar')
   async sincronizar(@Body() dto: SincronizarDto) {
     const r = await this.service.sincronizar(dto ?? {});
@@ -88,7 +95,20 @@ export class CarteirizacaoController {
     return r;
   }
 
-  // Única escrita manual restante: confirmar a exclusão de um cliente em revisão
+  // Troca de vendedor pela supervisão/gerência: 1 ou N clientes, motivo obrigatório.
+  // Grava no Celta (api-vendas) cliente a cliente; o que falhar volta em `falhas`.
+  @Post('trocar-vendedor')
+  trocarVendedor(@Body() dto: TrocarVendedorDto) {
+    return this.troca.trocar(dto);
+  }
+
+  // Toda a carteira de um vendedor para outro (vendedor saiu, redistribuição).
+  @Post('transferir-carteira')
+  transferirCarteira(@Body() dto: TransferirCarteiraDto) {
+    return this.troca.transferir(dto);
+  }
+
+  // Confirmar a exclusão de um cliente em revisão
   // (saiu da tabela de preço do atacado).
   @Post('cliente/:cli/confirmar-exclusao')
   confirmarExclusao(
@@ -155,6 +175,37 @@ export class CarteirizacaoController {
       carenciaDias: toNum(carenciaDias),
       janelaDias: toNum(janelaDias),
     });
+  }
+
+  // ------------------------------------------- Tela do supervisor do atacado
+  // Os 9 KPIs do departamento no mês comissional (?ano&mes, padrão o vigente)
+  // e o esforço mínimo por vendedor na semana (?semanaDesde&semanaAte,
+  // padrão segunda até hoje), cada um contra a meta da gerência.
+  @Get('supervisao')
+  painelSupervisor(
+    @Query('ano') ano?: string,
+    @Query('mes') mes?: string,
+    @Query('semanaDesde') semanaDesde?: string,
+    @Query('semanaAte') semanaAte?: string,
+  ) {
+    return this.supervisao.painel({ ano: toNum(ano), mes: toNum(mes), semanaDesde, semanaAte });
+  }
+
+  // Esforço mínimo de um vendedor (bloco da tela de orçamento) ou de todos.
+  @Get('esforco-minimo')
+  esforcoMinimo(@Query('rep') rep?: string, @Query('desde') desde?: string, @Query('ate') ate?: string) {
+    return this.supervisao.esforco({ rep_codigo: toNum(rep), desde, ate });
+  }
+
+  // Metas do departamento: vigentes + histórico. Gravar é só da gerência.
+  @Get('supervisao/metas')
+  metasSupervisao() {
+    return this.supervisao.metas();
+  }
+
+  @Post('supervisao/metas')
+  gravarMetaSupervisao(@Body() dto: GravarMetaAtacadoDto) {
+    return this.supervisao.gravarMeta(dto);
   }
 
   // -------------------------------------------------- Fase 2: acompanhamento

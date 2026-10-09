@@ -72,7 +72,18 @@ export class ResgateService {
    * Roda em toda leitura da esteira (e após a carga diária): fecha e avança os
    * episódios pelos sinais, e abre episódio para quem acabou de entrar em risco.
    */
+  private reconciliando: Promise<{ abertos: number; novos: number }> | null = null;
+
+  /** Leituras simultâneas esperam a mesma execução (a abertura bateria no índice único). */
   async reconciliar(clientesParam?: ClienteCarteira[]) {
+    if (this.reconciliando) return this.reconciliando;
+    this.reconciliando = this.reconciliarAgora(clientesParam).finally(() => {
+      this.reconciliando = null;
+    });
+    return this.reconciliando;
+  }
+
+  private async reconciliarAgora(clientesParam?: ClienteCarteira[]) {
     const clientes = clientesParam ?? (await this.carteirizacao.snapshotCarteira());
     const mapa = new Map(clientes.map((c) => [c.cli_codigo, c]));
     const [abertos, msgEnviada] = await Promise.all([

@@ -4,6 +4,7 @@ import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
 import { ResgateService } from './resgate.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
+import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 
 /**
  * Carga diária automática da carteirização: reconcilia o overlay com o ERP
@@ -20,6 +21,7 @@ export class CarteirizacaoSyncScheduler {
     private readonly fila: FilaService,
     private readonly resgate: ResgateService,
     private readonly whatsapp: WhatsappService,
+    private readonly avisosVendas: AvisosVendasService,
   ) {}
 
   @Cron(process.env.CARTEIRIZACAO_SYNC_CRON ?? '0 5 * * *', {
@@ -76,6 +78,24 @@ export class CarteirizacaoSyncScheduler {
       this.logger.log(`Esteira de resgate: ${r.novos} episódios novos, ${r.abertos} em andamento.`);
     } catch (e) {
       this.logger.error(`Falha na esteira de resgate: ${(e as Error).message}`);
+    }
+
+    // Resumo do dia dos orçamentos sem desfecho, um aviso por vendedor: leva
+    // direto à aba "Sem desfecho" do bloco de tarefas da tela de Orçamentos.
+    try {
+      const sd = await this.service.orcamentosSemDesfecho({});
+      const porRep = new Map<number, { total: number; valor: number }>();
+      for (const o of sd.itens) {
+        if (o.rep_codigo == null) continue;
+        const a = porRep.get(o.rep_codigo) ?? { total: 0, valor: 0 };
+        a.total++;
+        a.valor += o.total;
+        porRep.set(o.rep_codigo, a);
+      }
+      for (const [rep, r] of porRep) void this.avisosVendas.semDesfechoResumo(rep, r);
+      this.logger.log(`Sem desfecho: ${sd.total} orçamentos em ${porRep.size} vendedor(es).`);
+    } catch (e) {
+      this.logger.error(`Falha no resumo de orçamentos sem desfecho: ${(e as Error).message}`);
     }
   }
 }

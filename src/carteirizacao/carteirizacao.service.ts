@@ -114,7 +114,7 @@ const CONCEITO_MAP: Record<number, string> = {
 // Vendedor "pool": clientes inativos que saíram de outras carteiras são movidos
 // para a carteira do Lucas Barrada (rep_codigo 316) e ficam com status DISPONIVEL,
 // aguardando recarterização para o vendedor que voltar a vender para eles.
-const REP_DISPONIVEL = 316;
+export const REP_DISPONIVEL = 316;
 
 @Injectable()
 export class CarteirizacaoService {
@@ -578,7 +578,7 @@ export class CarteirizacaoService {
       .sort((a, b) => a.rep_nome.localeCompare(b.rep_nome));
   }
 
-  private async resolverNomeRep(rep_codigo: number): Promise<string | null> {
+  async resolverNomeRep(rep_codigo: number): Promise<string | null> {
     if (this.vendedorNomeCache.has(rep_codigo)) return this.vendedorNomeCache.get(rep_codigo)!;
     const nomes = await this.fonte.nomesRepresentantes([rep_codigo]);
     const nome = nomes[0]?.rep_nome ?? null;
@@ -810,6 +810,10 @@ export class CarteirizacaoService {
       if (erpRep != null) {
         // ERP tem vendedor
         if (ativoNoOverlay && ov!.rep_codigo === erpRep) continue; // sem mudança
+        // Troca feita pela intranet já foi gravada no Celta. Com a base vindo do
+        // BI (CARTEIRIZACAO_FONTE=bi), o DW pode ainda não ter recarregado o
+        // cliente e "desfaria" a troca: confia na intranet por alguns dias.
+        if (ativoNoOverlay && this.trocaRecenteDaIntranet(ov!)) continue;
         const tipo: Mudanca['tipo'] = ativoNoOverlay ? 'alterado' : 'novo';
         mudancas.push({
           tipo,
@@ -904,6 +908,12 @@ export class CarteirizacaoService {
     );
 
     return { dryRun: false, lote_id, ...resumo };
+  }
+
+  private trocaRecenteDaIntranet(ov: { origem: string; atribuido_em: Date }): boolean {
+    if (process.env.CARTEIRIZACAO_FONTE !== 'bi') return false; // ERP lido ao vivo: nada a proteger
+    if (!['MANUAL', 'LOTE', 'TRANSFERENCIA'].includes(ov.origem)) return false;
+    return Date.now() - new Date(ov.atribuido_em).getTime() < 3 * 86_400_000;
   }
 
   // -------------------------------------------------------- confirmar exclusão

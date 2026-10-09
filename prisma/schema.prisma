@@ -1963,6 +1963,22 @@ model sis_usuarios {
   sis_permissoes     sis_permissoes[]
 }
 
+/// Metas do departamento atacado (tela do supervisor) com vigência. Append-only:
+/// mudar a meta = inserir linha nova. DDL manual: sql/2026-10-09_supervisao_atacado_metas_postgres.sql
+model ven_atacado_meta {
+  id              String   @id @default(cuid())
+  indicador       String
+  valor           Decimal  @db.Decimal(15, 2)
+  faixa_amarela   Decimal  @default(10) @db.Decimal(7, 2)
+  vigente_desde   DateTime @db.Date
+  observacao      String?
+  criado_por      String?
+  criado_por_nome String?
+  created_at      DateTime @default(now()) @db.Timestamptz(6)
+
+  @@index([indicador, vigente_desde(sort: Desc), created_at(sort: Desc)], map: "idx_ven_atacado_meta_ind_vig")
+}
+
 model ven_carteira_cliente {
   id             String    @id @default(cuid())
   cli_codigo     Int       @unique(map: "uq_ven_carteira_cliente_cli")

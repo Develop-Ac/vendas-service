@@ -188,7 +188,7 @@ export class FilaService {
 
     await this.repo.criarTarefas(novas);
 
-    // Aviso "fila do dia" por vendedor (balão na Estação) — fora do caminho crítico.
+    // Aviso "fila do dia" por vendedor (leva ao bloco de tarefas da tela de Orçamentos) — fora do caminho crítico.
     const porRep = new Map<number, { total: number; resgates: number }>();
     for (const n of novas) {
       if (n.rep_codigo == null) continue;
@@ -233,13 +233,29 @@ export class FilaService {
    *    com `concluida_em` = a data do próprio sinal;
    *  - prazo estourado sem sinal -> ESCALADA (vira pauta do supervisor).
    */
-  private async reconciliar(clientes: ClienteCarteira[]) {
+  private reconciliando: Promise<void> | null = null;
+
+  /**
+   * Várias leituras chegam juntas (lista, bloco de tarefas, tela do supervisor):
+   * quem chega com uma reconciliação em curso espera a mesma — senão duas
+   * execuções escalariam a mesma tarefa e avisariam duas vezes.
+   */
+  async reconciliar(clientes: ClienteCarteira[]) {
+    if (this.reconciliando) return this.reconciliando;
+    this.reconciliando = this.reconciliarAgora(clientes).finally(() => {
+      this.reconciliando = null;
+    });
+    return this.reconciliando;
+  }
+
+  private async reconciliarAgora(clientes: ClienteCarteira[]) {
     const mapa = new Map(clientes.map((c) => [c.cli_codigo, c]));
     const [emAndamento, msgEnviada] = await Promise.all([
       this.repo.tarefasEmAndamento(),
       this.repo.ultimaMensagemEnviadaPorCliente(),
     ]);
     const agora = new Date();
+    let escalouAgora = false;
 
     for (const t of emAndamento) {
       const cli = mapa.get(t.cli_codigo);
@@ -261,7 +277,21 @@ export class FilaService {
       if (t.status === 'ABERTA' && new Date(t.prazo_em) < agora) {
         await this.repo.escalarTarefa(t.id);
         void this.avisosVendas.filaEscalada(t);
+        escalouAgora = true;
       }
+    }
+    // O aviso do supervisor é um por dia (agrupado): leva o total do dia inteiro,
+    // não só o desta execução — senão a escalada das 10h "apagaria" as das 5h.
+    if (escalouAgora) {
+      const hoje0h = new Date();
+      hoje0h.setHours(0, 0, 0, 0);
+      const doDia = await this.repo.escaladasDesde(hoje0h);
+      const porVendedor = new Map<string, number>();
+      for (const e of doDia) {
+        const nome = e.rep_nome ?? (e.rep_codigo != null ? `Rep ${e.rep_codigo}` : 'Sem vendedor');
+        porVendedor.set(nome, (porVendedor.get(nome) ?? 0) + 1);
+      }
+      void this.avisosVendas.escaladasSupervisor(porVendedor);
     }
   }
 

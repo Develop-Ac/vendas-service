@@ -7,14 +7,17 @@ import type { Catalogo } from './common/avisos/avisos-client';
  * Régua: canal `desktop` (balão do Windows na Estação) só no que exige ação do
  * vendedor AGORA. O resto fica no sino/mural. Alvo padrão = usuário (o
  * vendedor dono da carteira, resolvido por sis_usuarios.vendas_rep_codigo).
- * Links apontam para a Estação com o cliente (e o orçamento) já abertos.
+ * Fila, resgate e motivo apontam para a tela de Orçamentos com o bloco de
+ * tarefas aberto (?tarefas=hoje|sem-desfecho) — a Estação está fora de uso
+ * nesta fase. O emissor também manda o link na emissão, porque regra já
+ * gravada no avisos-service não é sobrescrita pelo catálogo.
  */
 export const CATALOGO_VENDAS: Catalogo = {
   'fila.dia': {
     descricao: 'Fila do dia gerada para o vendedor (carga diária).',
     titulo: 'Fila de hoje: {total} cliente(s)',
     corpo: '{resgates} resgate(s) · {escaladas} escalada(s)',
-    link: '/vendas/estacao',
+    link: '/vendas/orcamento?tarefas=hoje',
     canais: ['badge', 'desktop'],
     prioridade: 'normal',
     alvo: { tipo: 'usuario' },
@@ -25,7 +28,7 @@ export const CATALOGO_VENDAS: Catalogo = {
     descricao: 'Tarefa da fila passou do prazo de contato e virou ESCALADA.',
     titulo: 'Sem contato há {dias} dias: {cliente}',
     corpo: 'Tarefa escalada · {motivo}',
-    link: '/vendas/estacao?cli={cli}',
+    link: '/vendas/orcamento?tarefas=hoje',
     canais: ['badge', 'mural', 'desktop'],
     prioridade: 'alta',
     alvo: { tipo: 'usuario' },
@@ -34,7 +37,7 @@ export const CATALOGO_VENDAS: Catalogo = {
     descricao: 'Cliente curva A em risco sem contato dentro do SLA de 48 h.',
     titulo: 'Resgate atrasado: {cliente}',
     corpo: 'Curva A sem contato há {horas} h · SLA {sla} h',
-    link: '/vendas/estacao?cli={cli}',
+    link: '/vendas/orcamento?tarefas=hoje',
     canais: ['badge', 'mural', 'desktop'],
     prioridade: 'alta',
     alvo: { tipo: 'usuario' },
@@ -79,6 +82,28 @@ export const CATALOGO_VENDAS: Catalogo = {
     canais: ['badge'],
     prioridade: 'normal',
     alvo: { tipo: 'usuario' },
+  },
+  // Chave nova (e não a de cima): regra já gravada no avisos-service não é
+  // sobrescrita pelo catálogo, e a antiga tem templates por orçamento.
+  'orcamento.sem_desfecho.resumo': {
+    descricao: 'Resumo diário: orçamentos com 7 dias sem venda esperando o motivo do vendedor.',
+    titulo: '{total} orçamento(s) sem motivo',
+    corpo: '{valor} orçados sem venda · informe o motivo (1 toque cada)',
+    link: '/vendas/orcamento?tarefas=sem-desfecho',
+    canais: ['badge'],
+    prioridade: 'normal',
+    alvo: { tipo: 'usuario' },
+    agrupar: true,
+  },
+  'fila.escalada.supervisor': {
+    descricao: 'Supervisão: tarefas da fila escaladas hoje (prazo de contato estourado), por vendedor.',
+    titulo: '{total} tarefa(s) escalada(s) hoje',
+    corpo: '{vendedores}',
+    link: '/vendas/supervisao-atacado',
+    canais: ['badge', 'mural'],
+    prioridade: 'normal',
+    alvo: { tipo: 'usuario' },
+    agrupar: true,
   },
   'carteira.risco': {
     descricao: 'Cliente da carteira entrou em risco de inativação.',
