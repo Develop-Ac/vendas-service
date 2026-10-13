@@ -112,9 +112,10 @@ const CONCEITO_MAP: Record<number, string> = {
 };
 
 // Vendedor "pool": clientes inativos que saíram de outras carteiras são movidos
-// para a carteira do Lucas Barrada (rep_codigo 316) e ficam com status DISPONIVEL,
-// aguardando recarterização para o vendedor que voltar a vender para eles.
-export const REP_DISPONIVEL = 316;
+// para a carteira CARTEIRA DO ATACADO - DISPONÍVEL (rep_codigo 356) e ficam com status
+// DISPONIVEL, aguardando recarterização para o vendedor que voltar a vender para eles.
+// (Até out/2026 o pool era a carteira do supervisor Lucas Barrada, rep 316.)
+export const REP_DISPONIVEL = 356;
 
 @Injectable()
 export class CarteirizacaoService {
@@ -278,7 +279,7 @@ export class CarteirizacaoService {
       // markup: margem sobre o custo (preço = custo × (1 + markup)). ~50% no padrão do atacado.
       const margemCustoPct = custo12 > 0 ? (lucro12 / custo12) * 100 : 0;
 
-      // Cliente na carteira do "pool" (203) fica DISPONIVEL para recarterização.
+      // Cliente na carteira do "pool" (356) fica DISPONIVEL para recarterização.
       const isDisponivel = emCarteira && ov!.rep_codigo === REP_DISPONIVEL;
       let status: StatusCliente;
       if (!emCarteira) status = 'SEM_CARTEIRA';
@@ -402,7 +403,7 @@ export class CarteirizacaoService {
       ativos: escopo.filter((c) => c.status === 'ATIVO').length,
       inativos: escopo.filter((c) => c.status === 'INATIVO').length,
       sem_carteira: escopo.filter((c) => c.status === 'SEM_CARTEIRA').length,
-      // Disponível é um pool compartilhado (rep 316): conta SEMPRE o total global,
+      // Disponível é um pool compartilhado (rep 356): conta SEMPRE o total global,
       // independente do filtro de vendedor — todos os vendedores veem o mesmo número.
       disponivel: todos.filter((c) => c.status === 'DISPONIVEL').length,
       alto_faturamento: escopo.filter((c) => c.alto_faturamento).length,
@@ -950,7 +951,7 @@ export class CarteirizacaoService {
   }
 
   /**
-   * Lista "para carteirizar": clientes DISPONÍVEIS (na carteira do pool 203) que já tiveram
+   * Lista "para carteirizar": clientes DISPONÍVEIS (na carteira do pool 356) que já tiveram
    * venda de OUTRO vendedor APÓS entrarem no pool (corte = atribuido_em). Sugere o vendedor
    * da venda mais recente, para apoiar a manutenção da carteira no ERP.
    */

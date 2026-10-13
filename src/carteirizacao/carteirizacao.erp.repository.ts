@@ -74,8 +74,8 @@ const PRODUTO_FORA_DA_ANALISE = 47777;
 /** Teto de itens num filtro `em` da API. */
 const LOTE_EM = 500;
 
-/** Vendedor "pool" (Lucas Barrada): fora das sugestões de recarterização. */
-const REP_DISPONIVEL = 316;
+/** Vendedor "pool" (CARTEIRA DO ATACADO - DISPONÍVEL): fora das sugestões de recarterização. */
+const REP_DISPONIVEL = 356;
 
 interface LinhaAgregada {
   CLI_CODIGO: number;

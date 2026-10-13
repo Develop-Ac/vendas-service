@@ -73,7 +73,7 @@ describe('SupervisaoService', () => {
       cli({ cli_codigo: 1, dias_sem_compra: 30, dias_sem_orcamento: 20 }), // curva A fora da régua
       cli({ cli_codigo: 2, dias_sem_compra: 3 }), // dentro
       cli({ cli_codigo: 3, dias_sem_compra: 40, dias_sem_orcamento: 40 }), // mensagem há 2d: dentro
-      cli({ cli_codigo: 4, rep_codigo: 316, rep_nome: 'POOL', status: 'DISPONIVEL' }),
+      cli({ cli_codigo: 4, rep_codigo: 356, rep_nome: 'POOL', status: 'DISPONIVEL' }),
     ];
     const prazo = diasAtras(1);
     tarefas = [

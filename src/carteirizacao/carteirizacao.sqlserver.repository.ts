@@ -77,8 +77,8 @@ export interface VendaAposCarteiraRow {
   ult_venda: Date | null;
 }
 
-// Vendedor "pool" (Lucas Barrada, rep_codigo 316): excluído das sugestões de recarterização.
-const REP_DISPONIVEL = 316;
+// Vendedor "pool" (CARTEIRA DO ATACADO - DISPONÍVEL, rep_codigo 356): excluído das sugestões de recarterização.
+const REP_DISPONIVEL = 356;
 
 /**
  * Universo da carteirização = clientes ATACADO (tabela de preço 2 = atacado esp, 5 = atacado).
@@ -198,7 +198,7 @@ export class CarteirizacaoSqlServerRepository {
 
   /**
    * Vendas (líquidas) feitas a um conjunto de clientes APÓS uma data de corte específica
-   * de cada cliente, agregadas por vendedor — excluindo o próprio pool (203). Usado para
+   * de cada cliente, agregadas por vendedor — excluindo o próprio pool (356). Usado para
    * sugerir a recarterização dos clientes "disponíveis": quem voltou a vender para eles
    * depois que entraram no pool. Só considera vendas posteriores ao corte (entrada no pool),
    * para não contar vendas anteriores à saída da carteira antiga.

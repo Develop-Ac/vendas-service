@@ -130,9 +130,9 @@ describe('TrocaVendedorService', () => {
     expect(tarefasCriadas[0].tipo).toBe('RESGATE');
   });
 
-  it('pool 316 recebe o cliente, mas não ganha tarefa', async () => {
-    await svc.trocar({ cli_codigos: [1], rep_codigo: 316, motivo: 'Inativo', usuario_id: 'u1' });
-    expect(overlay.get(1).rep_codigo).toBe(316);
+  it('pool 356 recebe o cliente, mas não ganha tarefa', async () => {
+    await svc.trocar({ cli_codigos: [1], rep_codigo: 356, motivo: 'Inativo', usuario_id: 'u1' });
+    expect(overlay.get(1).rep_codigo).toBe(356);
     expect(tarefasCriadas).toEqual([]);
   });
 
