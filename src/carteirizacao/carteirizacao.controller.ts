@@ -66,7 +66,7 @@ export class CarteirizacaoController {
     return this.service.listarVendedores();
   }
 
-  // Clientes disponíveis (pool 316) que voltaram a comprar de um vendedor ATIVO no
+  // Clientes disponíveis (pool 356) que voltaram a comprar de um vendedor ATIVO no
   // cadastro de representantes depois de entrarem no pool, com o vendedor sugerido.
   @Get('para-carteirizar')
   paraCarteirizar() {
