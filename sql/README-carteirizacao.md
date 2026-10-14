@@ -74,7 +74,8 @@ A atribuição/movimentação **manual foi desabilitada**. Restam consulta, hist
 - `GET/PUT /carteirizacao/vendedores/:rep/config` · `POST /carteirizacao/redistribuir`
 
 ## Endpoints (Fase 3 — inteligência / metas)
-- Score do cliente (0-100, RFM+margem) e curva ABC vêm embutidos em `GET /carteirizacao/clientes` (campos `score`, `score_faixa`, `curva_abc`, `margem_pct`).
+- Score do cliente (0-100, RFM+margem) e curva financeira vêm embutidos em `GET /carteirizacao/clientes` (campos `score`, `score_faixa`, `curva_abc`, `curva_pontos`, `curva_motivo`, `financeiro`, `margem_pct`).
+  `curva_abc` é a curva FINANCEIRA (pontualidade dos boletos, atraso médio, pior atraso, uso do limite, tendência; trava em C para inadimplente, conceito 8 ou só à vista). Regra completa em `src/carteirizacao/curva-financeira.ts`. Ela comanda a régua da fila, o resgate de 48h e a supervisão.
 - `GET /carteirizacao/metas?ano&mes` — metas x realizado por vendedor (todos os vendedores ativos das comissões; meta = override Postgres > `f_metas_vendedores` do DW).
 - `PUT /carteirizacao/metas/:rep` — define/override meta `{ ano, mes, valor_meta, observacao? }` (gerencial).
 
