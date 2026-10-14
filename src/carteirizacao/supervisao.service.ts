@@ -216,7 +216,7 @@ export class SupervisaoService {
     const [tarefas, resgatesSla, orcs] = await Promise.all([
       this.repo.tarefasDaJanela(desde, fimEfetivo),
       this.repo.resgatesComSlaNaJanela(desde, fimEfetivo),
-      this.erp.orcamentosComFechamento(emissaoDesde, emissaoAte, CARENCIA_DIAS).catch((e) => {
+      this.carteirizacao.orcamentosComFechamento(emissaoDesde, emissaoAte, CARENCIA_DIAS).catch((e) => {
         this.logger.warn(`Orçamentos indisponíveis para o esforço: ${(e as Error).message}`);
         return null;
       }),
@@ -280,7 +280,8 @@ export class SupervisaoService {
       // 3) Motivo em 3 dias úteis.
       const sd = semDesfecho.filter((o) => o.rep_codigo === rep);
       const apontados = sd.filter((o) => {
-        const quando = motivos.get(o.orcamento);
+        // Motivo pela pesquisa da fila ou PERDIDO dado na tela de orçamento (intranet).
+        const quando = motivos.get(o.orcamento) ?? o.motivo_em;
         return !!quando && quando <= prazoMotivo(o);
       }).length;
 
@@ -370,8 +371,8 @@ export class SupervisaoService {
     const [fatAtual, fatAnt, orcAtual, orcAnt, filaAtual, filaAnt, slaAtual, slaAnt, fechados] = await Promise.all([
       this.erp.faturamentoPorClientePeriodo(periodo.inicio, fimEf(periodo)).catch(() => null),
       this.erp.faturamentoPorClientePeriodo(anterior.inicio, anterior.fim).catch(() => null),
-      this.erp.orcamentosComFechamento(menosDias(periodo.inicio, CARENCIA_DIAS), fimEf(periodo), CARENCIA_DIAS).catch(() => null),
-      this.erp.orcamentosComFechamento(menosDias(anterior.inicio, CARENCIA_DIAS), anterior.fim, CARENCIA_DIAS).catch(() => null),
+      this.carteirizacao.orcamentosComFechamento(menosDias(periodo.inicio, CARENCIA_DIAS), fimEf(periodo), CARENCIA_DIAS).catch(() => null),
+      this.carteirizacao.orcamentosComFechamento(menosDias(anterior.inicio, CARENCIA_DIAS), anterior.fim, CARENCIA_DIAS).catch(() => null),
       this.repo.tarefasDaJanela(inicioDia(periodo.inicio), fimJanela(periodo)),
       this.repo.tarefasDaJanela(inicioDia(anterior.inicio), fimDia(anterior.fim)),
       this.repo.resgatesComSlaNaJanela(inicioDia(periodo.inicio), fimJanela(periodo)),
@@ -531,12 +532,15 @@ export class SupervisaoService {
       ),
     );
 
-    // 7 — motivos apontados: sem desfecho que entraram na lista no mês.
+    // 7 — motivos apontados: sem desfecho que entraram na lista no mês — a
+    // mesma população da lista, então só de vendedores ativos do atacado.
     const inicioApont = this.inicioApontamento;
+    const repsAtivos = await this.carteirizacao.vendedoresAtivosAtacado();
     const semDesfechoDoMes = (orcs: typeof orcAtual, p: { inicio: string; fim: string }) => {
       if (orcs == null) return null;
       return orcs.filter((o) => {
         if (o.fechou) return false;
+        if (o.rep_codigo == null || !repsAtivos.has(o.rep_codigo)) return false;
         const e = diaEmissao(o);
         if (inicioApont && e < inicioApont) return false;
         const entrada = somarDias(e, CARENCIA_DIAS);
@@ -545,7 +549,10 @@ export class SupervisaoService {
     };
     const sdAtual = semDesfechoDoMes(orcAtual, periodo);
     const sdAnt = semDesfechoDoMes(orcAnt, anterior);
-    const motivos = await this.repo.desfechosDosOrcamentos([...(sdAtual ?? []), ...(sdAnt ?? [])].map((o) => o.orcamento));
+    const registrados = await this.repo.desfechosDosOrcamentos([...(sdAtual ?? []), ...(sdAnt ?? [])].map((o) => o.orcamento));
+    // PERDIDO dado na tela de orçamento da intranet também é motivo apontado.
+    const motivos = new Map(registrados);
+    for (const o of [...(sdAtual ?? []), ...(sdAnt ?? [])]) if (o.motivo_em && !motivos.has(o.orcamento)) motivos.set(o.orcamento, o.motivo_em);
     const pctMotivo = (lista: NonNullable<typeof sdAtual> | null) =>
       lista == null ? null : pct(lista.filter((o) => motivos.has(o.orcamento)).length, lista.length);
     kpis.push(

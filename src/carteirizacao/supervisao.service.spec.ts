@@ -5,6 +5,7 @@ import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository
 import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
 import { FilaService } from './fila.service';
 import { ResgateService } from './resgate.service';
+import { hojeYmd } from './supervisao.indicadores';
 
 const DIA_MS = 86_400_000;
 const diasAtras = (n: number) => new Date(Date.now() - n * DIA_MS);
@@ -56,9 +57,13 @@ describe('SupervisaoService', () => {
   const carteirizacao = {
     snapshotCarteira: jest.fn(async () => clientes),
     listarVendedores: jest.fn(async () => [{ rep_codigo: 10, rep_nome: 'ANA', clientes_carteira: 3 }]),
+    orcamentosComFechamento: jest.fn(async () => {
+      if (orcs == null) throw new Error('ERP fora');
+      return orcs;
+    }),
+    vendedoresAtivosAtacado: jest.fn(async () => new Set([10])),
   };
   const erp = {
-    orcamentosComFechamento: jest.fn(async () => orcs),
     faturamentoPorClientePeriodo: jest.fn(async () => new Map<number, number>([[1, 1000], [2, 0]])),
   };
   const fila = { reconciliar: jest.fn(async () => undefined) };
@@ -102,6 +107,21 @@ describe('SupervisaoService', () => {
     expect(ana.criterios.ESF_RESGATE_A_48H_PCT).toMatchObject({ valor: 100, den: 1, semaforo: 'verde' });
     expect(ana.criterios.ESF_MOTIVO_3DU_PCT.valor).toBeNull();
     expect(ana.semaforo).toBe('vermelho');
+  });
+
+  it('PERDIDO dado na tela de orçamento da intranet conta como motivo apontado', async () => {
+    // Emissão há 13 dias: entrou no sem desfecho há 6 e o prazo do motivo (3
+    // dias úteis) já venceu dentro da janela das últimas 2 semanas.
+    const emissao = diasAtras(13);
+    const base = { cli_codigo: 1, cli_nome: 'CLI 1', rep_codigo: 10, total: 100, dias_desde_emissao: 13, fechou: false, emissao };
+    orcs = [
+      { ...base, orcamento: -7, origem: 'INTRANET', numero_intranet: 7, motivo_em: diasAtras(12) },
+      { ...base, orcamento: 900, origem: 'CELTA', numero_intranet: null, motivo_em: null },
+    ];
+    const r = await svc.esforco({ rep_codigo: 10, desde: hojeYmd(diasAtras(14)), ate: hojeYmd() });
+    const c = r.vendedores[0].criterios.ESF_MOTIVO_3DU_PCT;
+    expect(c.den).toBe(2);
+    expect(c.num).toBe(1);
   });
 
   it('sem leitura de orçamentos o motivo fica sem cor, o resto segue', async () => {

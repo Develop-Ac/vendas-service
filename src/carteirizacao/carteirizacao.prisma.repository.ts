@@ -473,9 +473,11 @@ export class CarteirizacaoPrismaRepository {
           where: { status: { not: 'CANCELADO' } },
           _max: { created_at: true },
         }),
+        // Já enviado ao Celta (celta_orcamento) volta pela leitura do ERP como
+        // orçamento de lá: contar aqui também dobraria o esforço do trimestre.
         this.prisma.ven_orcamento.groupBy({
           by: ['cli_codigo'],
-          where: { status: { not: 'CANCELADO' }, created_at: { gte: ha90 } },
+          where: { status: { not: 'CANCELADO' }, celta_orcamento: null, created_at: { gte: ha90 } },
           _count: { _all: true },
           _sum: { total: true },
         }),
@@ -511,6 +513,46 @@ export class CarteirizacaoPrismaRepository {
     } catch {
       return new Map();
     }
+  }
+
+  /**
+   * Orçamentos da intranet por vendedor desde um corte — o esforço do painel
+   * de resgate. Mesmo critério do resumo por cliente: salvo e não cancelado,
+   * e só os que NÃO foram ao Celta (esses o ERP já conta).
+   */
+  async orcamentosIntranetPorRepDesde(desde: Date): Promise<Array<{ rep_codigo: number | null; qtd: number; valor: number }>> {
+    try {
+      const rows = await this.prisma.ven_orcamento.groupBy({
+        by: ['rep_codigo'],
+        where: { status: { not: 'CANCELADO' }, celta_orcamento: null, created_at: { gte: desde } },
+        _count: { _all: true },
+        _sum: { total: true },
+      });
+      return rows.map((r) => ({ rep_codigo: r.rep_codigo, qtd: r._count._all, valor: Number(r._sum.total ?? 0) }));
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Orçamentos da intranet criados em [desde, ate] que ainda não foram ao
+   * Celta — entram na lista "sem desfecho" e na conversão ao lado dos do ERP.
+   * Os enviados ao Celta já chegam pela leitura do ERP, com o número de lá.
+   */
+  async orcamentosIntranetEmitidos(desde: Date, ate: Date) {
+    return this.prisma.ven_orcamento.findMany({
+      where: { status: { not: 'CANCELADO' }, celta_orcamento: null, created_at: { gte: desde, lte: ate } },
+      select: {
+        numero: true,
+        created_at: true,
+        cli_codigo: true,
+        cli_nome: true,
+        rep_codigo: true,
+        total: true,
+        status: true,
+        desfecho_em: true,
+      },
+    });
   }
 
   // ============================================ desfecho do orçamento (fase 1)

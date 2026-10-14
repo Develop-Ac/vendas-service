@@ -97,7 +97,16 @@ export interface OrcamentoResumoCliente {
 
 /** Orçamento emitido que NÃO virou venda do cliente dentro da carência. */
 export interface OrcamentoSemDesfecho {
+  /**
+   * Chave do motivo (ven_orcamento_desfecho.orcamento): o nº do Celta, ou o nº
+   * da intranet NEGATIVO — as duas numerações se sobrepõem, o sinal separa.
+   */
   orcamento: number;
+  origem: 'CELTA' | 'INTRANET';
+  /** Nº de tela do orçamento da intranet (positivo); nulo nos do Celta. */
+  numero_intranet: number | null;
+  /** Desfecho já dado na própria tela de orçamento (PERDIDO, com motivo). */
+  motivo_em: Date | null;
   emissao: Date;
   cli_codigo: number;
   /** Nome gravado NO orçamento (cópia da época). */
@@ -106,6 +115,21 @@ export interface OrcamentoSemDesfecho {
   total: number;
   dias_desde_emissao: number;
 }
+
+/** Orçamento da intranet ainda não enviado ao Celta (ven_orcamento). */
+export interface OrcamentoIntranet {
+  numero: number;
+  created_at: Date;
+  cli_codigo: number;
+  cli_nome: string | null;
+  rep_codigo: number | null;
+  total: unknown;
+  status: string;
+  desfecho_em: Date | null;
+}
+
+/** Dia (aaaa-mm-dd) em America/Cuiaba, UTC−4 — o mesmo dia de negócio do ERP. */
+const diaCuiaba = (d: Date) => new Date(d.getTime() - 4 * 3_600_000).toISOString().slice(0, 10);
 
 /** Boleto do contas a receber, como a API devolve (colunas em maiúsculas). */
 export interface BoletoRow {
@@ -564,6 +588,7 @@ export class CarteirizacaoErpRepository {
   async orcamentosSemDesfecho(
     carenciaDias = 7,
     janelaDias = 60,
+    intranet: OrcamentoIntranet[] = [],
   ): Promise<OrcamentoSemDesfecho[]> {
     const hoje = new Date();
     const ymd = (d: Date) => d.toISOString().slice(0, 10);
@@ -572,7 +597,7 @@ export class CarteirizacaoErpRepository {
     const ateEmissao = new Date(hoje);
     ateEmissao.setDate(ateEmissao.getDate() - carenciaDias);
     if (ateEmissao < desde) return [];
-    const todos = await this.orcamentosComFechamento(ymd(desde), ymd(ateEmissao), carenciaDias);
+    const todos = await this.orcamentosComFechamento(ymd(desde), ymd(ateEmissao), carenciaDias, intranet);
     // Mais novo primeiro: o vendedor ainda lembra do orçamento recente — é onde
     // o motivo marcado tem qualidade; o rabo antigo fica para o fim da lista.
     return todos
@@ -586,11 +611,17 @@ export class CarteirizacaoErpRepository {
    * = houve venda do mesmo cliente em até `carenciaDias` da emissão. É a base
    * da fila "sem desfecho" (os que não fecharam) e da conversão em 7 dias da
    * tela do supervisor (fechados / total) — a mesma inferência nos dois.
+   *
+   * `intranet`: orçamentos da intranet que não foram ao Celta, já recortados
+   * ao atacado pelo chamador. Passam pela mesma inferência de venda; e o
+   * desfecho dado na própria tela de orçamento vale (FECHADO = fechou,
+   * PERDIDO = motivo já apontado).
    */
   async orcamentosComFechamento(
     desdeYmd: string,
     ateEmissaoYmd: string,
     carenciaDias = 7,
+    intranet: OrcamentoIntranet[] = [],
   ): Promise<Array<OrcamentoSemDesfecho & { fechou: boolean; emissao_ymd: string }>> {
     if (ateEmissaoYmd < desdeYmd) return [];
     const hoje = new Date();
@@ -630,26 +661,52 @@ export class CarteirizacaoErpRepository {
       (diasComVenda.get(cli) ?? diasComVenda.set(cli, []).get(cli)!).push(dia);
     }
 
-    return orcs.map((o) => {
-      const emissao = String(o.EMISSAO).slice(0, 10);
+    const vendeuNaCarencia = (cli: number, emissao: string) => {
       const limite = new Date(emissao);
       limite.setDate(limite.getDate() + carenciaDias);
       const limiteYmd = ymd(limite);
-      const fechou = (diasComVenda.get(Number(o.CLI_CODIGO)) ?? []).some(
-        (dia) => dia >= emissao && dia <= limiteYmd,
-      );
+      return (diasComVenda.get(cli) ?? []).some((dia) => dia >= emissao && dia <= limiteYmd);
+    };
+    const diasDesde = (emissao: string) =>
+      Math.floor((hoje.getTime() - new Date(emissao).getTime()) / 86_400_000);
+
+    const doCelta = orcs.map((o) => {
+      const emissao = String(o.EMISSAO).slice(0, 10);
       return {
         orcamento: Number(o.ORCAMENTO),
+        origem: 'CELTA' as const,
+        numero_intranet: null,
+        motivo_em: null,
         emissao: new Date(o.EMISSAO),
         cli_codigo: Number(o.CLI_CODIGO),
         cli_nome: o.CLI_NOME ?? null,
         rep_codigo: o.REP_CODIGO != null ? Number(o.REP_CODIGO) : null,
         total: Number(o.TOTAL ?? 0),
-        dias_desde_emissao: Math.floor((hoje.getTime() - new Date(emissao).getTime()) / 86_400_000),
-        fechou,
+        dias_desde_emissao: diasDesde(emissao),
+        fechou: vendeuNaCarencia(Number(o.CLI_CODIGO), emissao),
         emissao_ymd: emissao,
       };
     });
+
+    const daIntranet = intranet
+      .map((o) => ({ o, emissao: diaCuiaba(new Date(o.created_at)) }))
+      .filter(({ emissao }) => emissao >= desdeYmd && emissao <= ateEmissaoYmd)
+      .map(({ o, emissao }) => ({
+        orcamento: -o.numero,
+        origem: 'INTRANET' as const,
+        numero_intranet: o.numero,
+        motivo_em: o.status === 'PERDIDO' ? o.desfecho_em ?? null : null,
+        emissao: new Date(o.created_at),
+        cli_codigo: o.cli_codigo,
+        cli_nome: o.cli_nome ?? null,
+        rep_codigo: o.rep_codigo ?? null,
+        total: Number(o.total ?? 0),
+        dias_desde_emissao: diasDesde(emissao),
+        fechou: o.status === 'FECHADO' || vendeuNaCarencia(o.cli_codigo, emissao),
+        emissao_ymd: emissao,
+      }));
+
+    return [...doCelta, ...daIntranet];
   }
 
   /**

@@ -12,6 +12,7 @@ import {
   OrcamentoResumoCliente,
 } from './carteirizacao.erp.repository';
 import { PerfilFinanceiro, TituloBoleto, perfilFinanceiro } from './curva-financeira';
+import { fimDia, hojeYmd, inicioDia } from './supervisao.indicadores';
 import {
   AtribuirDto,
   AtribuirLoteDto,
@@ -136,6 +137,7 @@ export class CarteirizacaoService {
   private baseCache: { at: number; rows: ClienteBaseRow[] } | null = null;
   private orcCache: { at: number; rows: OrcamentoResumoCliente[] } | null = null;
   private boletosCache: { at: number; pagos12m: BoletoRow[]; abertos: BoletoRow[] } | null = null;
+  private ativosCache: { at: number; reps: Set<number> } | null = null;
   private vendedorNomeCache = new Map<number, string>();
 
   constructor(
@@ -282,6 +284,10 @@ export class CarteirizacaoService {
     ]);
 
     const carteiraMap = new Map(carteira.map((c) => [c.cli_codigo, c]));
+    // ERP fora: o orçamento feito na intranet continua valendo como sinal de
+    // contato (fila e resgate fecham por ele). Só o quadrante fica nulo — sem o
+    // ERP a contagem dos 90 dias estaria pela metade.
+    const intranetSemErp = orcamentos == null ? await this.overlay.orcamentosIntranetPorCliente() : null;
 
     // Total de faturamento dos últimos 3 meses por vendedor (apenas clientes em carteira),
     // base para o % de participação de cada cliente na carteira do seu vendedor.
@@ -375,6 +381,7 @@ export class CarteirizacaoService {
       // compra ~ faturamento_3m > 0 (mesma janela das métricas da tela);
       // esforço ~ orçamento no trimestre. Sem dados de orçamento, quadrante nulo.
       const orc = orcamentos?.get(b.cli_codigo) ?? null;
+      const ultOrcamento = orc?.ult_orcamento ?? intranetSemErp?.get(b.cli_codigo)?.ult_orcamento ?? null;
       const comprou90 = fat3m > 0;
       const orcou90 = (orc?.orcamentos_90d ?? 0) > 0;
       const quadrante: QuadranteCliente | null =
@@ -440,8 +447,8 @@ export class CarteirizacaoService {
         risco_inativacao: riscoInativacao,
         revisao: !!ov && ov.revisao === 1,
         revisao_motivo: ov?.revisao_motivo ?? null,
-        ult_orcamento: orc?.ult_orcamento ?? null,
-        dias_sem_orcamento: this.diasDesde(orc?.ult_orcamento ?? null),
+        ult_orcamento: ultOrcamento,
+        dias_sem_orcamento: this.diasDesde(ultOrcamento),
         orcamentos_90d: orc?.orcamentos_90d ?? 0,
         valor_orcado_90d: orc?.valor_orcado_90d ?? 0,
         quadrante,
@@ -547,7 +554,8 @@ export class CarteirizacaoService {
   /**
    * Fila "orçamentos sem desfecho": emitidos há mais de `carenciaDias` sem
    * NENHUMA venda do cliente na carência. É a população da pesquisa de motivo
-   * de perda — ~1.200/mês na medição. Sempre via ERP (o BI não tem orçamentos).
+   * de perda — ~1.200/mês na medição. Orçamentos do Celta (ERP) e os da
+   * intranet que não foram ao Celta; só de vendedores ativos do atacado.
    */
   async orcamentosSemDesfecho(params: {
     rep_codigo?: number;
@@ -556,7 +564,13 @@ export class CarteirizacaoService {
   }) {
     const carencia = Math.max(1, Math.min(30, params.carenciaDias ?? 7));
     const janela = Math.max(carencia + 1, Math.min(180, params.janelaDias ?? 60));
-    let itens = await this.erp.orcamentosSemDesfecho(carencia, janela);
+    const [intranet, ativos] = await Promise.all([
+      this.orcamentosIntranetAtacado(hojeYmd(new Date(Date.now() - janela * 86_400_000)), hojeYmd()),
+      this.vendedoresAtivosAtacado(),
+    ]);
+    let itens = await this.erp.orcamentosSemDesfecho(carencia, janela, intranet);
+    // Vendedor que saiu (ou nunca foi do atacado) não responde motivo: fica fora.
+    itens = itens.filter((o) => o.rep_codigo != null && ativos.has(o.rep_codigo));
     if (params.rep_codigo != null) {
       itens = itens.filter((o) => o.rep_codigo === Number(params.rep_codigo));
     }
@@ -573,8 +587,9 @@ export class CarteirizacaoService {
 
     // Orçamento com motivo já registrado sai da fila — a pesquisa não cobra duas
     // vezes. E o placar de motivos (30d) volta junto: é a resposta acumulando.
+    // Orçamento da intranet já dado como PERDIDO na própria tela tem motivo (motivo_em).
     const registrados = await this.overlay.orcamentosComDesfecho();
-    itens = itens.filter((o) => !registrados.has(o.orcamento));
+    itens = itens.filter((o) => !registrados.has(o.orcamento) && !o.motivo_em);
     const corte30d = new Date(Date.now() - 30 * 86_400_000);
     const motivos30d = await this.overlay.resumoMotivosDesde(corte30d, params.rep_codigo);
 
@@ -603,6 +618,56 @@ export class CarteirizacaoService {
         fone: cadastro.get(o.cli_codigo)?.fone ?? null,
       })),
     };
+  }
+
+  /**
+   * Orçamentos da intranet (não enviados ao Celta) criados entre dois dias,
+   * só de clientes do atacado — o mesmo universo do recorte do ERP.
+   */
+  private async orcamentosIntranetAtacado(desdeYmd: string, ateYmd: string) {
+    const [rows, base] = await Promise.all([
+      this.overlay.orcamentosIntranetEmitidos(inicioDia(desdeYmd), fimDia(ateYmd)),
+      this.getBase(),
+    ]);
+    const atacado = new Set(base.map((b) => b.cli_codigo));
+    return rows.filter((o) => atacado.has(o.cli_codigo));
+  }
+
+  /**
+   * Orçamentos do atacado (Celta + intranet) com a inferência de fechamento —
+   * a base da lista sem desfecho, da conversão em 7 dias e dos motivos da
+   * tela do supervisor. Um lugar só, para as telas não divergirem.
+   */
+  async orcamentosComFechamento(desdeYmd: string, ateEmissaoYmd: string, carenciaDias: number) {
+    const intranet = await this.orcamentosIntranetAtacado(desdeYmd, ateEmissaoYmd);
+    return this.erp.orcamentosComFechamento(desdeYmd, ateEmissaoYmd, carenciaDias, intranet);
+  }
+
+  /**
+   * Vendedores ATIVOS do atacado: a equipe do canal atacado hoje (BI) menos
+   * quem está inativo no cadastro de comissão, e sem o pool de disponíveis.
+   * BI fora: cai para quem tem carteira — sempre disponível e quase o mesmo
+   * conjunto (quem saiu tem a carteira movida para o pool).
+   */
+  async vendedoresAtivosAtacado(): Promise<Set<number>> {
+    const now = Date.now();
+    if (this.ativosCache && now - this.ativosCache.at < 5 * 60_000) return this.ativosCache.reps;
+    let reps: Set<number>;
+    try {
+      const [equipe, papeis] = await Promise.all([this.sql.equipeAtacadoReps(hojeYmd()), this.sql.papeisPorRep()]);
+      const inativos = new Set(papeis.filter((p) => !!p.inativo).map((p) => Number(p.rep_codigo)));
+      reps = new Set(equipe.filter((r) => !inativos.has(r) && r !== REP_DISPONIVEL));
+    } catch (e) {
+      this.logger.warn(`Equipe do atacado indisponível (BI): vale quem tem carteira. ${(e as Error).message}`);
+      const carteira = await this.overlay.listarCarteira();
+      reps = new Set(
+        carteira
+          .filter((c) => c.trash === 0 && c.rep_codigo != null && c.rep_codigo !== REP_DISPONIVEL)
+          .map((c) => c.rep_codigo as number),
+      );
+    }
+    this.ativosCache = { at: now, reps };
+    return reps;
   }
 
   // ------------------------------------------------------------- vendedores
