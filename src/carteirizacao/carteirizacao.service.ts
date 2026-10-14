@@ -7,9 +7,11 @@ import {
 } from './carteirizacao.sqlserver.repository';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import {
+  BoletoRow,
   CarteirizacaoErpRepository,
   OrcamentoResumoCliente,
 } from './carteirizacao.erp.repository';
+import { PerfilFinanceiro, TituloBoleto, perfilFinanceiro } from './curva-financeira';
 import {
   AtribuirDto,
   AtribuirLoteDto,
@@ -67,7 +69,17 @@ export interface ClienteCarteira {
   novo: boolean;
   score: number; // 0-100
   score_faixa: 'A' | 'B' | 'C' | 'D';
+  /**
+   * Curva FINANCEIRA (perfil de pagamento dos boletos — ver curva-financeira.ts).
+   * Comanda a régua da fila, o resgate de 48h e a supervisão. O nome do campo
+   * ficou por compatibilidade com a tela, a fila e os snapshots já gravados.
+   */
   curva_abc: 'A' | 'B' | 'C';
+  /** FINANCEIRO normalmente; FATURAMENTO (Pareto antigo) só se os boletos não carregaram. */
+  curva_criterio: 'FINANCEIRO' | 'FATURAMENTO';
+  curva_pontos: number | null; // 0-100
+  curva_motivo: string | null; // trava aplicada (inadimplente, só à vista, amostra pequena)
+  financeiro: Omit<PerfilFinanceiro, 'curva' | 'pontos' | 'motivo'> | null;
   // risco/revisão
   risco_inativacao: boolean; // ativo, mas 45–60 dias sem compra
   revisao: boolean; // saiu do atacado: sem vendedor, aguardando confirmação de exclusão
@@ -123,6 +135,7 @@ export class CarteirizacaoService {
 
   private baseCache: { at: number; rows: ClienteBaseRow[] } | null = null;
   private orcCache: { at: number; rows: OrcamentoResumoCliente[] } | null = null;
+  private boletosCache: { at: number; pagos12m: BoletoRow[]; abertos: BoletoRow[] } | null = null;
   private vendedorNomeCache = new Map<number, string>();
 
   constructor(
@@ -200,6 +213,48 @@ export class CarteirizacaoService {
     }
   }
 
+  /**
+   * Boletos do atacado para a curva financeira. Vêm SEMPRE da erp-firebird-api,
+   * como os orçamentos. Falha aqui NÃO derruba a tela: a curva volta para o
+   * Pareto de faturamento (curva_criterio = FATURAMENTO) e o log diz por quê.
+   */
+  private async getBoletos(): Promise<{
+    pagos12m: Map<number, TituloBoleto[]>;
+    abertos: Map<number, TituloBoleto[]>;
+  } | null> {
+    const now = Date.now();
+    try {
+      if (!this.boletosCache || now - this.boletosCache.at >= BASE_CACHE_TTL_MS) {
+        const r = await this.erp.boletosAtacado();
+        this.boletosCache = { at: now, ...r };
+      }
+      const porCliente = (rows: BoletoRow[]) => {
+        const m = new Map<number, TituloBoleto[]>();
+        for (const r of rows) {
+          const cli = Number(r.CLI_CODIGO);
+          const lista = m.get(cli) ?? [];
+          lista.push({
+            emissao: r.EMISSAO,
+            vencimento: r.VENCIMENTO,
+            data_pagto: r.DATA_PAGTO,
+            valor: this.num(r.VALOR_LIQUIDO),
+          });
+          m.set(cli, lista);
+        }
+        return m;
+      };
+      return {
+        pagos12m: porCliente(this.boletosCache.pagos12m),
+        abertos: porCliente(this.boletosCache.abertos),
+      };
+    } catch (err) {
+      this.logger.warn(
+        `Boletos indisponíveis (${(err as Error).message}); a curva cai para o Pareto de faturamento.`,
+      );
+      return null;
+    }
+  }
+
   private num(v: unknown): number {
     const n = Number(v ?? 0);
     return Number.isFinite(n) ? n : 0;
@@ -219,10 +274,11 @@ export class CarteirizacaoService {
 
   /** Monta a lista mesclada (base atacado x overlay) com métricas e classificação. */
   private async montar(janelaDias: number): Promise<ClienteCarteira[]> {
-    const [base, carteira, orcamentos] = await Promise.all([
+    const [base, carteira, orcamentos, boletos] = await Promise.all([
       this.getBase(),
       this.overlay.listarCarteira(),
       this.getOrcamentos(),
+      this.getBoletos(),
     ]);
 
     const carteiraMap = new Map(carteira.map((c) => [c.cli_codigo, c]));
@@ -250,7 +306,8 @@ export class CarteirizacaoService {
       return lo / arr.length;
     };
 
-    // curva ABC: acumulado do faturamento 12m (A<=80%, B<=95%, C resto)
+    // Pareto do faturamento 12m (A<=80%, B<=95%, C resto) — SÓ o fallback da
+    // curva quando os boletos não carregam. A curva de verdade é a financeira.
     const totalFat12 = base.reduce((s, b) => s + this.num(b.faturamento_12m), 0);
     const ordenadosAbc = [...base].sort((a, b) => this.num(b.faturamento_12m) - this.num(a.faturamento_12m));
     const abcMap = new Map<number, 'A' | 'B' | 'C'>();
@@ -303,6 +360,16 @@ export class CarteirizacaoService {
         (sValor * 0.35 + sRecencia * 0.25 + sFreq * 0.15 + sTendencia * 0.1 + sMargem * 0.15) * 100,
       );
       const score_faixa: 'A' | 'B' | 'C' | 'D' = score >= 75 ? 'A' : score >= 50 ? 'B' : score >= 25 ? 'C' : 'D';
+
+      // ---- Curva financeira: o cliente paga? (curva-financeira.ts) ----
+      const perfil = boletos
+        ? perfilFinanceiro(
+            boletos.pagos12m.get(b.cli_codigo) ?? [],
+            boletos.abertos.get(b.cli_codigo) ?? [],
+            this.num(b.limite_credito),
+            b.con_codigo != null ? Number(b.con_codigo) : null,
+          )
+        : null;
 
       // ---- Quadrante esforço × resultado (90 dias): compra × orçamento ----
       // compra ~ faturamento_3m > 0 (mesma janela das métricas da tela);
@@ -363,7 +430,13 @@ export class CarteirizacaoService {
         novo: fatTotal > 0 && Math.abs(fatTotal - fat3m) < 0.01,
         score,
         score_faixa,
-        curva_abc: abcMap.get(b.cli_codigo) ?? 'C',
+        curva_abc: perfil ? perfil.curva : abcMap.get(b.cli_codigo) ?? 'C',
+        curva_criterio: perfil ? 'FINANCEIRO' : 'FATURAMENTO',
+        curva_pontos: perfil?.pontos ?? null,
+        curva_motivo: perfil?.motivo ?? null,
+        financeiro: perfil
+          ? (({ curva: _c, pontos: _p, motivo: _m, ...resto }) => resto)(perfil)
+          : null,
         risco_inativacao: riscoInativacao,
         revisao: !!ov && ov.revisao === 1,
         revisao_motivo: ov?.revisao_motivo ?? null,
@@ -1662,6 +1735,8 @@ export class CarteirizacaoService {
       'score',
       'score_faixa',
       'curva_abc',
+      'curva_pontos',
+      'curva_motivo',
       'margem_custo_pct',
       'data_ult_compra',
       'dias_sem_compra',

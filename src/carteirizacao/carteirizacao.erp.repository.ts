@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ErpApiService } from '../common/erp-api/erp-api.service';
+import { ErpApiService, FiltroErp } from '../common/erp-api/erp-api.service';
 import {
   ClienteBaseRow,
   VendaAposCarteiraRow,
@@ -105,6 +105,15 @@ export interface OrcamentoSemDesfecho {
   rep_codigo: number | null;
   total: number;
   dias_desde_emissao: number;
+}
+
+/** Boleto do contas a receber, como a API devolve (colunas em maiúsculas). */
+export interface BoletoRow {
+  CLI_CODIGO: number;
+  EMISSAO: string | null;
+  VENCIMENTO: string | null;
+  DATA_PAGTO: string | null;
+  VALOR_LIQUIDO: number | null;
 }
 
 interface LinhaItens {
@@ -403,6 +412,45 @@ export class CarteirizacaoErpRepository {
       `Base atacado do ERP: ${linhas.length} clientes em ${Date.now() - inicio}ms (13 consultas).`,
     );
     return linhas;
+  }
+
+  /* ------------------------------------------------------------ boletos */
+
+  /**
+   * Boletos (TT_CODIGO = 'BOL') do atacado — a base da curva financeira.
+   * Mesmo recorte do parecer de crédito do financeiro-service: é no boleto que
+   * existe crédito concedido. Duas leituras: os PAGOS nos últimos 12 meses
+   * (comportamento) e os EM ABERTO (inadimplência e uso do limite — "em
+   * aberto" exige as duas condições, como em `saldoEmAberto`).
+   *
+   * Linha a linha, não agregado: o atraso é DATA_PAGTO − VENCIMENTO por título,
+   * e a API não agrega expressão.
+   */
+  async boletosAtacado(): Promise<{ pagos12m: BoletoRow[]; abertos: BoletoRow[] }> {
+    const campos = ['CLI_CODIGO', 'EMISSAO', 'VENCIMENTO', 'DATA_PAGTO', 'VALOR_LIQUIDO'];
+    const base: FiltroErp[] = [
+      { campo: 'TT_CODIGO', op: 'igual', valor: 'BOL' },
+      { campo: 'cliente.TABELA_PRECO', op: 'em', valor: TABELAS_ATACADO },
+    ];
+    const [pagos12m, abertos] = await Promise.all([
+      this.erp.consultar<BoletoRow>('contas-receber', {
+        empresa: EMPRESA,
+        campos,
+        filtros: [...base, { campo: 'DATA_PAGTO', op: 'maior_igual', valor: this.mesesAtras(12) }],
+        limite: 50_000,
+      }),
+      this.erp.consultar<BoletoRow>('contas-receber', {
+        empresa: EMPRESA,
+        campos,
+        filtros: [
+          ...base,
+          { campo: 'STATUS', op: 'igual', valor: 0 },
+          { campo: 'DATA_PAGTO', op: 'nulo' },
+        ],
+        limite: 50_000,
+      }),
+    ]);
+    return { pagos12m, abertos };
   }
 
   /* ------------------------------------------------------------ orçamentos */
