@@ -87,6 +87,7 @@ describe('ResgateService', () => {
     escaladasPorRep: jest.fn(async () => []),
     slaResgatePorRepDesde: jest.fn(async () => []),
     desfechosPorRepDesde: jest.fn(async () => []),
+    orcamentosIntranetPorRepDesde: jest.fn(async () => []),
     resumoMotivosDesde: jest.fn(async () => []),
   } as unknown as CarteirizacaoPrismaRepository;
 

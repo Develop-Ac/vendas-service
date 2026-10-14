@@ -13,13 +13,14 @@ import { WhatsappRepository } from '../whatsapp/whatsapp.repository';
  * por sinal observado — nenhum card é arrastado:
  *
  *   A_CONTATAR -> CONTATADO (mensagem enviada, sensor WAHA)
- *              -> PROPOSTA  (orçamento novo no Celta)
+ *              -> PROPOSTA  (orçamento novo no Celta ou na intranet)
  *              -> RECUPERADO (venda) | PERDIDO (chegou aos 60d e inativou)
  *
  * O SLA de primeiro contato (48h, curva A — mesmo env da fila) fica gravado no
  * episódio; "cumpriu ou não" é o número que o painel leva à reunião semanal.
  *
- * O painel: por vendedor, na janela — orçamentos emitidos (esforço bruto, ERP),
+ * O painel: por vendedor, na janela — orçamentos emitidos (esforço bruto: Celta
+ * + intranet não enviada ao Celta),
  * mensagens (sensor), tarefas concluídas por sinal, escaladas em aberto,
  * resgates recuperados/perdidos, SLA e motivos de perda respondidos.
  */
@@ -244,10 +245,13 @@ export class ResgateService {
     const clientes = await this.carteirizacao.snapshotCarteira();
     await this.reconciliar(clientes);
 
-    const [vendedores, orcs, msgs, concluidas, escaladas, sla, fechadosJanela, desfechos, motivos] =
+    const [vendedores, orcs, orcsIntranet, msgs, concluidas, escaladas, sla, fechadosJanela, desfechos, motivos] =
       await Promise.all([
         this.carteirizacao.listarVendedores(),
         this.erp.orcamentosPorRep(desdeYmd).catch(() => []),
+        // Orçamento salvo na intranet é esforço como o do Celta; os já enviados
+        // ao Celta vêm na leitura do ERP e ficam fora daqui.
+        this.repo.orcamentosIntranetPorRepDesde(desde),
         this.wa.mensagensPorRepDesde(desde),
         this.repo.tarefasConcluidasPorRepDesde(desde),
         this.repo.escaladasPorRep(),
@@ -288,11 +292,11 @@ export class ResgateService {
       l.rep_nome = v.rep_nome;
       l.clientes_carteira = v.clientes_carteira;
     }
-    for (const o of orcs) {
+    for (const o of [...orcs, ...orcsIntranet]) {
       const l = linha(o.rep_codigo);
       if (l) {
-        l.orcamentos = o.qtd;
-        l.valor_orcado = o.valor;
+        l.orcamentos += o.qtd;
+        l.valor_orcado += o.valor;
       }
     }
     for (const m of msgs) {
