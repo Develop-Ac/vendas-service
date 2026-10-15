@@ -753,7 +753,8 @@ export class OrcamentoService {
       itens: itens.map((i) => {
         const p = porCodigo.get(i.pro_codigo);
         const custo = p && p.PRECO_CUSTO > 0 ? p.PRECO_CUSTO : null;
-        const preco_tabela = p?.PRECO2 ?? 0;
+        const preco = p ? precoOportunidade(p) : null;
+        const preco_tabela = preco?.preco ?? 0;
         const sobra = custo != null && preco_tabela > 0 ? custoParaBolsa(custo, preco_tabela, piso, PCT_VENDEDOR_PADRAO).sobra : null;
         const estoque_disponivel = p?.ESTOQUE_DISPONIVEL ?? 0;
         return {
@@ -762,6 +763,7 @@ export class OrcamentoService {
           na_empresa_3: !!p,
           custo,
           preco_tabela,
+          preco_varejo: preco?.coluna === 'PRECO_VENDA',
           estoque_disponivel,
           // o lote coberto é o que ainda está na prateleira: nunca mais do que a nota trouxe
           lote: Math.max(0, Math.min(i.quantidade, estoque_disponivel)),
@@ -784,11 +786,12 @@ export class OrcamentoService {
       const pct = Number(i.pct_vendedor);
       if (!p) { erros.push(`Produto ${i.pro_codigo} não existe na empresa 3.`); continue; }
       if (!(pct >= 0 && pct <= 1)) { erros.push(`${p.PRO_DESCRICAO}: a parte do vendedor deve ficar entre 0 e 100%.`); continue; }
-      if (!(p.PRECO_CUSTO > 0) || !(p.PRECO2 > 0)) { erros.push(`${p.PRO_DESCRICAO}: sem custo ou sem preço na tabela 2 — não há sobra a repartir.`); continue; }
+      const precoTabela = precoOportunidade(p).preco;
+      if (!(p.PRECO_CUSTO > 0) || !(precoTabela > 0)) { erros.push(`${p.PRO_DESCRICAO}: sem custo ou sem preço de venda — não há sobra a repartir.`); continue; }
       // lote = o que da nota ainda está em estoque hoje (a tela não edita isso)
       const quantidade = Math.min(Number(i.quantidade), p.ESTOQUE_DISPONIVEL);
       if (!(quantidade > 0)) { erros.push(`${p.PRO_DESCRICAO}: sem estoque hoje — não há lote a cobrir.`); continue; }
-      const c = custoParaBolsa(p.PRECO_CUSTO, p.PRECO2, piso, pct);
+      const c = custoParaBolsa(p.PRECO_CUSTO, precoTabela, piso, pct);
       linhas.push({
         pro_codigo: i.pro_codigo,
         descricao: p.PRO_DESCRICAO ?? null,
@@ -799,7 +802,7 @@ export class OrcamentoService {
         quantidade,
         custo_nota: i.custo_nota ?? null,
         custo: p.PRECO_CUSTO,
-        preco_tabela: p.PRECO2,
+        preco_tabela: precoTabela,
         piso,
         pct_vendedor: pct,
         custo_bolsa: c.custo_bolsa,
@@ -2668,4 +2671,12 @@ function nomeTabelaCliente(t: string | null | undefined): string | null {
   if (v === '5') return 'Cliente atacado';
   if (v === '1' || v === '') return v ? 'Cliente varejo' : null;
   return `Tabela ${v}`;
+}
+
+/**
+ * Preço de referência da sobra na compra de oportunidade: o do cliente de tabela 2.
+ * Produto sem preço no atacado o vendedor vende a varejo — a sobra é calculada nele.
+ */
+function precoOportunidade(p: ProdutoErp) {
+  return precoDaTabela(p as unknown as Record<string, unknown>, '2');
 }
