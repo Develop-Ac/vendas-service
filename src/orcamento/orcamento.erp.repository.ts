@@ -21,6 +21,8 @@ export const TABELAS_ATACADO = ['2', '5'];
 export const EMPRESA_FISCAL = 1;
 
 export interface NotaEntrada {
+  /** NFE é sequência por empresa: os itens são lidos na empresa da nota */
+  empresa: number;
   nfe: number;
   nota_fiscal: number;
   serie: string | null;
@@ -422,30 +424,38 @@ export class OrcamentoErpRepository {
   }
 
   /**
-   * Notas de compra (NF-e LANÇADAS na empresa 1) pelo número — com ou sem o
-   * fornecedor — ou pela chave. O mesmo número existe em mais de um fornecedor;
-   * sem o fornecedor podem voltar várias e a tela escolhe.
+   * Notas de compra LANÇADAS pelo número — com ou sem o fornecedor — ou pela
+   * chave: NF-e (modelo 55) da empresa 1 e nota avulsa da empresa 3. Na empresa 3
+   * a avulsa é a que não tem chave (OU, 1B…): a NF-e de lá repete a da empresa 1.
+   * O mesmo número existe em mais de um fornecedor; sem o fornecedor podem voltar
+   * várias e a tela escolhe.
    */
   async notasEntrada(f: { numero?: number; fornecedor?: number; chave?: string }): Promise<NotaEntrada[]> {
-    const filtros: FiltroErp[] = [
-      { campo: 'MODELO_NOTA', op: 'igual', valor: 55 },
+    const base: FiltroErp[] = [
       { campo: 'STATUS', op: 'igual', valor: 1 },
       { campo: 'DT_CANCELAMENTO', op: 'nulo' },
     ];
-    if (f.chave) filtros.push({ campo: 'CHAVE_NFE', op: 'igual', valor: f.chave });
+    if (f.chave) base.push({ campo: 'CHAVE_NFE', op: 'igual', valor: f.chave });
     else {
-      filtros.push({ campo: 'NOTA_FISCAL', op: 'igual', valor: f.numero });
-      if (f.fornecedor) filtros.push({ campo: 'FOR_CODIGO', op: 'igual', valor: f.fornecedor });
+      base.push({ campo: 'NOTA_FISCAL', op: 'igual', valor: f.numero });
+      if (f.fornecedor) base.push({ campo: 'FOR_CODIGO', op: 'igual', valor: f.fornecedor });
     }
-    const r = await this.erp.consultar<Record<string, any>>('nf-entrada', {
-      empresa: EMPRESA_FISCAL,
-      campos: ['NFE', 'NOTA_FISCAL', 'SERIE', 'CHAVE_NFE', 'FOR_CODIGO', 'DT_EMISSAO', 'DT_ENTRADA', 'TOTAL_NOTA', { campo: 'fornecedor.FOR_NOME', como: 'FOR_NOME' }],
-      filtros,
-      ordenar: [{ campo: 'DT_ENTRADA', dir: 'desc' }],
-      limite: 20,
-      semCache: true,
-    });
+    const consultar = (empresa: number, filtros: FiltroErp[]) =>
+      this.erp.consultar<Record<string, any>>('nf-entrada', {
+        empresa,
+        campos: ['NFE', 'NOTA_FISCAL', 'SERIE', 'CHAVE_NFE', 'FOR_CODIGO', 'DT_EMISSAO', 'DT_ENTRADA', 'TOTAL_NOTA', { campo: 'fornecedor.FOR_NOME', como: 'FOR_NOME' }],
+        filtros,
+        ordenar: [{ campo: 'DT_ENTRADA', dir: 'desc' }],
+        limite: 20,
+        semCache: true,
+      }).then((r) => r.map((x): Record<string, any> => ({ ...x, EMPRESA: empresa })));
+    const [nfe, avulsas] = await Promise.all([
+      consultar(EMPRESA_FISCAL, [...base, { campo: 'MODELO_NOTA', op: 'igual', valor: 55 }]),
+      f.chave ? Promise.resolve([] as Record<string, any>[]) : consultar(EMPRESA, [...base, { campo: 'CHAVE_NFE', op: 'nulo' }]),
+    ]);
+    const r = [...nfe, ...avulsas];
     return r.map((x) => ({
+      empresa: x.EMPRESA,
       nfe: Number(x.NFE),
       nota_fiscal: Number(x.NOTA_FISCAL),
       serie: x.SERIE == null ? null : String(x.SERIE).trim(),
@@ -458,10 +468,10 @@ export class OrcamentoErpRepository {
     }));
   }
 
-  /** Itens de uma nota de compra (empresa 1) com o custo calculado no lançamento. */
-  async itensNotaEntrada(nfe: number): Promise<ItemNotaEntrada[]> {
+  /** Itens de uma nota de compra com o custo calculado no lançamento. */
+  async itensNotaEntrada(empresa: number, nfe: number): Promise<ItemNotaEntrada[]> {
     const r = await this.erp.consultar<Record<string, any>>('nfe-itens', {
-      empresa: EMPRESA_FISCAL,
+      empresa,
       campos: ['ITEM', 'PRO_CODIGO', 'QUANTIDADE', 'UNITARIO', 'CUSTO_NOTA', 'TOTAL', { campo: 'produto.PRO_DESCRICAO', como: 'PRO_DESCRICAO' }],
       filtros: [{ campo: 'NFE', op: 'igual', valor: nfe }],
       ordenar: [{ campo: 'ITEM', dir: 'asc' }],

@@ -731,17 +731,17 @@ export class OrcamentoService {
   }
 
   /**
-   * Nota de compra para a tela: itens da nota (empresa 1) com custo de reposição,
+   * Nota de compra para a tela: itens da nota (NF-e da empresa 1 ou avulsa da 3) com custo de reposição,
    * preço de tabela 2 e estoque da empresa 3, a sobra a preço de tabela e o lote
    * vigente do produto, se houver. Mais de uma nota com o número → a tela escolhe.
    */
   async notaCompra(f: { numero?: number; fornecedor?: number; chave?: string }) {
     if (!f.numero && !f.chave) throw new BadRequestException('Informe o número da nota (e o fornecedor) ou a chave de 44 dígitos.');
     const notas = await this.erp.notasEntrada(f);
-    if (!notas.length) throw new NotFoundException('Nota de compra não encontrada: só NF-e lançada na empresa 1.');
+    if (!notas.length) throw new NotFoundException('Nota de compra não encontrada: só NF-e lançada na empresa 1 ou nota avulsa (sem chave) lançada na empresa 3.');
     if (notas.length > 1) return { notas, nota: null, piso: null, itens: [] };
     const nota = notas[0];
-    const [itens, { piso }] = await Promise.all([this.erp.itensNotaEntrada(nota.nfe), this.pisoVigente(mesComissional())]);
+    const [itens, { piso }] = await Promise.all([this.erp.itensNotaEntrada(nota.empresa, nota.nfe), this.pisoVigente(mesComissional())]);
     const codigos = itens.map((i) => i.pro_codigo);
     const [produtos, vigentes] = await Promise.all([this.erp.produtosPorCodigo(codigos), this.db.oportunidadesVigentes(codigos)]);
     const porCodigo = new Map(produtos.map((p) => [p.PRO_CODIGO, p]));
