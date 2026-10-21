@@ -1,18 +1,21 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
-import { OrcamentoService } from '../orcamento/orcamento.service';
+import { SalvarOrcamentoDto } from '../orcamento/dto/orcamento.dto';
+import { OrcamentoService, PromosPortal } from '../orcamento/orcamento.service';
 import { B2bCarteiraService } from './b2b.carteira.service';
 import { B2bRepository, PortalEmpresa, PortalOrder } from './b2b.repository';
 import {
   B2bPrismaRepository,
   OrcamentoB2bGravado,
   OrcamentoB2bInput,
+  PedidoParaAssumir,
 } from './b2b.prisma.repository';
 
 export interface PedidoItemResumo {
@@ -24,6 +27,9 @@ export interface PedidoItemResumo {
    * pelo portal. `null` quando ele não viu preço ou a peça não tinha preço.
    */
   preco_unitario: number | null;
+  /** Promoção do portal: preço puro (sem margem) e fim (YYYY-MM-DD). */
+  promocao_preco?: number | null;
+  promocao_fim?: string | null;
 }
 
 export interface PedidoUsuarioResumo {
@@ -66,6 +72,39 @@ export interface PedidoResumo {
   cli_codigo: number | null;
   /** `null` = sem vínculo, ou cliente sem vendedor e sem atribuição. */
   responsavel: ResponsavelPedido | null;
+  /** Observação e endereço que o comprador escreveu no portal. */
+  notas?: string | null;
+  endereco?: string | null;
+}
+
+/** Pedido na fila "aguardando cotação" da tela do orçamento. */
+export interface PedidoAguardando {
+  id: string;
+  orderNumber: string;
+  createdAt: string;
+  empresa: string | null;
+  comprador: string | null;
+  cli_codigo: number | null;
+  clienteViuPreco: boolean | null;
+  itens: number;
+  /** Algum item estava em promoção no portal. */
+  promocao: boolean;
+  valorTotal: number | null;
+  responsavel: ResponsavelPedido | null;
+}
+
+/** Quem está assumindo ou recusando (o vendas-service não tem sessão). */
+export interface QuemAtende {
+  rep_codigo?: number | null;
+  usuario_id?: string | null;
+  usuario_nome?: string | null;
+  /** Gestão do atacado: pode assumir no lugar do vendedor responsável. */
+  gestao?: boolean;
+  /**
+   * Só a gestão: vendedor do orçamento ao assumir. Sem ele, vale o
+   * responsável (atribuído ao pedido ou da carteira).
+   */
+  vendedor_codigo?: number | null;
 }
 
 /** Só pedido ainda não assumido entra nas filas da gestão. */
@@ -101,11 +140,18 @@ function resumoDoPortal(pedido: PortalOrder): PedidoResumo {
     valorTotal: null,
     cli_codigo: pedido.user?.cliCodigo ?? null,
     responsavel: null,
+    notas: pedido.notes?.trim() || null,
+    endereco: pedido.shippingAddress?.trim() || null,
     items: pedido.items.map((item) => ({
       pro_codigo: item.product?.proCodigo,
       quantidade: item.quantity,
       promocao: item.product?.promotion?.textoPromocional || null,
       preco_unitario: item.precoUnitario ?? null,
+      promocao_preco:
+        item.promocaoPreco != null && Number.isFinite(Number(item.promocaoPreco))
+          ? Number(item.promocaoPreco)
+          : null,
+      promocao_fim: item.promocaoFim ? String(item.promocaoFim).slice(0, 10) : null,
     })),
     user: {
       id: pedido.user?.id,
@@ -166,9 +212,22 @@ export class B2bService {
       const existentes = await this.b2bPrismaRepository.orderNumbersExistentes(
         resumos.map((p) => p.orderNumber),
       );
-      await this.preencherClientes(
-        resumos.filter((p) => existentes.has(p.orderNumber)),
-      );
+      const jaGravados = resumos.filter((p) => existentes.has(p.orderNumber));
+      await this.preencherClientes(jaGravados);
+      await this.b2bPrismaRepository
+        .completarDoPortal(
+          jaGravados
+            .filter((p) => p.status === STATUS_AGUARDANDO)
+            .map((p) => ({
+              orderNumber: p.orderNumber,
+              empresa: p.user?.company || null,
+              observacao: p.notas ?? null,
+              endereco: p.endereco ?? null,
+            })),
+        )
+        .catch((err: any) =>
+          this.logger.warn(`Completar pedidos B2B gravados: ${err?.message}`),
+        );
       const daPagina = resumos.filter((p) => !existentes.has(p.orderNumber));
       await this.gravarPedidosNovos(daPagina);
       novos.push(...daPagina);
@@ -347,6 +406,305 @@ export class B2bService {
     });
   }
 
+  /* ------------------------------------------- aguardando, assumir, recusar */
+
+  /**
+   * A fila "aguardando cotação" da tela do orçamento: do banco, pendentes
+   * desde o corte. Com `rep`, só os do vendedor (atribuído ao pedido ou da
+   * carteira do cliente); sem ele, todos (gestão).
+   */
+  async pedidosAguardando(rep?: number | null): Promise<PedidoAguardando[]> {
+    const rows = await this.b2bPrismaRepository.listarAguardando(
+      new Date(corteDeAviso()),
+    );
+    const resumos = await this.comResponsaveis(
+      rows.map((r) => comValorTotal(this.paraResumo(r))),
+    );
+    const linhas = rows.map((r, i) => {
+      const p = resumos[i];
+      return {
+        id: r.id,
+        orderNumber: r.orderNumber,
+        createdAt: p.createdAt,
+        empresa: r.empresa,
+        comprador: r.comprador,
+        cli_codigo: r.cli_codigo,
+        clienteViuPreco: r.clienteViuPreco,
+        itens: r.itens.length,
+        promocao: r.itens.some((it) => !!it.promocao),
+        valorTotal: p.valorTotal,
+        responsavel: p.responsavel,
+      };
+    });
+    return rep != null
+      ? linhas.filter((l) => l.responsavel?.rep_codigo === rep)
+      : linhas;
+  }
+
+  /**
+   * O vendedor (ou a gestão, no lugar dele) assume o pedido: vira orçamento do
+   * atacado em RASCUNHO, com o vendedor responsável, e o portal passa para
+   * "em atendimento". O preço é o que o cliente viu (`preco_base`: acima da
+   * tabela vale como base do desconto; igual ou abaixo, vale a tabela); sem
+   * preço visto, a tabela com a margem do comprador. Item que não existe mais
+   * no ERP fica de fora e é anotado na observação.
+   */
+  async assumir(
+    identificador: string,
+    quem: QuemAtende,
+  ): Promise<{ orcamento_id: string; numero: number; fora: number[] }> {
+    const pedido =
+      await this.b2bPrismaRepository.buscarParaAssumir(identificador);
+    if (!pedido) {
+      throw new NotFoundException(`Pedido B2B não encontrado: ${identificador}`);
+    }
+    if (pedido.status !== STATUS_AGUARDANDO || pedido.orcamento_id) {
+      throw new ConflictException(
+        `Pedido ${pedido.orderNumber} já foi atendido (${pedido.status}).`,
+      );
+    }
+    if (pedido.cli_codigo == null) {
+      throw new BadRequestException(
+        `Pedido ${pedido.orderNumber} sem cliente do Celta: vincule a empresa na tela B2B.`,
+      );
+    }
+    const [resumo] = await this.comResponsaveis([this.paraResumo(pedido)]);
+    // A gestão escolhe quem fica com a venda (inclusive outro que não o da
+    // carteira); o vendedor só assume o que é dele.
+    const escolhido =
+      quem.gestao && quem.vendedor_codigo != null
+        ? await this.vendedorDoAtacado(quem.vendedor_codigo)
+        : null;
+    const responsavel = escolhido ?? resumo.responsavel;
+    if (!responsavel) {
+      throw new BadRequestException(
+        `Pedido ${pedido.orderNumber} sem vendedor: escolha quem atende.`,
+      );
+    }
+    if (!quem.gestao && quem.rep_codigo !== responsavel.rep_codigo) {
+      throw new ForbiddenException(
+        `Pedido ${pedido.orderNumber} é de ${responsavel.rep_nome ?? responsavel.rep_codigo}.`,
+      );
+    }
+
+    const por = quem.usuario_nome?.trim() || `rep ${quem.rep_codigo ?? '?'}`;
+    if (!(await this.b2bPrismaRepository.reservar(pedido.id, por))) {
+      throw new ConflictException(
+        `Pedido ${pedido.orderNumber} já está sendo assumido por outra pessoa.`,
+      );
+    }
+
+    let criado: { id: string; numero: number };
+    let fora: number[] = [];
+    try {
+      const cliente = await this.orcamento.cliente(pedido.cli_codigo);
+      const produtos = await this.orcamento.produtosPorCodigo(
+        pedido.itens.map((i) => i.pro_codigo),
+        cliente.tabela_preco ?? null,
+        pedido.cli_codigo,
+      );
+      const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
+      fora = pedido.itens
+        .filter((i) => !porCodigo.has(i.pro_codigo))
+        .map((i) => i.pro_codigo);
+      const validos = pedido.itens.filter((i) => porCodigo.has(i.pro_codigo));
+      if (!validos.length) {
+        throw new BadRequestException(
+          `Nenhum item do pedido ${pedido.orderNumber} existe mais no ERP.`,
+        );
+      }
+
+      const margem = Number(pedido.margem ?? 0);
+      const comMargem = (preco: number) =>
+        Math.round(preco * (1 + (margem > 0 ? margem : 0) / 100) * 100) / 100;
+
+      // Promoção do portal: o orçamento a trata como promoção (preço fechado,
+      // metade da bolsa, validade até o fim). Preço = o que o comprador viu, a
+      // promoção com a margem dele — também quando ele não via preço.
+      const promosPortal: PromosPortal = new Map();
+      for (const i of validos) {
+        if (!(Number(i.promocao_preco) > 0) || !i.promocao_fim) continue;
+        promosPortal.set(i.pro_codigo, {
+          preco:
+            pedido.clienteViuPreco && Number(i.preco_unitario) > 0
+              ? Number(i.preco_unitario)
+              : comMargem(Number(i.promocao_preco)),
+          fim: i.promocao_fim,
+          descricao: `Promoção do portal B2B${i.promocao ? `: ${i.promocao}` : ''}`.slice(0, 200),
+        });
+      }
+
+      const itens = validos.map((i) => {
+        const tabela = Number(porCodigo.get(i.pro_codigo)?.preco_tabela ?? 0);
+        const base =
+          pedido.clienteViuPreco && i.preco_unitario != null
+            ? i.preco_unitario
+            : margem > 0 && tabela > 0
+              ? comMargem(tabela)
+              : null;
+        return {
+          pro_codigo: i.pro_codigo,
+          quantidade: i.quantidade,
+          // Em promoção o preço é o da promoção: base acima da tabela não vale.
+          ...(base != null && base > 0 && !promosPortal.has(i.pro_codigo)
+            ? { preco_base: base }
+            : {}),
+        };
+      });
+
+      criado = await this.orcamento.criar({
+        cli_codigo: pedido.cli_codigo,
+        rep_codigo: responsavel.rep_codigo,
+        rep_nome: responsavel.rep_nome ?? undefined,
+        observacao: this.observacaoDoPedido(pedido, fora),
+        itens,
+        usuario_id: quem.usuario_id ?? undefined,
+        usuario_nome: quem.usuario_nome ?? undefined,
+      } satisfies SalvarOrcamentoDto, { promosPortal });
+    } catch (err) {
+      await this.b2bPrismaRepository.liberarReserva(pedido.id).catch(() => undefined);
+      throw err;
+    }
+
+    if (escolhido) {
+      // O pedido registra o vendedor escolhido, como num "designar".
+      await this.b2bPrismaRepository.atribuirVendedor(pedido.id, {
+        rep_codigo: escolhido.rep_codigo,
+        rep_nome: escolhido.rep_nome ?? '',
+        atribuido_por: quem.usuario_nome?.trim() || null,
+      });
+    }
+    await this.b2bPrismaRepository.concluirAssumir(pedido.id, criado.id);
+    this.avisos.b2bEncerrado(pedido.orderNumber);
+    // O orçamento já existe: o portal fora do ar não pode desfazê-lo. Fica no
+    // log; a próxima sincronização de status corrige.
+    if (pedido.pedidoId) {
+      await this.b2bRepository
+        .atualizarStatusPedido(pedido.pedidoId, 'PROCESSING')
+        .catch((err: any) =>
+          this.logger.warn(
+            `Pedido ${pedido.orderNumber} assumido, mas o portal não mudou para PROCESSING: ${err?.message}`,
+          ),
+        );
+    }
+    return { orcamento_id: criado.id, numero: criado.numero, fora };
+  }
+
+  /** Recusa com motivo: o portal mostra o pedido cancelado, com o motivo. */
+  async recusar(
+    identificador: string,
+    motivo: string,
+    quem: QuemAtende,
+  ): Promise<{ id: string; status: string }> {
+    const texto = (motivo ?? '').trim();
+    if (texto.length < 3) {
+      throw new BadRequestException('Informe o motivo da recusa.');
+    }
+    if (texto.length > 500) {
+      throw new BadRequestException('O motivo deve ter no máximo 500 caracteres.');
+    }
+    const pedido =
+      await this.b2bPrismaRepository.buscarParaAssumir(identificador);
+    if (!pedido) {
+      throw new NotFoundException(`Pedido B2B não encontrado: ${identificador}`);
+    }
+    if (pedido.status !== STATUS_AGUARDANDO || pedido.orcamento_id || pedido.assumido_em) {
+      throw new ConflictException(
+        `Pedido ${pedido.orderNumber} já foi atendido (${pedido.status}).`,
+      );
+    }
+    if (!quem.gestao) {
+      const [resumo] = await this.comResponsaveis([this.paraResumo(pedido)]);
+      if (resumo.responsavel?.rep_codigo !== quem.rep_codigo) {
+        throw new ForbiddenException(
+          `Só o vendedor responsável ou a gestão recusam o pedido ${pedido.orderNumber}.`,
+        );
+      }
+    }
+
+    // Portal primeiro: se ele recusar, a intranet não fica com um cancelado que lá não existe.
+    if (pedido.pedidoId) {
+      await this.b2bRepository.atualizarStatusPedido(pedido.pedidoId, 'CANCELLED', texto);
+    }
+    await this.b2bPrismaRepository.registrarRecusa(pedido.id, texto);
+    this.avisos.b2bEncerrado(pedido.orderNumber);
+    return { id: pedido.id, status: 'CANCELLED' };
+  }
+
+  /** Vendedor ativo do atacado (comissão); 400 se não for. */
+  private async vendedorDoAtacado(
+    repCodigo: number,
+  ): Promise<{ rep_codigo: number; rep_nome: string; origem: 'PEDIDO' }> {
+    const v = (await this.orcamento.vendedores()).find(
+      (x) => x.rep_codigo === repCodigo,
+    );
+    if (!v) {
+      throw new BadRequestException(
+        `Vendedor ${repCodigo} não é um vendedor ativo do atacado.`,
+      );
+    }
+    return { rep_codigo: v.rep_codigo, rep_nome: v.rep_nome, origem: 'PEDIDO' };
+  }
+
+  /**
+   * Vínculo feito a partir do pedido (tela do orçamento da gestão). O portal
+   * vincula pelo master da empresa e o pedido só conhece o comprador: o master
+   * é achado pela empresa do pedido, a mesma `company` exata do portal.
+   */
+  async vincularClienteDoPedido(
+    identificador: string,
+    cliCodigo: number,
+  ): Promise<{ cli_codigo: number; cli_nome: string; responsavel: ResponsavelPedido | null }> {
+    const pedido =
+      await this.b2bPrismaRepository.buscarParaAssumir(identificador);
+    if (!pedido) {
+      throw new NotFoundException(`Pedido B2B não encontrado: ${identificador}`);
+    }
+    if (!pedido.empresa) {
+      throw new BadRequestException(
+        `Pedido ${pedido.orderNumber} sem empresa gravada: vincule pela tela Portal B2B.`,
+      );
+    }
+    const master = (await this.b2bRepository.listarEmpresas(false)).find(
+      (e) => e.company === pedido.empresa,
+    );
+    if (!master) {
+      throw new NotFoundException(
+        `Empresa "${pedido.empresa}" não encontrada no portal: vincule pela tela Portal B2B.`,
+      );
+    }
+    const r = await this.vincularCliente(master.id, cliCodigo);
+    const vendedor = (
+      await this.b2bPrismaRepository.vendedoresDaCarteira([cliCodigo])
+    ).get(cliCodigo);
+    return {
+      cli_codigo: r.cli_codigo,
+      cli_nome: r.cli_nome,
+      responsavel: vendedor ? { ...vendedor, origem: 'CARTEIRA' } : null,
+    };
+  }
+
+  private observacaoDoPedido(pedido: PedidoParaAssumir, fora: number[]): string {
+    const linhas = [
+      `Pedido B2B ${pedido.orderNumber}${pedido.comprador ? ` · comprador ${pedido.comprador}` : ''}`,
+    ];
+    if (pedido.endereco && pedido.endereco !== 'A definir') {
+      linhas.push(`Entrega: ${pedido.endereco}`);
+    }
+    if (pedido.observacao) linhas.push(`Obs. do cliente: ${pedido.observacao}`);
+    if (pedido.clienteViuPreco === false) {
+      linhas.push('Preço não exibido ao cliente no portal.');
+    }
+    const promos = pedido.itens.filter((i) => i.promocao).map((i) => i.pro_codigo);
+    if (promos.length) {
+      linhas.push(`Promoção do portal B2B nos itens: ${promos.join(', ')}.`);
+    }
+    if (fora.length) {
+      linhas.push(`Fora do orçamento (não existem mais no ERP): ${fora.join(', ')}.`);
+    }
+    return linhas.join('\n');
+  }
+
   /* ------------------------------------------------ vínculo e responsável */
 
   /**
@@ -438,9 +796,9 @@ export class B2bService {
   }
 
   /**
-   * A gestão escolhe o vendedor deste pedido. Vale só para o pedido: o
-   * cliente continua sem carteira até a gestão carteirizá-lo pela tela de
-   * carteirização. Cliente que já tem vendedor na carteira não aceita.
+   * A gestão escolhe o vendedor deste pedido. Vale só para o pedido — também
+   * quando o cliente já tem vendedor na carteira (férias, por exemplo): a
+   * carteira não muda; isso continua na tela de carteirização.
    */
   async atribuirVendedor(
     identificador: string,
@@ -467,23 +825,7 @@ export class B2bService {
         `Pedido ${pedido.orderNumber} sem cliente do Celta: vincule a empresa primeiro.`,
       );
     }
-    const daCarteira = (
-      await this.b2bPrismaRepository.vendedoresDaCarteira([pedido.cli_codigo])
-    ).get(pedido.cli_codigo);
-    if (daCarteira) {
-      throw new ConflictException(
-        `O cliente ${pedido.cli_codigo} já é da carteira de ${daCarteira.rep_nome ?? daCarteira.rep_codigo}.`,
-      );
-    }
-
-    const vendedor = (await this.orcamento.vendedores()).find(
-      (v) => v.rep_codigo === repCodigo,
-    );
-    if (!vendedor) {
-      throw new BadRequestException(
-        `Vendedor ${repCodigo} não é um vendedor ativo do atacado.`,
-      );
-    }
+    const vendedor = await this.vendedorDoAtacado(repCodigo);
 
     await this.b2bPrismaRepository.atribuirVendedor(pedido.id, {
       rep_codigo: vendedor.rep_codigo,
@@ -657,6 +999,9 @@ export class B2bService {
           clienteViuPreco: resumo.clienteViuPreco,
           margem: resumo.margem,
           cli_codigo: resumo.cli_codigo,
+          empresa: resumo.user?.company?.trim() || null,
+          observacao: resumo.notas ?? null,
+          endereco: resumo.endereco ?? null,
           createdAt:
             criadoEm && !Number.isNaN(criadoEm.getTime()) ? criadoEm : null,
           itens: resumo.items
@@ -665,6 +1010,8 @@ export class B2bService {
               quantidade: Number(item.quantidade),
               promocao: item.promocao ?? null,
               preco_unitario: item.preco_unitario ?? null,
+              promocao_preco: item.promocao_preco ?? null,
+              promocao_fim: item.promocao_fim ? new Date(`${item.promocao_fim}T00:00:00Z`) : null,
             }))
             .filter(
               (item) =>

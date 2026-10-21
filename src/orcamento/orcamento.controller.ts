@@ -344,9 +344,9 @@ export class OrcamentoController {
   }
 
   @Get('produtos/:codigo')
-  @ApiOperation({ summary: 'Produto + equivalentes (grupo de similares) + vendem juntos.' })
-  produto(@Param('codigo', ParseIntPipe) codigo: number, @Query('tabela') tabela?: string, @Query('cli') cli?: string) {
-    return this.service.produto(codigo, tabela ?? null, toNum(cli));
+  @ApiOperation({ summary: 'Produto + equivalentes (grupo de similares) + vendem juntos. `orc` = orçamento em edição: aplica a promoção do portal B2B do item, se houver.' })
+  produto(@Param('codigo', ParseIntPipe) codigo: number, @Query('tabela') tabela?: string, @Query('cli') cli?: string, @Query('orc') orc?: string) {
+    return this.service.produto(codigo, tabela ?? null, toNum(cli), orc || undefined);
   }
 
   @Get('produtos/:codigo/equivalentes')

@@ -22,7 +22,8 @@ export interface OrcParaCasar {
   nf_orcamento: NfChave | null;
   /** NF do condicional aberto a partir do orçamento (ORCAMENTOS.CONDICIONAL → CONDICIONAIS.NFS) */
   nfs_condicional: NfChave[];
-  itens: { pro_codigo: number; quantidade: number; preco_unit: number; custo_ref: number | null }[];
+  /** `promo_portal`: item em promoção do portal B2B (não vendido fora dela). */
+  itens: { pro_codigo: number; quantidade: number; preco_unit: number; custo_ref: number | null; promo_portal?: boolean }[];
 }
 
 export interface UnidadesCasadas {
@@ -31,6 +32,8 @@ export interface UnidadesCasadas {
   preco_unit_orc: number;
   custo_ref: number | null;
   quantidade: number;
+  /** A unidade saiu de item em promoção do portal B2B. */
+  promo_portal?: boolean;
 }
 
 /**
@@ -48,10 +51,10 @@ export function casarOrcamentos(orcs: OrcParaCasar[], linhas: LinhaNf[], o: { ja
   const porEmissao = (a: number, b: number) => linhas[a].emissao.getTime() - linhas[b].emissao.getTime() || a - b;
   const livre = linhas.map((l) => l.quantidade);
   const porLinha = new Map<number, UnidadesCasadas[]>();
-  const porOrcamento = new Map<string, { linha: number; quantidade: number }[]>();
+  const porOrcamento = new Map<string, { linha: number; quantidade: number; promo_portal?: boolean }[]>();
   const casar = (i: number, orc: OrcParaCasar, item: OrcParaCasar['itens'][number], quantidade: number) => {
-    porLinha.set(i, [...(porLinha.get(i) ?? []), { orcamento_id: orc.id, numero: orc.numero, preco_unit_orc: item.preco_unit, custo_ref: item.custo_ref, quantidade }]);
-    porOrcamento.set(orc.id, [...(porOrcamento.get(orc.id) ?? []), { linha: i, quantidade }]);
+    porLinha.set(i, [...(porLinha.get(i) ?? []), { orcamento_id: orc.id, numero: orc.numero, preco_unit_orc: item.preco_unit, custo_ref: item.custo_ref, quantidade, ...(item.promo_portal && { promo_portal: true }) }]);
+    porOrcamento.set(orc.id, [...(porOrcamento.get(orc.id) ?? []), { linha: i, quantidade, ...(item.promo_portal && { promo_portal: true }) }]);
   };
   const ordem = [...orcs].sort((a, b) => a.inicio.getTime() - b.inicio.getTime() || a.numero - b.numero);
   const indices = linhas.map((_, i) => i);
@@ -113,6 +116,11 @@ export interface LinhaBolsa {
   servico: boolean;
   /** efetivo do ajuste da bolsa negativa atribuído à linha (estorno negativo) */
   ajuste: number;
+  /**
+   * Fração da linha vendida em promoção do PORTAL B2B (o BI não a marca:
+   * no Celta é venda normal). Vale a mesma metade da promoção sobre ela.
+   */
+  promo_portal?: number;
 }
 
 /**
@@ -124,7 +132,8 @@ export interface LinhaBolsa {
 export function valoresLinha(l: LinhaBolsa, piso: number) {
   if (l.servico) return { custo_piso: 0, absorvido: 0, ajuste: 0, saldo: 0 };
   const custo_piso = l.custo_bolsa * piso;
-  const absorvido = l.promocao && l.custo_produto > 0 && l.custo_produto * piso > l.liquido ? (l.custo_produto * piso - l.liquido) / 2 : 0;
+  const fator = l.promocao ? 1 : Math.min(1, Math.max(0, l.promo_portal ?? 0));
+  const absorvido = fator > 0 && l.custo_produto > 0 && l.custo_produto * piso > l.liquido ? ((l.custo_produto * piso - l.liquido) / 2) * fator : 0;
   return { custo_piso, absorvido, ajuste: l.ajuste, saldo: l.liquido - custo_piso + absorvido + l.ajuste };
 }
 
@@ -166,7 +175,7 @@ export function atribuirAjustes(linhas: Array<NfChave & { pro_codigo: number; aj
  * casada da linha), em qualquer mês. Orçamento sem unidade casada não entra no mapa.
  */
 export function bolsaNfPorOrcamento(
-  porOrcamento: Map<string, { linha: number; quantidade: number }[]>,
+  porOrcamento: Map<string, { linha: number; quantidade: number; promo_portal?: boolean }[]>,
   linhas: Array<LinhaNf & { custo_produto: number; servico: boolean; ajuste: number }>,
   piso: number,
 ) {
@@ -177,7 +186,8 @@ export function bolsaNfPorOrcamento(
       const l = linhas[c.linha];
       if (!(l.quantidade > 0)) continue;
       const s = l.devolucao ? -1 : 1;
-      const v = valoresLinha({ liquido: s * l.liquido, custo_bolsa: s * l.custo, custo_produto: s * l.custo_produto, promocao: l.promocao, servico: l.servico, ajuste: l.ajuste }, piso);
+      // a parte deste orçamento em promoção do portal B2B leva a metade da promoção (só na venda)
+      const v = valoresLinha({ liquido: s * l.liquido, custo_bolsa: s * l.custo, custo_produto: s * l.custo_produto, promocao: l.promocao, servico: l.servico, ajuste: l.ajuste, promo_portal: c.promo_portal ? 1 : 0 }, piso);
       soma += (c.quantidade / l.quantidade) * v.saldo;
     }
     saida.set(id, round2(soma));

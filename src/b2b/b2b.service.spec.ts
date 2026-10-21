@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { OrcamentoService } from '../orcamento/orcamento.service';
 import { B2bCarteiraService } from './b2b.carteira.service';
@@ -77,6 +77,7 @@ function montar(
   const repo = {
     listarPedidos: jest.fn().mockResolvedValue({ data: portal }),
     listarEmpresas: jest.fn().mockResolvedValue([]),
+    atualizarStatusPedido: jest.fn().mockResolvedValue(undefined),
     vincularCliente: jest
       .fn()
       .mockResolvedValue({ company: 'Loja X', cliCodigo: 555, usuarios: 2 }),
@@ -88,13 +89,24 @@ function montar(
       .mockResolvedValue(new Set(gravados.map((g) => g.orderNumber))),
     salvarPedido: jest.fn().mockResolvedValue(undefined),
     resumoDoPedido: jest.fn().mockResolvedValue({ itens: 2, valor: 50 }),
+    completarDoPortal: jest.fn().mockResolvedValue(undefined),
+    listarAguardando: jest.fn().mockResolvedValue([]),
+    buscarParaAssumir: jest.fn(),
+    reservar: jest.fn().mockResolvedValue(true),
+    liberarReserva: jest.fn().mockResolvedValue(undefined),
+    concluirAssumir: jest.fn().mockResolvedValue(undefined),
+    registrarRecusa: jest.fn().mockResolvedValue(undefined),
     preencherCliente: jest.fn().mockResolvedValue(1),
     vendedoresDaCarteira: jest.fn().mockResolvedValue(new Map(carteira)),
     buscarPorIdentificador: jest.fn(),
     atribuirVendedor: jest.fn().mockResolvedValue(undefined),
   };
   const orcamento = {
-    cliente: jest.fn().mockResolvedValue({ cli_codigo: 555, cli_nome: 'LOJA X LTDA' }),
+    cliente: jest
+      .fn()
+      .mockResolvedValue({ cli_codigo: 555, cli_nome: 'LOJA X LTDA', tabela_preco: '2' }),
+    produtosPorCodigo: jest.fn().mockResolvedValue([]),
+    criar: jest.fn().mockResolvedValue({ id: 'orc1', numero: 42 }),
     vendedores: jest
       .fn()
       .mockResolvedValue([{ rep_codigo: 7, rep_nome: 'Alison', papel: null }]),
@@ -297,16 +309,16 @@ describe('B2bService — cliente do Celta e vendedor responsável', () => {
       expect(r.responsavel.origem).toBe('PEDIDO');
     });
 
-    it('recusa cliente que já tem vendedor na carteira', async () => {
+    it('pode designar sobre o vendedor da carteira (vale só para o pedido)', async () => {
       const { service, prisma } = montar([], [], [
         [555, { rep_codigo: 9, rep_nome: 'Fernando' }],
       ]);
       prisma.buscarPorIdentificador.mockResolvedValue(PEDIDO);
 
-      await expect(service.atribuirVendedor('ORD-1', 7)).rejects.toThrow(
-        ConflictException,
-      );
-      expect(prisma.atribuirVendedor).not.toHaveBeenCalled();
+      const r = await service.atribuirVendedor('ORD-1', 7);
+
+      expect(r.responsavel).toEqual({ rep_codigo: 7, rep_nome: 'Alison', origem: 'PEDIDO' });
+      expect(prisma.atribuirVendedor).toHaveBeenCalled();
     });
 
     it('recusa pedido já assumido, sem vínculo ou vendedor fora do atacado', async () => {
@@ -441,5 +453,250 @@ describe('B2bService.sincronizarComPortal — busca a cada minuto', () => {
     expect(avisos.b2bNovo).toHaveBeenCalledWith(
       expect.objectContaining({ orderNumber: 'ORD-1', rep_codigo: 7, itens: 2, valor: 50 }),
     );
+  });
+});
+
+describe('B2bService — assumir e recusar', () => {
+  const pedido = (over: Record<string, unknown> = {}) => ({
+    ...gravadoBase({
+      cli_codigo: 555,
+      clienteViuPreco: true,
+      margem: 10,
+      itens: [
+        { pro_codigo: 100, quantidade: 3, promocao: null, preco_unitario: 12.5 },
+        { pro_codigo: 200, quantidade: 1, promocao: 'Leve 3', preco_unitario: 8 },
+      ],
+    }),
+    empresa: 'Loja X',
+    observacao: 'Entregar pela manhã',
+    endereco: 'Rua A, 10',
+    orcamento_id: null,
+    assumido_em: null,
+    ...over,
+  });
+  const CARTEIRA: Array<[number, { rep_codigo: number; rep_nome: string | null }]> = [
+    [555, { rep_codigo: 9, rep_nome: 'Fernando' }],
+  ];
+
+  it('vendedor responsável assume: orçamento com o preço visto, portal em atendimento', async () => {
+    const { service, prisma, repo, orcamento, avisos } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido());
+    orcamento.produtosPorCodigo.mockResolvedValue([
+      { pro_codigo: 100, preco_tabela: 10 },
+      { pro_codigo: 200, preco_tabela: 9 },
+    ]);
+
+    const r = await service.assumir('ORD-1', { rep_codigo: 9, usuario_nome: 'Fernando' });
+
+    expect(r).toEqual({ orcamento_id: 'orc1', numero: 42, fora: [] });
+    const dto = orcamento.criar.mock.calls[0][0];
+    expect(dto).toEqual(
+      expect.objectContaining({
+        cli_codigo: 555,
+        rep_codigo: 9,
+        itens: [
+          { pro_codigo: 100, quantidade: 3, preco_base: 12.5 },
+          { pro_codigo: 200, quantidade: 1, preco_base: 8 },
+        ],
+      }),
+    );
+    expect(dto.observacao).toContain('Pedido B2B ORD-1');
+    expect(dto.observacao).toContain('Entrega: Rua A, 10');
+    expect(dto.observacao).toContain('Obs. do cliente: Entregar pela manhã');
+    expect(dto.observacao).toContain('Promoção do portal B2B nos itens: 200');
+    expect(prisma.concluirAssumir).toHaveBeenCalledWith('g1', 'orc1');
+    expect(repo.atualizarStatusPedido).toHaveBeenCalledWith('p1', 'PROCESSING');
+    expect(avisos.b2bEncerrado).toHaveBeenCalledWith('ORD-1');
+  });
+
+  it('cliente que não viu preço: tabela com a margem do comprador, e a observação avisa', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(
+      pedido({
+        clienteViuPreco: false,
+        itens: [{ pro_codigo: 100, quantidade: 2, promocao: null, preco_unitario: null }],
+      }),
+    );
+    orcamento.produtosPorCodigo.mockResolvedValue([{ pro_codigo: 100, preco_tabela: 10 }]);
+
+    await service.assumir('ORD-1', { rep_codigo: 9 });
+
+    const dto = orcamento.criar.mock.calls[0][0];
+    expect(dto.itens).toEqual([{ pro_codigo: 100, quantidade: 2, preco_base: 11 }]);
+    expect(dto.observacao).toContain('Preço não exibido ao cliente');
+  });
+
+  it('item em promoção do portal: vai como promoção, com a margem, sem preço base', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    const fim = new Date('2099-12-31T00:00:00Z');
+    prisma.buscarParaAssumir.mockResolvedValue(
+      pedido({
+        clienteViuPreco: false,
+        itens: [
+          { pro_codigo: 100, quantidade: 2, promocao: 'Queima', preco_unitario: null, promocao_preco: 8, promocao_fim: fim },
+          { pro_codigo: 200, quantidade: 1, promocao: null, preco_unitario: null, promocao_preco: null, promocao_fim: null },
+        ],
+      }),
+    );
+    orcamento.produtosPorCodigo.mockResolvedValue([
+      { pro_codigo: 100, preco_tabela: 10 },
+      { pro_codigo: 200, preco_tabela: 9 },
+    ]);
+
+    await service.assumir('ORD-1', { rep_codigo: 9 });
+
+    const [dto, opcoes] = orcamento.criar.mock.calls[0];
+    expect(dto.itens).toEqual([
+      { pro_codigo: 100, quantidade: 2 },
+      { pro_codigo: 200, quantidade: 1, preco_base: 9.9 },
+    ]);
+    expect([...opcoes.promosPortal.entries()]).toEqual([
+      [100, { preco: 8.8, fim, descricao: 'Promoção do portal B2B: Queima' }],
+    ]);
+  });
+
+  it('item que não existe mais no ERP fica de fora e vai para a observação', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido());
+    orcamento.produtosPorCodigo.mockResolvedValue([{ pro_codigo: 100, preco_tabela: 10 }]);
+
+    const r = await service.assumir('ORD-1', { rep_codigo: 9 });
+
+    expect(r.fora).toEqual([200]);
+    const dto = orcamento.criar.mock.calls[0][0];
+    expect(dto.itens.map((i: { pro_codigo: number }) => i.pro_codigo)).toEqual([100]);
+    expect(dto.observacao).toContain('Fora do orçamento (não existem mais no ERP): 200');
+  });
+
+  it('outro vendedor não assume; a gestão assume com o vendedor responsável', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido());
+    orcamento.produtosPorCodigo.mockResolvedValue([
+      { pro_codigo: 100, preco_tabela: 10 },
+      { pro_codigo: 200, preco_tabela: 9 },
+    ]);
+
+    await expect(service.assumir('ORD-1', { rep_codigo: 7 })).rejects.toThrow(
+      ForbiddenException,
+    );
+    expect(prisma.reservar).not.toHaveBeenCalled();
+
+    await service.assumir('ORD-1', { gestao: true, usuario_nome: 'Gestora' });
+    expect(orcamento.criar.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ rep_codigo: 9, usuario_nome: 'Gestora' }),
+    );
+  });
+
+  it('clique duplo: o segundo encontra o pedido reservado', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido());
+    prisma.reservar.mockResolvedValue(false);
+
+    await expect(service.assumir('ORD-1', { rep_codigo: 9 })).rejects.toThrow(
+      ConflictException,
+    );
+    expect(orcamento.criar).not.toHaveBeenCalled();
+  });
+
+  it('falha ao criar o orçamento libera a reserva', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido());
+    orcamento.produtosPorCodigo.mockResolvedValue([{ pro_codigo: 100, preco_tabela: 10 }]);
+    orcamento.criar.mockRejectedValue(new Error('ERP fora'));
+
+    await expect(service.assumir('ORD-1', { rep_codigo: 9 })).rejects.toThrow('ERP fora');
+    expect(prisma.liberarReserva).toHaveBeenCalledWith('g1');
+    expect(prisma.concluirAssumir).not.toHaveBeenCalled();
+  });
+
+  it('gestão assume com o vendedor escolhido, mesmo sem responsável', async () => {
+    const { service, prisma, orcamento } = montar([]);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido({ cli_codigo: 999 }));
+    orcamento.produtosPorCodigo.mockResolvedValue([
+      { pro_codigo: 100, preco_tabela: 10 },
+      { pro_codigo: 200, preco_tabela: 9 },
+    ]);
+
+    await expect(service.assumir('ORD-1', { gestao: true })).rejects.toThrow(
+      BadRequestException,
+    );
+
+    await service.assumir('ORD-1', { gestao: true, vendedor_codigo: 7, usuario_nome: 'Gestora' });
+    expect(orcamento.criar.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ rep_codigo: 7, rep_nome: 'Alison' }),
+    );
+    expect(prisma.atribuirVendedor).toHaveBeenCalledWith('g1', {
+      rep_codigo: 7,
+      rep_nome: 'Alison',
+      atribuido_por: 'Gestora',
+    });
+  });
+
+  it('vendedor não escolhe outro vendedor ao assumir', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido());
+    orcamento.produtosPorCodigo.mockResolvedValue([{ pro_codigo: 100, preco_tabela: 10 }]);
+
+    await service.assumir('ORD-1', { rep_codigo: 9, vendedor_codigo: 7 });
+
+    expect(orcamento.criar.mock.calls[0][0]).toEqual(expect.objectContaining({ rep_codigo: 9 }));
+  });
+
+  it('vincular pelo pedido acha o master pela empresa e devolve o vendedor da carteira', async () => {
+    const { service, prisma, repo } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido({ cli_codigo: null }));
+    repo.listarEmpresas.mockResolvedValue([
+      { id: 'm-outra', company: 'Loja Y' },
+      { id: 'm1', company: 'Loja X' },
+    ]);
+
+    const r = await service.vincularClienteDoPedido('ORD-1', 555);
+
+    expect(repo.vincularCliente).toHaveBeenCalledWith('m1', 555);
+    expect(r).toEqual({
+      cli_codigo: 555,
+      cli_nome: 'LOJA X LTDA',
+      responsavel: { rep_codigo: 9, rep_nome: 'Fernando', origem: 'CARTEIRA' },
+    });
+
+    prisma.buscarParaAssumir.mockResolvedValue(pedido({ empresa: 'Sumiu' }));
+    await expect(service.vincularClienteDoPedido('ORD-1', 555)).rejects.toThrow('não encontrada');
+  });
+
+  it('recusar exige motivo e cancela no portal com ele', async () => {
+    const { service, prisma, repo, avisos } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido());
+
+    await expect(service.recusar('ORD-1', ' ', { rep_codigo: 9 })).rejects.toThrow(
+      BadRequestException,
+    );
+    await expect(service.recusar('ORD-1', 'Sem estoque', { rep_codigo: 7 })).rejects.toThrow(
+      ForbiddenException,
+    );
+
+    await service.recusar('ORD-1', ' Sem estoque ', { rep_codigo: 9 });
+    expect(repo.atualizarStatusPedido).toHaveBeenCalledWith('p1', 'CANCELLED', 'Sem estoque');
+    expect(prisma.registrarRecusa).toHaveBeenCalledWith('g1', 'Sem estoque');
+    expect(avisos.b2bEncerrado).toHaveBeenCalledWith('ORD-1');
+  });
+
+  it('aguardando: o vendedor vê só os dele; a gestão vê todos', async () => {
+    const { service, prisma } = montar([], [], CARTEIRA);
+    prisma.listarAguardando.mockResolvedValue([
+      pedido({ id: 'a', orderNumber: 'A' }),
+      pedido({ id: 'b', orderNumber: 'B', cli_codigo: 999 }),
+    ]);
+
+    const doVendedor = await service.pedidosAguardando(9);
+    const daGestao = await service.pedidosAguardando(null);
+
+    expect(doVendedor.map((p) => p.orderNumber)).toEqual(['A']);
+    expect(doVendedor[0]).toEqual(
+      expect.objectContaining({ empresa: 'Loja X', itens: 2, promocao: true, valorTotal: 45.5 }),
+    );
+    expect(daGestao.map((p) => [p.orderNumber, p.responsavel?.rep_codigo ?? null])).toEqual([
+      ['A', 9],
+      ['B', null],
+    ]);
   });
 });

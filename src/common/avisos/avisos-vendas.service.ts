@@ -183,7 +183,7 @@ export class AvisosVendasService {
       ref: p.orderNumber,
       vars: { cliente: p.cliente, itens: p.itens, valor: p.valor != null ? ` · ${brl(p.valor)}` : '' },
       usuarios,
-      link: '/vendas/b2b',
+      link: '/vendas/orcamento',
     });
   }
 

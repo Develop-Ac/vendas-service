@@ -2,6 +2,7 @@ import { gerarPdfOrcamento, ModoDesconto, PdfItem, PdfOrcamento } from './orcame
 import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { comPromosDoPortal, fracaoPromoPortal, PromosPortal } from './promocao-portal';
 import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta, ordenarBuscaClientes } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional, mesesAnteriores } from './orcamento.bi.repository';
 import { celulasDoOrcamento, comissaoComOrcamento } from './comissao';
@@ -570,9 +571,36 @@ export class OrcamentoService {
    */
   private mesDaBolsa(rep: number, periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], mesesAjuste: number) {
     return Promise.all([
-      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
+      // O BI só conhece a promoção do Celta: a do portal B2B (venda normal no
+      // Celta) entra pela NF casada com o orçamento.
+      Promise.all([
+        this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
+        this.absorvidoPromoPortalNoMes(rep, periodo, piso, servicos),
+      ]).then(([v, portal]) => ({ ...v, absorvido: v.absorvido + portal })),
       this.efetivoAjustes(rep, mesesAjuste, piso).then((ls) => ls.filter((l) => mesmoMes(l.emissao, periodo))),
     ]);
+  }
+
+  /**
+   * Metade do negativo das vendas do mês em promoção do PORTAL B2B: NF casada
+   * com item de orçamento FECHADO em promoção do portal, a mesma conta do BI
+   * para a promoção do Celta. Casamento indisponível → 0 (a bolsa não cai).
+   */
+  private async absorvidoPromoPortalNoMes(rep: number, periodo: { ano: number; mes: number }, piso: number, servicos: number[]) {
+    const c = await this.casamentoDoRep(rep).catch((e) => {
+      this.logger.warn(`Promoção do portal na bolsa do mês indisponível (rep ${rep}): ${(e as Error).message}`);
+      return null;
+    });
+    if (!c) return 0;
+    const fora = new Set(servicos);
+    let total = 0;
+    c.linhas.forEach((l, i) => {
+      if (l.devolucao || l.promocao || fora.has(l.pro_codigo) || !mesmoMes(l.emissao, periodo)) return;
+      const promo_portal = fracaoPromoPortal(l.quantidade, c.porLinha.get(i) ?? []);
+      if (!promo_portal) return;
+      total += valoresLinha({ liquido: l.liquido, custo_bolsa: 0, custo_produto: l.custo_produto, promocao: false, servico: false, ajuste: 0, promo_portal }, piso).absorvido;
+    });
+    return total;
   }
 
   /** Códigos de serviço (subtipo 09) no ERP; indisponível → lista vazia (o serviço fica na bolsa). */
@@ -852,7 +880,7 @@ export class OrcamentoService {
   /* ------------------------------------------------------------ produtos */
 
   /** Enriquecimento comum: régua, exceção, giro, último preço do cliente, equivalente. */
-  private async enriquecer(produtos: ProdutoErp[], tabelaPreco: string | null, cli?: number): Promise<ProdutoOrcamento[]> {
+  private async enriquecer(produtos: ProdutoErp[], tabelaPreco: string | null, cli?: number, portal?: PromosPortal): Promise<ProdutoOrcamento[]> {
     if (!produtos.length) return [];
     const codigos = produtos.map((p) => p.PRO_CODIGO);
     const [regua, volume, excecoes, giro, ultimos, comGrupo, promos, oportunidades] = await Promise.all([
@@ -877,6 +905,7 @@ export class OrcamentoService {
       }),
     ]);
     const ultimoPor = new Map(ultimos.map((u) => [u.pro_codigo, u]));
+    comPromosDoPortal(promos, portal);
     return produtos.map((p) =>
       this.montarProduto(p, tabelaPreco, regua, volume, excecoes.get(p.PRO_CODIGO) ?? null, giro.get(p.PRO_CODIGO) ?? null, ultimoPor.get(p.PRO_CODIGO) ?? null, comGrupo.has(p.PRO_CODIGO), promos.get(p.PRO_CODIGO) ?? null, oportunidades.get(p.PRO_CODIGO) ?? null),
     );
@@ -1109,9 +1138,21 @@ export class OrcamentoService {
     return this.erp.imagem(id);
   }
 
-  async produtosPorCodigo(codigos: number[], tabelaPreco: string | null, cli?: number) {
+  async produtosPorCodigo(codigos: number[], tabelaPreco: string | null, cli?: number, portal?: PromosPortal) {
     const r = await this.erp.produtosPorCodigo(codigos);
-    return this.enriquecer(r, tabelaPreco, cli);
+    return this.enriquecer(r, tabelaPreco, cli, portal);
+  }
+
+  /** Promoções do portal B2B do orçamento (vazio para orçamento que não veio do portal). */
+  async promosPortalDe(orcamentoId: string | null | undefined): Promise<PromosPortal> {
+    if (!orcamentoId) return new Map();
+    const rows = await this.db.promosPortal(orcamentoId).catch((e) => {
+      this.logger.warn(`Promoções do portal do orçamento ${orcamentoId} indisponíveis: ${(e as Error).message}`);
+      return [];
+    });
+    const portal: PromosPortal = new Map();
+    for (const r of rows) portal.set(r.pro_codigo, { preco: r.preco, fim: r.fim, descricao: r.descricao });
+    return portal;
   }
 
   /** Equivalentes (mesmo grupo de similares) — com saldo primeiro. */
@@ -1191,9 +1232,10 @@ export class OrcamentoService {
     return out;
   }
 
-  async produto(codigo: number, tabelaPreco: string | null, cli?: number) {
+  async produto(codigo: number, tabelaPreco: string | null, cli?: number, orcamentoId?: string) {
+    const portal = await this.promosPortalDe(orcamentoId);
     const [lista, equivalentes, relacionados] = await Promise.all([
-      this.produtosPorCodigo([codigo], tabelaPreco, cli),
+      this.produtosPorCodigo([codigo], tabelaPreco, cli, portal),
       this.equivalentes(codigo, tabelaPreco, cli),
       this.relacionados(codigo, tabelaPreco, cli).catch(() => []),
     ]);
@@ -1318,10 +1360,10 @@ export class OrcamentoService {
    * na hora de salvar — o que a tela mostrou pode ter mudado. O preço negociado
    * é do vendedor; o resto é fotografia.
    */
-  private async montarItens(itens: ItemOrcamentoDto[], cliente: ClienteErp, presencial = false, meiaNota = false) {
+  private async montarItens(itens: ItemOrcamentoDto[], cliente: ClienteErp, presencial = false, meiaNota = false, portal?: PromosPortal) {
     if (!itens.length) throw new BadRequestException('Orçamento sem itens.');
     const tabelaPreco = cliente.TABELA_PRECO, cli = cliente.CLI_CODIGO;
-    const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), tabelaPreco, cli);
+    const produtos = await this.produtosPorCodigo(itens.map((i) => i.pro_codigo), tabelaPreco, cli, portal);
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
     const erros: string[] = [];
     const linhas: Prisma.ven_orcamento_itemUncheckedCreateInput[] = [];
@@ -1594,7 +1636,11 @@ export class OrcamentoService {
     return precisa;
   }
 
-  async criar(dto: SalvarOrcamentoDto) {
+  /**
+   * `promosPortal`: promoções do portal B2B dos itens (o "assumir" de um pedido
+   * do portal). Ficam gravadas com o orçamento e valem também nas edições.
+   */
+  async criar(dto: SalvarOrcamentoDto, opcoes: { promosPortal?: PromosPortal } = {}) {
     // Mesma trava da tela, garantida aqui: bloqueado no cadastro E com divergência
     // que a gerência não liberou. Os orçamentos existentes seguem editáveis.
     const trava = await this.db.travaDoRep(dto.rep_codigo);
@@ -1603,10 +1649,10 @@ export class OrcamentoService {
     }
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota, opcoes.promosPortal);
     const bolsa = await this.bolsaSnapshot(dto.rep_codigo, m);
     const pag = await this.pagamentoDe(dto);
-    return this.db.criar(
+    const criado = await this.db.criar(
       {
         cli_codigo: dto.cli_codigo,
         cli_nome: cliente.CLI_NOME,
@@ -1636,6 +1682,14 @@ export class OrcamentoService {
       },
       m.linhas,
     );
+    // Gravada com o orçamento: é ela que mantém a promoção nas edições, no
+    // conferir do editor e no PDF.
+    const doPedido = new Set(dto.itens.map((i) => i.pro_codigo));
+    const promos = [...(opcoes.promosPortal ?? new Map()).entries()].filter(([pro]) => doPedido.has(pro));
+    if (promos.length) {
+      await this.db.salvarPromosPortal(criado.id, promos.map(([pro_codigo, p]) => ({ pro_codigo, ...p })));
+    }
+    return criado;
   }
 
   async atualizar(id: string, dto: SalvarOrcamentoDto) {
@@ -1645,7 +1699,7 @@ export class OrcamentoService {
     }
     const cliente = await this.erp.clientePorCodigo(dto.cli_codigo);
     if (!cliente) throw new BadRequestException(`Cliente ${dto.cli_codigo} não encontrado no ERP.`);
-    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota);
+    const m = await this.montarItens(dto.itens, cliente, !!dto.presencial, !!dto.meia_nota, await this.promosPortalDe(id));
     // Editar os ITENS de um orçamento já enviado o devolve ao rascunho e derruba a aprovação:
     // o que o cliente recebeu (e o que o gerente liberou) mudou. Salvar sem mexer em produto,
     // quantidade e preço — só pagamento ou observação, como no "Fechou" — mantém os dois.
@@ -1846,7 +1900,7 @@ export class OrcamentoService {
     const [cli, produtos] = await Promise.all([
       this.erp.clienteParaPdf(o.cli_codigo).catch(() => null),
       itens.length
-        ? this.produtosPorCodigo(itens.map((i: any) => Number(i.pro_codigo)), o.tabela_preco, o.cli_codigo).catch(() => [] as ProdutoOrcamento[])
+        ? this.promosPortalDe(id).then((portal) => this.produtosPorCodigo(itens.map((i: any) => Number(i.pro_codigo)), o.tabela_preco, o.cli_codigo, portal)).catch(() => [] as ProdutoOrcamento[])
         : Promise.resolve([] as ProdutoOrcamento[]),
     ]);
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
@@ -2179,13 +2233,17 @@ export class OrcamentoService {
         if (n) { r.nota_fiscal ??= n.nota_fiscal; r.chave_nfe ??= n.chave_nfe; }
       }
     }
-    const linhas = rows.sort((a, b) => a.nfs - b.nfs || a.item - b.item).map((r) => ({ ...r, ajuste: 0 }));
-    atribuirAjustes(linhas, ajustes);
     const indice = new Map((cas?.linhas ?? []).map((l, i) => [`${l.empresa}|${l.serie}|${l.nfs}|${l.item}`, i]));
-    const itens = linhas.map((r) => {
+    const casadasDe = (r: { empresa: number; serie: string; nfs: number; item: number }) => {
       const i = indice.get(`${r.empresa}|${r.serie}|${r.nfs}|${r.item}`);
-      return { r, v: valoresLinha(r, piso), casadas: i == null ? [] : (cas!.porLinha.get(i) ?? []) };
-    });
+      return i == null ? [] : (cas!.porLinha.get(i) ?? []);
+    };
+    // Venda em promoção do portal B2B: o BI não a marca; vem da NF casada (como no card).
+    const linhas = rows
+      .sort((a, b) => a.nfs - b.nfs || a.item - b.item)
+      .map((r) => ({ ...r, ajuste: 0, promo_portal: r.devolucao ? 0 : fracaoPromoPortal(Math.abs(r.quantidade), casadasDe(r)) }));
+    atribuirAjustes(linhas, ajustes);
+    const itens = linhas.map((r) => ({ r, v: valoresLinha(r, piso), casadas: casadasDe(r) }));
     const notas = new Map<string, typeof itens>();
     for (const x of itens) {
       const chave = `${x.r.empresa}|${x.r.serie}|${x.r.nfs}`;
@@ -2518,7 +2576,7 @@ export class OrcamentoService {
    */
   async conferir(id: string) {
     const o = await this.obter(id);
-    const produtos = await this.produtosPorCodigo((o.itens ?? []).map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo);
+    const produtos = await this.produtosPorCodigo((o.itens ?? []).map((i) => i.pro_codigo), o.tabela_preco, o.cli_codigo, await this.promosPortalDe(id));
     const porCodigo = new Map(produtos.map((p) => [p.pro_codigo, p]));
     const avisos = (o.itens ?? []).flatMap((i) => {
       const p = porCodigo.get(i.pro_codigo);
@@ -2680,3 +2738,5 @@ function nomeTabelaCliente(t: string | null | undefined): string | null {
 function precoOportunidade(p: ProdutoErp) {
   return precoDaTabela(p as unknown as Record<string, unknown>, '2');
 }
+
+export { comPromosDoPortal, PROMOCAO_PORTAL, type PromosPortal } from './promocao-portal';

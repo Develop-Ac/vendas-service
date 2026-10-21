@@ -38,6 +38,9 @@ export interface PortalOrderItem {
    * pelo portal. `null` quando ele não vê preço ou o pedido é anterior ao campo.
    */
   precoUnitario?: number | null;
+  /** Preço promocional puro (sem margem) e fim da promoção — só para a intranet. */
+  promocaoPreco?: number | string | null;
+  promocaoFim?: string | null;
   product: PortalProduct;
 }
 
@@ -158,14 +161,19 @@ export class B2bRepository {
   }
 
   /** PUT /api/pedidos/:id no portal — o `id` é o do pedido lá (pedidoId aqui). */
-  async atualizarStatusPedido(pedidoId: string, status: string): Promise<void> {
+  async atualizarStatusPedido(
+    pedidoId: string,
+    status: string,
+    motivo?: string,
+  ): Promise<void> {
     const url = urlPortal(`/pedidos/${encodeURIComponent(pedidoId)}`);
 
     try {
       await firstValueFrom(
         this.httpService.put(
           url,
-          { status },
+          // `motivo` só vale no cancelamento: o portal grava em cancelReason.
+          motivo ? { status, motivo } : { status },
           {
             headers: {
               'Content-Type': 'application/json',

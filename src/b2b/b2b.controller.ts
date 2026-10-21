@@ -93,6 +93,28 @@ class VincularClienteBodyDto {
   cli_codigo!: number;
 }
 
+class QuemAtendeBodyDto {
+  @ApiProperty({ required: false, description: 'REP_CODIGO de quem atende (usuário logado)' })
+  rep_codigo?: number;
+  @ApiProperty({ required: false }) usuario_id?: string;
+  @ApiProperty({ required: false }) usuario_nome?: string;
+  @ApiProperty({
+    required: false,
+    description: 'Gestão do atacado: assume/recusa no lugar do vendedor responsável',
+  })
+  gestao?: boolean;
+  @ApiProperty({
+    required: false,
+    description: 'Só com gestao: vendedor do orçamento ao assumir (padrão: o responsável)',
+  })
+  vendedor_codigo?: number;
+}
+
+class RecusarBodyDto extends QuemAtendeBodyDto {
+  @ApiProperty({ example: 'Produto sem estoque e sem previsão' })
+  motivo!: string;
+}
+
 class AtribuirVendedorBodyDto {
   @ApiProperty({ example: 123, description: 'REP_CODIGO do vendedor do atacado' })
   rep_codigo!: number;
@@ -142,15 +164,82 @@ export class B2bController {
     return this.b2bService.pedidosSemResponsavel();
   }
 
+  @Get('aguardando')
+  @ApiOperation({
+    summary: 'Pedidos aguardando cotação (tela do orçamento)',
+    description:
+      'Pendentes desde B2B_PEDIDOS_DESDE, sem orçamento nem recusa, lidos do banco (a busca de cada minuto mantém em dia). `?rep=` deixa só os do vendedor; sem ele, todos (gestão).',
+  })
+  @ApiQuery({ name: 'rep', required: false, example: 7 })
+  async aguardando(@Query('rep') rep?: string) {
+    const n = rep != null && rep !== '' ? Number(rep) : null;
+    return this.b2bService.pedidosAguardando(
+      n != null && Number.isInteger(n) ? n : null,
+    );
+  }
+
+  @Post(':id/assumir')
+  @ApiOperation({
+    summary: 'Assumir o pedido: vira orçamento do atacado em rascunho',
+    description:
+      'Só o vendedor responsável ou a gestão (`gestao: true`). Cria o orçamento com o vendedor responsável, o preço que o cliente viu (ou tabela + margem) e a observação do pedido; o portal passa para PROCESSING. Item que não existe mais no ERP fica de fora (`fora`).',
+  })
+  @ApiParam({ name: 'id', description: 'id do registro, orderNumber ou pedidoId do portal' })
+  @ApiBody({ type: QuemAtendeBodyDto })
+  @ApiResponse({ status: 201, description: '{ orcamento_id, numero, fora }' })
+  @ApiResponse({ status: 403, description: 'Não é o vendedor responsável' })
+  @ApiResponse({ status: 409, description: 'Pedido já atendido ou sendo assumido' })
+  async assumir(@Param('id') id: string, @Body() dto: QuemAtendeBodyDto) {
+    return this.b2bService.assumir(id, {
+      rep_codigo: dto?.rep_codigo != null ? Number(dto.rep_codigo) : null,
+      usuario_id: dto?.usuario_id,
+      usuario_nome: dto?.usuario_nome,
+      gestao: dto?.gestao === true,
+      vendedor_codigo:
+        dto?.vendedor_codigo != null ? Number(dto.vendedor_codigo) : null,
+    });
+  }
+
+  @Put(':id/cliente')
+  @ApiOperation({
+    summary: 'Vincular a empresa do pedido ao cliente do Celta (gestão)',
+    description:
+      'Mesmo vínculo de PUT /b2b/empresas/:masterId/cliente, achando o master pela empresa do pedido. Devolve o cliente e o vendedor da carteira, se houver.',
+  })
+  @ApiParam({ name: 'id', description: 'id do registro, orderNumber ou pedidoId do portal' })
+  @ApiBody({ type: VincularClienteBodyDto })
+  async vincularDoPedido(
+    @Param('id') id: string,
+    @Body() dto: VincularClienteBodyDto,
+  ) {
+    return this.b2bService.vincularClienteDoPedido(id, Number(dto?.cli_codigo));
+  }
+
+  @Post(':id/recusar')
+  @ApiOperation({
+    summary: 'Recusar o pedido, com motivo',
+    description:
+      'Só o vendedor responsável ou a gestão. O portal mostra o pedido cancelado com o motivo.',
+  })
+  @ApiParam({ name: 'id', description: 'id do registro, orderNumber ou pedidoId do portal' })
+  @ApiBody({ type: RecusarBodyDto })
+  async recusar(@Param('id') id: string, @Body() dto: RecusarBodyDto) {
+    return this.b2bService.recusar(id, dto?.motivo, {
+      rep_codigo: dto?.rep_codigo != null ? Number(dto.rep_codigo) : null,
+      usuario_id: dto?.usuario_id,
+      usuario_nome: dto?.usuario_nome,
+      gestao: dto?.gestao === true,
+    });
+  }
+
   @Put(':id/vendedor')
   @ApiOperation({
     summary: 'Atribuir o vendedor do pedido (gestão)',
     description:
-      'Vale só para este pedido: NÃO carteiriza o cliente. Recusa cliente que já tem vendedor na carteira, pedido já assumido e vendedor fora do atacado.',
+      'Vale só para este pedido (também sobre o vendedor da carteira, ex.: férias): NÃO carteiriza o cliente. Recusa pedido já assumido e vendedor fora do atacado.',
   })
   @ApiParam({ name: 'id', description: 'id do registro, orderNumber ou pedidoId do portal' })
   @ApiBody({ type: AtribuirVendedorBodyDto })
-  @ApiResponse({ status: 409, description: 'Cliente já tem vendedor na carteira' })
   async atribuirVendedor(
     @Param('id') id: string,
     @Body() dto: AtribuirVendedorBodyDto,
