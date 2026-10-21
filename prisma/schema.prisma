@@ -2512,6 +2512,8 @@ model ven_orcamento_b2b {
   pedidoId                String?                   @db.VarChar(100)
   comprador               String?                   @db.VarChar(200)
   status                  String                    @default("PENDING") @db.VarChar(30)
+  clienteViuPreco         Boolean?
+  margem                  Decimal?                  @db.Decimal(7, 2)
   ven_orcamento_b2b_itens ven_orcamento_b2b_itens[]
 
   @@index([userId], map: "idx_orc_b2b_user")
@@ -2523,6 +2525,7 @@ model ven_orcamento_b2b_itens {
   pro_codigo           Int
   quantidade           Int
   promocao             String?           @db.VarChar(100)
+  preco_unitario       Decimal?          @db.Decimal(12, 2)
   ven_orcamento_b2b    ven_orcamento_b2b @relation(fields: [ven_orcamento_b2b_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([ven_orcamento_b2b_id], map: "idx_orc_b2b_itens_orc")

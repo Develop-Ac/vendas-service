@@ -12,6 +12,13 @@ import { B2bService } from './b2b.service';
 class PedidoItemResumoDto {
   @ApiProperty({ example: '47941' }) pro_codigo!: string;
   @ApiProperty({ example: 1 }) quantidade!: number;
+  @ApiProperty({
+    example: 12.5,
+    nullable: true,
+    description:
+      'Preço unitário que o comprador viu ao cotar (tabela + margem). `null` quando ele não viu preço.',
+  })
+  preco_unitario!: number | null;
 }
 
 class PedidoUsuarioResumoDto {
@@ -26,6 +33,21 @@ class PedidoResumoDto {
   @ApiProperty({ example: '2026-06-02T12:15:51.846Z' }) createdAt!: string;
   @ApiProperty({ type: [PedidoItemResumoDto] }) items!: PedidoItemResumoDto[];
   @ApiProperty({ type: PedidoUsuarioResumoDto }) user!: PedidoUsuarioResumoDto;
+  @ApiProperty({
+    example: true,
+    nullable: true,
+    description:
+      '`true` = o comprador viu preço ao fazer o pedido; `false` = não viu. `null` em pedido antigo, sem a informação.',
+  })
+  clienteViuPreco!: boolean | null;
+  @ApiProperty({ example: 10, nullable: true, description: 'Margem (%) já embutida nos preços.' })
+  margem!: number | null;
+  @ApiProperty({
+    example: 125.0,
+    nullable: true,
+    description: 'Soma de preco_unitario × quantidade dos itens com preço.',
+  })
+  valorTotal!: number | null;
 }
 
 class AtualizarStatusPedidoDto {
@@ -47,7 +69,7 @@ export class B2bController {
   @ApiOperation({
     summary: 'Listar pedidos do portal B2B',
     description:
-      'Consulta os pedidos na API do portal B2B (PORTAL_B2B_URL/api/pedidos) e retorna um resumo com número do pedido, data, itens (código e quantidade) e dados do comprador (id, nome e telefone).',
+      'Consulta os pedidos na API do portal B2B (PORTAL_B2B_URL/api/pedidos) e retorna um resumo com número do pedido, data, itens (código, quantidade e preço cotado), se o comprador viu preço (`clienteViuPreco`), o total cotado e dados do comprador (id, nome e telefone).',
   })
   @ApiResponse({
     status: 200,

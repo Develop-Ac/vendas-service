@@ -6,6 +6,8 @@ export interface OrcamentoB2bItemInput {
   pro_codigo: number;
   quantidade: number;
   promocao: string | null;
+  /** Preço unitário que o comprador viu; `null` quando ele não vê preço. */
+  preco_unitario: number | null;
 }
 
 export interface OrcamentoB2bGravado {
@@ -16,10 +18,14 @@ export interface OrcamentoB2bGravado {
   comprador: string | null;
   status: string | null;
   createdAt: Date;
+  /** `null` nos pedidos gravados antes da coluna existir. */
+  clienteViuPreco: boolean | null;
+  margem: number | null;
   itens: {
     pro_codigo: number;
     quantidade: number;
     promocao: string | null;
+    preco_unitario: number | null;
   }[];
 }
 
@@ -30,6 +36,8 @@ export interface OrcamentoB2bInput {
   comprador: string | null;
   status: string | null;
   createdAt: Date | null;
+  clienteViuPreco: boolean | null;
+  margem: number | null;
   itens: OrcamentoB2bItemInput[];
 }
 
@@ -43,6 +51,11 @@ export interface OrcamentoB2bInput {
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** As colunas `NUMERIC` chegam como `Decimal`; a API entrega `number`. */
+function paraNumero(valor: Prisma.Decimal | null): number | null {
+  return valor === null ? null : valor.toNumber();
+}
 
 @Injectable()
 export class B2bPrismaRepository {
@@ -65,10 +78,13 @@ export class B2bPrismaRepository {
       comprador: row.comprador,
       status: row.status,
       createdAt: row.createdAt,
+      clienteViuPreco: row.clienteViuPreco,
+      margem: paraNumero(row.margem),
       itens: row.ven_orcamento_b2b_itens.map((item) => ({
         pro_codigo: item.pro_codigo,
         quantidade: item.quantidade,
         promocao: item.promocao,
+        preco_unitario: paraNumero(item.preco_unitario),
       })),
     }));
   }
@@ -91,6 +107,8 @@ export class B2bPrismaRepository {
         userId: pedido.userId,
         pedidoId: pedido.pedidoId,
         comprador: pedido.comprador,
+        clienteViuPreco: pedido.clienteViuPreco,
+        margem: pedido.margem,
         // Sem status no payload, fica o default do banco ('PENDING').
         ...(pedido.status ? { status: pedido.status } : {}),
         ...(pedido.createdAt ? { createdAt: pedido.createdAt } : {}),
@@ -99,6 +117,7 @@ export class B2bPrismaRepository {
             pro_codigo: item.pro_codigo,
             quantidade: item.quantidade,
             promocao: item.promocao,
+            preco_unitario: item.preco_unitario,
           })),
         },
       },

@@ -33,7 +33,11 @@ export interface PortalOrderItem {
   orderId: string;
   productId: string;
   quantity: number;
-  priceAtTime: number;
+  /**
+   * Preço unitário que o comprador viu ao cotar (tabela + margem), congelado
+   * pelo portal. `null` quando ele não vê preço ou o pedido é anterior ao campo.
+   */
+  precoUnitario?: number | null;
   product: PortalProduct;
 }
 
@@ -60,6 +64,10 @@ export interface PortalOrder {
   items: PortalOrderItem[];
   user: PortalUser;
   comprador: string;
+  /** O comprador via preço quando fez o pedido. `false` = não viu preço. */
+  clienteViuPreco?: boolean;
+  /** Margem (%) do comprador já embutida no `precoUnitario` dos itens. */
+  margem?: number | null;
 }
 
 @Injectable()
