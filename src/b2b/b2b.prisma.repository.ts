@@ -232,4 +232,14 @@ export class B2bPrismaRepository {
       },
     });
   }
+
+  /** Clientes do Celta que já têm pedido B2B gravado (empresas vinculadas). */
+  async clientesVinculados(): Promise<number[]> {
+    const rows = await this.prisma.ven_orcamento_b2b.findMany({
+      where: { cli_codigo: { not: null } },
+      distinct: ['cli_codigo'],
+      select: { cli_codigo: true },
+    });
+    return rows.map((r) => r.cli_codigo as number);
+  }
 }
