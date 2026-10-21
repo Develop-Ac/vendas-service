@@ -15,6 +15,11 @@ export interface PedidoItemResumo {
   pro_codigo: string;
   quantidade: number;
   promocao: string | null;
+  /**
+   * Preço unitário que o comprador viu ao cotar (tabela + margem), congelado
+   * pelo portal. `null` quando ele não viu preço ou a peça não tinha preço.
+   */
+  preco_unitario: number | null;
 }
 
 export interface PedidoUsuarioResumo {
@@ -32,6 +37,33 @@ export interface PedidoResumo {
   user: PedidoUsuarioResumo;
   comprador: string;
   status: string;
+  /**
+   * O comprador via preço quando fez o pedido: `true` viu, `false` não viu.
+   * `null` só quando nem o banco nem o portal sabem (pedido antigo).
+   */
+  clienteViuPreco: boolean | null;
+  /** Margem (%) do comprador já embutida no `preco_unitario`. */
+  margem: number | null;
+  /** Soma de `preco_unitario × quantidade` dos itens com preço; `null` sem preço. */
+  valorTotal: number | null;
+}
+
+/**
+ * Total cotado: soma dos itens que têm preço. Calculado na saída, depois da
+ * fusão banco + portal, para valer igual nas duas fontes.
+ */
+function comValorTotal(pedido: PedidoResumo): PedidoResumo {
+  const comPreco = pedido.items.filter(
+    (item) => typeof item.preco_unitario === 'number',
+  );
+  if (!comPreco.length) return { ...pedido, valorTotal: null };
+
+  const centavos = comPreco.reduce(
+    (acc, item) =>
+      acc + Math.round((item.preco_unitario as number) * 100) * item.quantidade,
+    0,
+  );
+  return { ...pedido, valorTotal: centavos / 100 };
 }
 
 @Injectable()
@@ -105,7 +137,7 @@ export class B2bService {
     const doPortal = await this.lerPedidosDoPortal(gravados.length > 0);
 
     if (doPortal.length) await this.gravarPedidosNovos(doPortal);
-    if (!gravados.length) return doPortal;
+    if (!gravados.length) return doPortal.map(comValorTotal);
 
     // Indexado pelas duas chaves porque o portal é localizável tanto pelo
     // orderNumber quanto pelo id do pedido de lá (pedidoId aqui).
@@ -128,14 +160,15 @@ export class B2bService {
       (p) => !jaGravados.has(p.orderNumber),
     );
 
-    return [...mesclados, ...somenteNoPortal].sort(
-      (a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''),
-    );
+    return [...mesclados, ...somenteNoPortal]
+      .map(comValorTotal)
+      .sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
   }
 
   /**
    * O que está no banco tem precedência; o portal preenche o que falta ali —
-   * na prática, nome, telefone e carteira do comprador.
+   * na prática, nome, telefone e carteira do comprador, e o preço cotado dos
+   * pedidos gravados antes das colunas de preço existirem.
    */
   private mesclar(
     gravado: PedidoResumo,
@@ -143,13 +176,26 @@ export class B2bService {
   ): PedidoResumo {
     if (!portal) return gravado;
 
+    const precoDoPortal = new Map(
+      portal.items.map((item) => [item.pro_codigo, item.preco_unitario]),
+    );
+
     return {
       orderNumber: gravado.orderNumber || portal.orderNumber,
       createdAt: gravado.createdAt || portal.createdAt,
       pedidoId: gravado.pedidoId || portal.pedidoId,
       comprador: gravado.comprador || portal.comprador,
       status: gravado.status || portal.status,
-      items: gravado.items.length ? gravado.items : portal.items,
+      clienteViuPreco: gravado.clienteViuPreco ?? portal.clienteViuPreco,
+      margem: gravado.margem ?? portal.margem,
+      valorTotal: null,
+      items: gravado.items.length
+        ? gravado.items.map((item) => ({
+            ...item,
+            preco_unitario:
+              item.preco_unitario ?? precoDoPortal.get(item.pro_codigo) ?? null,
+          }))
+        : portal.items,
       user: {
         id: gravado.user.id || portal.user?.id,
         nome: gravado.user.nome || portal.user?.nome,
@@ -173,10 +219,15 @@ export class B2bService {
         pedidoId: pedido.id,
         comprador: pedido.comprador,
         status: pedido.status,
+        // Portal antigo, sem o campo: "não sei", e não "não viu".
+        clienteViuPreco: pedido.clienteViuPreco ?? null,
+        margem: pedido.margem ?? null,
+        valorTotal: null,
         items: pedido.items.map((item) => ({
           pro_codigo: item.product?.proCodigo,
           quantidade: item.quantity,
           promocao: item.product?.promotion?.textoPromocional || null,
+          preco_unitario: item.precoUnitario ?? null,
         })),
         user: {
           id: pedido.user?.id,
@@ -214,10 +265,14 @@ export class B2bService {
       pedidoId: row.pedidoId ?? '',
       comprador: row.comprador ?? '',
       status: row.status ?? '',
+      clienteViuPreco: row.clienteViuPreco,
+      margem: row.margem,
+      valorTotal: null,
       items: row.itens.map((item) => ({
         pro_codigo: String(item.pro_codigo),
         quantidade: item.quantidade,
         promocao: item.promocao,
+        preco_unitario: item.preco_unitario,
       })),
       // A tabela só tem o id do comprador; nome, telefone e carteira vêm do
       // portal, no `mesclar`.
@@ -256,6 +311,8 @@ export class B2bService {
           pedidoId: resumo.pedidoId ?? null,
           comprador: resumo.comprador ?? null,
           status: resumo.status ?? null,
+          clienteViuPreco: resumo.clienteViuPreco,
+          margem: resumo.margem,
           createdAt:
             criadoEm && !Number.isNaN(criadoEm.getTime()) ? criadoEm : null,
           itens: resumo.items
@@ -263,6 +320,7 @@ export class B2bService {
               pro_codigo: Number(item.pro_codigo),
               quantidade: Number(item.quantidade),
               promocao: item.promocao ?? null,
+              preco_unitario: item.preco_unitario ?? null,
             }))
             .filter(
               (item) =>
