@@ -53,6 +53,17 @@ export interface PortalUser {
   cliCodigo?: number | null;
 }
 
+/** Cliente da carteira como o portal recebe (PUT /api/integracoes/clientes-celta). */
+export interface ClienteCeltaPortal {
+  cliCodigo: number;
+  nome: string;
+  cpfCnpj: string | null;
+  cidade: string | null;
+  uf: string | null;
+  repCodigo: number | null;
+  repNome: string | null;
+}
+
 /** Empresa do portal, representada pelo master (GET /api/integracoes/empresas). */
 export interface PortalEmpresa {
   id: string;
@@ -248,6 +259,36 @@ export class B2bRepository {
       }
       throw new InternalServerErrorException(
         `Erro ao vincular o cliente no portal B2B: ${motivo}`,
+      );
+    }
+  }
+
+  /** Envia clientes da carteira; o portal acerta a carteira dos vinculados. */
+  async enviarCarteira(
+    clientes: ClienteCeltaPortal[],
+  ): Promise<{ clientes: number; usuarios: number }> {
+    const url = urlPortal('/integracoes/clientes-celta');
+    try {
+      const res = await firstValueFrom(
+        this.httpService.put<{ clientes: number; usuarios: number }>(
+          url,
+          { clientes },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'x-servico-token': tokenServico(),
+            },
+          },
+        ),
+      );
+      return res.data;
+    } catch (err: any) {
+      const motivo = motivoDoPortal(err);
+      this.logger.error(
+        `Erro ao enviar a carteira ao portal B2B: ${err?.response?.status ?? 'sem status'} - ${motivo}`,
+      );
+      throw new InternalServerErrorException(
+        `Erro ao enviar a carteira ao portal B2B: ${motivo}`,
       );
     }
   }

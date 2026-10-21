@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { OrcamentoService } from '../orcamento/orcamento.service';
+import { B2bCarteiraService } from './b2b.carteira.service';
 import { B2bService } from './b2b.service';
 import { B2bRepository, PortalOrder } from './b2b.repository';
 import { B2bPrismaRepository, OrcamentoB2bGravado } from './b2b.prisma.repository';
@@ -96,15 +97,18 @@ function montar(
       .fn()
       .mockResolvedValue([{ rep_codigo: 7, rep_nome: 'Alison', papel: null }]),
   };
+  const carteiraPortal = { enviarCliente: jest.fn().mockResolvedValue(undefined) };
   return {
     service: new B2bService(
       repo as unknown as B2bRepository,
       prisma as unknown as B2bPrismaRepository,
       orcamento as unknown as OrcamentoService,
+      carteiraPortal as unknown as B2bCarteiraService,
     ),
     repo,
     prisma,
     orcamento,
+    carteiraPortal,
   };
 }
 
@@ -217,8 +221,8 @@ describe('B2bService — cliente do Celta e vendedor responsável', () => {
     expect(fila.map((p) => p.orderNumber)).toEqual(['A']);
   });
 
-  it('vincular confere o cliente no ERP antes de gravar no portal', async () => {
-    const { service, repo, orcamento } = montar([]);
+  it('vincular confere o cliente no ERP e o envia ao portal antes de gravar', async () => {
+    const { service, repo, orcamento, carteiraPortal } = montar([]);
     orcamento.cliente.mockRejectedValueOnce(new Error('Cliente 1 não encontrado no ERP.'));
 
     await expect(service.vincularCliente('m1', 1)).rejects.toThrow('não encontrado');
@@ -230,6 +234,35 @@ describe('B2bService — cliente do Celta e vendedor responsável', () => {
       cli_nome: 'LOJA X LTDA',
     });
     expect(repo.vincularCliente).toHaveBeenCalledWith('m1', 555);
+    expect(carteiraPortal.enviarCliente).toHaveBeenCalledWith(
+      expect.objectContaining({ cli_codigo: 555 }),
+    );
+    expect(carteiraPortal.enviarCliente.mock.invocationCallOrder[0]).toBeLessThan(
+      repo.vincularCliente.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('empresas sem vínculo: quem tem pedido esperando vem primeiro, com a contagem', async () => {
+    const semVinculo = (company: string, n: string) => {
+      const p = pedidoPortal({ orderNumber: n, id: n });
+      p.user = { ...p.user, company, cliCodigo: null };
+      return p;
+    };
+    const { service, repo } = montar([
+      semVinculo('Loja B', 'ORD-1'),
+      semVinculo('Loja B', 'ORD-2'),
+    ]);
+    repo.listarEmpresas.mockResolvedValue([
+      { id: 'a', company: 'Loja A', cliCodigo: null },
+      { id: 'b', company: 'Loja B', cliCodigo: null },
+    ]);
+
+    const empresas = await service.listarEmpresas(true);
+
+    expect(empresas.map((e) => [e.company, e.pedidos_aguardando])).toEqual([
+      ['Loja B', 2],
+      ['Loja A', 0],
+    ]);
   });
 
   describe('atribuirVendedor', () => {

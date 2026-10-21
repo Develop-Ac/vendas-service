@@ -6,6 +6,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { OrcamentoService } from '../orcamento/orcamento.service';
+import { B2bCarteiraService } from './b2b.carteira.service';
 import { B2bRepository, PortalEmpresa } from './b2b.repository';
 import {
   B2bPrismaRepository,
@@ -95,6 +96,7 @@ export class B2bService {
     private readonly b2bRepository: B2bRepository,
     private readonly b2bPrismaRepository: B2bPrismaRepository,
     private readonly orcamento: OrcamentoService,
+    private readonly carteira: B2bCarteiraService,
   ) {}
 
   /**
@@ -224,9 +226,41 @@ export class B2bService {
 
   /* ------------------------------------------------ vínculo e responsável */
 
-  /** As empresas do portal; `semVinculo` deixa só as sem cliente do Celta. */
-  listarEmpresas(semVinculo: boolean): Promise<PortalEmpresa[]> {
-    return this.b2bRepository.listarEmpresas(semVinculo);
+  /**
+   * As empresas do portal; `semVinculo` deixa só as sem cliente do Celta. Com
+   * o acesso aberto a quem não é cliente, essa lista cresce: cada empresa vem
+   * com quantos pedidos tem esperando, e as que têm vêm primeiro — é o pedido
+   * que caiu que pede o vínculo.
+   */
+  async listarEmpresas(
+    semVinculo: boolean,
+  ): Promise<Array<PortalEmpresa & { pedidos_aguardando: number }>> {
+    const empresas = await this.b2bRepository.listarEmpresas(semVinculo);
+    if (!semVinculo) {
+      return empresas.map((e) => ({ ...e, pedidos_aguardando: 0 }));
+    }
+
+    const porEmpresa = new Map<string, number>();
+    try {
+      for (const p of await this.listarPedidos()) {
+        const company = p.user?.company;
+        if (p.status !== STATUS_AGUARDANDO || p.cli_codigo != null || !company) {
+          continue;
+        }
+        porEmpresa.set(company, (porEmpresa.get(company) ?? 0) + 1);
+      }
+    } catch (err: any) {
+      this.logger.warn(
+        `Empresas sem vínculo sem a contagem de pedidos: ${err?.message}`,
+      );
+    }
+
+    return empresas
+      .map((e) => ({
+        ...e,
+        pedidos_aguardando: (e.company && porEmpresa.get(e.company)) || 0,
+      }))
+      .sort((a, b) => b.pedidos_aguardando - a.pedidos_aguardando);
   }
 
   /**
@@ -243,6 +277,9 @@ export class B2bService {
     }
     // NotFound sobe para a tela: "Cliente N não encontrado no ERP."
     const cliente = await this.orcamento.cliente(cliCodigo);
+    // O portal precisa do cliente antes do vínculo: é dele que sai a carteira
+    // (o vendedor) da empresa, já na gravação do código.
+    await this.carteira.enviarCliente(cliente);
     const vinculo = await this.b2bRepository.vincularCliente(
       masterId,
       cliCodigo,

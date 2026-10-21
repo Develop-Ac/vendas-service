@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Put, Query } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Query } from '@nestjs/common';
 import {
   ApiBody,
   ApiOperation,
@@ -8,6 +8,7 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { B2bCarteiraService } from './b2b.carteira.service';
 import { B2bService } from './b2b.service';
 
 class PedidoItemResumoDto {
@@ -79,6 +80,12 @@ class EmpresaPortalDto {
   @ApiProperty({ nullable: true }) carteira!: string | null;
   @ApiProperty({ nullable: true, example: 12345 }) cliCodigo!: number | null;
   @ApiProperty() createdAt!: string;
+  @ApiProperty({
+    example: 2,
+    description:
+      'Pedidos ainda não assumidos da empresa (só em `semVinculo=1`): quem tem pedido esperando vem primeiro.',
+  })
+  pedidos_aguardando!: number;
 }
 
 class VincularClienteBodyDto {
@@ -213,5 +220,22 @@ export class B2bEmpresasController {
     @Body() dto: VincularClienteBodyDto,
   ) {
     return this.b2bService.vincularCliente(masterId, Number(dto?.cli_codigo));
+  }
+}
+
+@ApiTags('B2B')
+@Controller('b2b/carteira-portal')
+export class B2bCarteiraPortalController {
+  constructor(private readonly carteira: B2bCarteiraService) {}
+
+  @Post('enviar')
+  @ApiOperation({
+    summary: 'Enviar a carteira de clientes ao portal B2B agora',
+    description:
+      'O mesmo envio diário das 05:45 (B2B_CARTEIRA_PORTAL_CRON): clientes do atacado e vinculados, com o vendedor da carteirização. O portal acerta a carteira dos usuários vinculados. Use na primeira carga.',
+  })
+  @ApiResponse({ status: 201, description: '{ clientes, usuarios }' })
+  async enviar() {
+    return this.carteira.enviarTudo();
   }
 }
