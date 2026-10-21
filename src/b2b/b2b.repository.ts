@@ -49,6 +49,19 @@ export interface PortalUser {
   company: string;
   role: string;
   carteira: string;
+  /** Cliente do Celta vinculado à empresa; `null`/ausente = sem vínculo. */
+  cliCodigo?: number | null;
+}
+
+/** Empresa do portal, representada pelo master (GET /api/integracoes/empresas). */
+export interface PortalEmpresa {
+  id: string;
+  name: string;
+  email: string;
+  company: string | null;
+  carteira: string | null;
+  cliCodigo: number | null;
+  createdAt: string;
 }
 
 export interface PortalOrder {
@@ -70,6 +83,31 @@ export interface PortalOrder {
   margem?: number | null;
 }
 
+/** Base da API do portal. */
+function urlPortal(caminho: string): string {
+  const baseUrl = process.env.PORTAL_B2B_URL ?? 'http://localhost:3000';
+  return `${baseUrl}/api${caminho}`;
+}
+
+/**
+ * Segredo de serviço do portal: `SERVICO_TOKEN` quando definido, senão o
+ * `AUTH_SECRET` — a mesma regra do lado do portal e do mais-vendidos. Antes
+ * daqui só ia o `AUTH_SECRET`, e um portal com `SERVICO_TOKEN` próprio
+ * recusava as chamadas.
+ *
+ * NÃO registrar em log: ele trafega a cada chamada.
+ */
+function tokenServico(): string {
+  return process.env.SERVICO_TOKEN || process.env.AUTH_SECRET || '';
+}
+
+/** Motivo que o portal devolveu (`{ error }`), ou a mensagem do axios. */
+function motivoDoPortal(err: any): string {
+  return (
+    err?.response?.data?.error ?? err?.response?.data?.message ?? err?.message
+  );
+}
+
 @Injectable()
 export class B2bRepository {
   private readonly logger = new Logger(B2bRepository.name);
@@ -77,19 +115,13 @@ export class B2bRepository {
   constructor(private readonly httpService: HttpService) {}
 
   async listarPedidos(): Promise<responsePedidoApi> {
-    const baseUrl = process.env.PORTAL_B2B_URL ?? 'http://localhost:3000';
-    const url = `${baseUrl}/api/pedidos`;
-    const authSecret = process.env.AUTH_SECRET ?? '';
-
-    // NÃO registrar `authSecret` em log: é o segredo de serviço, e ele
-    // trafega a cada chamada. Havia um `console.log` aqui imprimindo-o junto
-    // com a URL a cada consulta de pedidos.
+    const url = urlPortal('/pedidos');
 
     try {
       const res = await firstValueFrom(
         this.httpService.get<responsePedidoApi>(url, {
-          headers: { 'x-servico-token': authSecret },
-        }), 
+          headers: { 'x-servico-token': tokenServico() },
+        }),
       );
       return res.data;
     } catch (err: any) {
@@ -105,9 +137,7 @@ export class B2bRepository {
 
   /** PUT /api/pedidos/:id no portal — o `id` é o do pedido lá (pedidoId aqui). */
   async atualizarStatusPedido(pedidoId: string, status: string): Promise<void> {
-    const baseUrl = process.env.PORTAL_B2B_URL ?? 'http://localhost:3000';
-    const url = `${baseUrl}/api/pedidos/${encodeURIComponent(pedidoId)}`;
-    const authSecret = process.env.AUTH_SECRET ?? '';
+    const url = urlPortal(`/pedidos/${encodeURIComponent(pedidoId)}`);
 
     try {
       await firstValueFrom(
@@ -117,7 +147,7 @@ export class B2bRepository {
           {
             headers: {
               'Content-Type': 'application/json',
-              'x-servico-token': authSecret,
+              'x-servico-token': tokenServico(),
             },
           },
         ),
@@ -127,10 +157,7 @@ export class B2bRepository {
       // O portal responde `{ error: '...' }`; sem isto o motivo real ("Transição
       // de status inválida", "Status inválido", "Pedido não encontrado") não
       // chegava nem ao log nem a quem chamou.
-      const motivo =
-        err?.response?.data?.error ??
-        err?.response?.data?.message ??
-        err.message;
+      const motivo = motivoDoPortal(err);
 
       this.logger.error(
         `Erro ao atualizar o status do pedido ${pedidoId} no portal B2B: ${statusHttp ?? 'sem status'} - ${motivo}`,
@@ -147,6 +174,73 @@ export class B2bRepository {
 
       throw new InternalServerErrorException(
         `Erro ao atualizar o status do pedido no portal B2B: ${motivo}`,
+      );
+    }
+  }
+
+  /** As empresas do portal (uma por master); `semVinculo` = só as sem cliente. */
+  async listarEmpresas(semVinculo: boolean): Promise<PortalEmpresa[]> {
+    const url = urlPortal(
+      `/integracoes/empresas${semVinculo ? '?semVinculo=1' : ''}`,
+    );
+    try {
+      const res = await firstValueFrom(
+        this.httpService.get<PortalEmpresa[]>(url, {
+          headers: { 'x-servico-token': tokenServico() },
+        }),
+      );
+      return res.data;
+    } catch (err: any) {
+      const motivo = motivoDoPortal(err);
+      this.logger.error(
+        `Erro ao listar as empresas do portal B2B: ${err?.response?.status ?? 'sem status'} - ${motivo}`,
+      );
+      throw new InternalServerErrorException(
+        `Erro ao consultar as empresas do portal B2B: ${motivo}`,
+      );
+    }
+  }
+
+  /** Grava no portal o cliente do Celta da empresa do master (e da equipe). */
+  async vincularCliente(
+    masterId: string,
+    cliCodigo: number,
+  ): Promise<{ company: string; cliCodigo: number; usuarios: number }> {
+    const url = urlPortal(
+      `/integracoes/empresas/${encodeURIComponent(masterId)}/cliente`,
+    );
+    try {
+      const res = await firstValueFrom(
+        this.httpService.put<{
+          company: string;
+          cliCodigo: number;
+          usuarios: number;
+        }>(
+          url,
+          { cliCodigo },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'x-servico-token': tokenServico(),
+            },
+          },
+        ),
+      );
+      return res.data;
+    } catch (err: any) {
+      const statusHttp: number | undefined = err?.response?.status;
+      const motivo = motivoDoPortal(err);
+      this.logger.error(
+        `Erro ao vincular a empresa ${masterId} ao cliente ${cliCodigo} no portal B2B: ${statusHttp ?? 'sem status'} - ${motivo}`,
+      );
+      if (statusHttp && statusHttp >= 400 && statusHttp < 500) {
+        throw new HttpException(
+          `O portal B2B recusou o vínculo: ${motivo}`,
+          statusHttp,
+        );
+      }
+      throw new InternalServerErrorException(
+        `Erro ao vincular o cliente no portal B2B: ${motivo}`,
       );
     }
   }
