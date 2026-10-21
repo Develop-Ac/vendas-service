@@ -503,7 +503,7 @@ describe('B2bService — assumir e recusar', () => {
     expect(dto.observacao).toContain('Pedido B2B ORD-1');
     expect(dto.observacao).toContain('Entrega: Rua A, 10');
     expect(dto.observacao).toContain('Obs. do cliente: Entregar pela manhã');
-    expect(dto.observacao).toContain('Promoção do portal nos itens: 200');
+    expect(dto.observacao).toContain('Promoção do portal B2B nos itens: 200');
     expect(prisma.concluirAssumir).toHaveBeenCalledWith('g1', 'orc1');
     expect(repo.atualizarStatusPedido).toHaveBeenCalledWith('p1', 'PROCESSING');
     expect(avisos.b2bEncerrado).toHaveBeenCalledWith('ORD-1');
@@ -524,6 +524,35 @@ describe('B2bService — assumir e recusar', () => {
     const dto = orcamento.criar.mock.calls[0][0];
     expect(dto.itens).toEqual([{ pro_codigo: 100, quantidade: 2, preco_base: 11 }]);
     expect(dto.observacao).toContain('Preço não exibido ao cliente');
+  });
+
+  it('item em promoção do portal: vai como promoção, com a margem, sem preço base', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    const fim = new Date('2099-12-31T00:00:00Z');
+    prisma.buscarParaAssumir.mockResolvedValue(
+      pedido({
+        clienteViuPreco: false,
+        itens: [
+          { pro_codigo: 100, quantidade: 2, promocao: 'Queima', preco_unitario: null, promocao_preco: 8, promocao_fim: fim },
+          { pro_codigo: 200, quantidade: 1, promocao: null, preco_unitario: null, promocao_preco: null, promocao_fim: null },
+        ],
+      }),
+    );
+    orcamento.produtosPorCodigo.mockResolvedValue([
+      { pro_codigo: 100, preco_tabela: 10 },
+      { pro_codigo: 200, preco_tabela: 9 },
+    ]);
+
+    await service.assumir('ORD-1', { rep_codigo: 9 });
+
+    const [dto, opcoes] = orcamento.criar.mock.calls[0];
+    expect(dto.itens).toEqual([
+      { pro_codigo: 100, quantidade: 2 },
+      { pro_codigo: 200, quantidade: 1, preco_base: 9.9 },
+    ]);
+    expect([...opcoes.promosPortal.entries()]).toEqual([
+      [100, { preco: 8.8, fim, descricao: 'Promoção do portal B2B: Queima' }],
+    ]);
   });
 
   it('item que não existe mais no ERP fica de fora e vai para a observação', async () => {

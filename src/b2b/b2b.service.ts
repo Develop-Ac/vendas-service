@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { SalvarOrcamentoDto } from '../orcamento/dto/orcamento.dto';
-import { OrcamentoService } from '../orcamento/orcamento.service';
+import { OrcamentoService, PromosPortal } from '../orcamento/orcamento.service';
 import { B2bCarteiraService } from './b2b.carteira.service';
 import { B2bRepository, PortalEmpresa, PortalOrder } from './b2b.repository';
 import {
@@ -27,6 +27,9 @@ export interface PedidoItemResumo {
    * pelo portal. `null` quando ele não viu preço ou a peça não tinha preço.
    */
   preco_unitario: number | null;
+  /** Promoção do portal: preço puro (sem margem) e fim (YYYY-MM-DD). */
+  promocao_preco?: number | null;
+  promocao_fim?: string | null;
 }
 
 export interface PedidoUsuarioResumo {
@@ -144,6 +147,11 @@ function resumoDoPortal(pedido: PortalOrder): PedidoResumo {
       quantidade: item.quantity,
       promocao: item.product?.promotion?.textoPromocional || null,
       preco_unitario: item.precoUnitario ?? null,
+      promocao_preco:
+        item.promocaoPreco != null && Number.isFinite(Number(item.promocaoPreco))
+          ? Number(item.promocaoPreco)
+          : null,
+      promocao_fim: item.promocaoFim ? String(item.promocaoFim).slice(0, 10) : null,
     })),
     user: {
       id: pedido.user?.id,
@@ -507,18 +515,40 @@ export class B2bService {
       }
 
       const margem = Number(pedido.margem ?? 0);
+      const comMargem = (preco: number) =>
+        Math.round(preco * (1 + (margem > 0 ? margem : 0) / 100) * 100) / 100;
+
+      // Promoção do portal: o orçamento a trata como promoção (preço fechado,
+      // metade da bolsa, validade até o fim). Preço = o que o comprador viu, a
+      // promoção com a margem dele — também quando ele não via preço.
+      const promosPortal: PromosPortal = new Map();
+      for (const i of validos) {
+        if (!(Number(i.promocao_preco) > 0) || !i.promocao_fim) continue;
+        promosPortal.set(i.pro_codigo, {
+          preco:
+            pedido.clienteViuPreco && Number(i.preco_unitario) > 0
+              ? Number(i.preco_unitario)
+              : comMargem(Number(i.promocao_preco)),
+          fim: i.promocao_fim,
+          descricao: `Promoção do portal B2B${i.promocao ? `: ${i.promocao}` : ''}`.slice(0, 200),
+        });
+      }
+
       const itens = validos.map((i) => {
         const tabela = Number(porCodigo.get(i.pro_codigo)?.preco_tabela ?? 0);
         const base =
           pedido.clienteViuPreco && i.preco_unitario != null
             ? i.preco_unitario
             : margem > 0 && tabela > 0
-              ? Math.round(tabela * (1 + margem / 100) * 100) / 100
+              ? comMargem(tabela)
               : null;
         return {
           pro_codigo: i.pro_codigo,
           quantidade: i.quantidade,
-          ...(base != null && base > 0 ? { preco_base: base } : {}),
+          // Em promoção o preço é o da promoção: base acima da tabela não vale.
+          ...(base != null && base > 0 && !promosPortal.has(i.pro_codigo)
+            ? { preco_base: base }
+            : {}),
         };
       });
 
@@ -530,7 +560,7 @@ export class B2bService {
         itens,
         usuario_id: quem.usuario_id ?? undefined,
         usuario_nome: quem.usuario_nome ?? undefined,
-      } satisfies SalvarOrcamentoDto);
+      } satisfies SalvarOrcamentoDto, { promosPortal });
     } catch (err) {
       await this.b2bPrismaRepository.liberarReserva(pedido.id).catch(() => undefined);
       throw err;
@@ -667,7 +697,7 @@ export class B2bService {
     }
     const promos = pedido.itens.filter((i) => i.promocao).map((i) => i.pro_codigo);
     if (promos.length) {
-      linhas.push(`Promoção do portal nos itens: ${promos.join(', ')}.`);
+      linhas.push(`Promoção do portal B2B nos itens: ${promos.join(', ')}.`);
     }
     if (fora.length) {
       linhas.push(`Fora do orçamento (não existem mais no ERP): ${fora.join(', ')}.`);
@@ -980,6 +1010,8 @@ export class B2bService {
               quantidade: Number(item.quantidade),
               promocao: item.promocao ?? null,
               preco_unitario: item.preco_unitario ?? null,
+              promocao_preco: item.promocao_preco ?? null,
+              promocao_fim: item.promocao_fim ? new Date(`${item.promocao_fim}T00:00:00Z`) : null,
             }))
             .filter(
               (item) =>

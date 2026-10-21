@@ -2205,6 +2205,7 @@ model ven_orcamento {
   bolsa_orcamento     Decimal?             @db.Decimal(14, 2)
   ven_bolsa_ajuste    ven_bolsa_ajuste[]
   itens               ven_orcamento_item[]
+  promos_portal       ven_orcamento_promo_portal[]
   ven_venda_perdida   ven_venda_perdida[]
 
   @@index([cli_codigo], map: "idx_ven_orcamento_cli")
@@ -2540,6 +2541,20 @@ model ven_orcamento_b2b {
   @@index([status], map: "idx_orc_b2b_status")
 }
 
+/// Promoção do portal B2B de um item do orçamento (não existe no Celta). Faz o
+/// orçamento tratar o item como promoção; `preco` já tem a margem do comprador.
+model ven_orcamento_promo_portal {
+  orcamento_id  String
+  pro_codigo    Int
+  preco         Decimal       @db.Decimal(12, 2)
+  fim           DateTime      @db.Date
+  descricao     String        @db.VarChar(200)
+  created_at    DateTime      @default(now()) @db.Timestamptz(6)
+  ven_orcamento ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@id([orcamento_id, pro_codigo])
+}
+
 model ven_orcamento_b2b_itens {
   id                   String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   ven_orcamento_b2b_id String            @db.Uuid
@@ -2547,6 +2562,9 @@ model ven_orcamento_b2b_itens {
   quantidade           Int
   promocao             String?           @db.VarChar(100)
   preco_unitario       Decimal?          @db.Decimal(12, 2)
+  /// Preço promocional puro (sem margem) e fim da promoção, congelados pelo portal.
+  promocao_preco       Decimal?          @db.Decimal(12, 2)
+  promocao_fim         DateTime?         @db.Date
   ven_orcamento_b2b    ven_orcamento_b2b @relation(fields: [ven_orcamento_b2b_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([ven_orcamento_b2b_id], map: "idx_orc_b2b_itens_orc")

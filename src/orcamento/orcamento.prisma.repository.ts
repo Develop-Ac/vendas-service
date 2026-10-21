@@ -887,6 +887,20 @@ export class OrcamentoPrismaRepository {
     });
   }
 
+  /** Promoções do portal B2B gravadas para os itens do orçamento. */
+  async promosPortal(orcamentoId: string): Promise<Array<{ pro_codigo: number; preco: number; fim: Date; descricao: string }>> {
+    const rows = await this.prisma.ven_orcamento_promo_portal.findMany({ where: { orcamento_id: orcamentoId } });
+    return rows.map((r) => ({ pro_codigo: r.pro_codigo, preco: Number(r.preco), fim: r.fim, descricao: r.descricao }));
+  }
+
+  async salvarPromosPortal(orcamentoId: string, promos: Array<{ pro_codigo: number; preco: number; fim: Date; descricao: string }>) {
+    if (!promos.length) return;
+    await this.prisma.ven_orcamento_promo_portal.createMany({
+      data: promos.map((p) => ({ orcamento_id: orcamentoId, ...p })),
+      skipDuplicates: true,
+    });
+  }
+
   async criar(cab: Prisma.ven_orcamentoUncheckedCreateInput, itens: Prisma.ven_orcamento_itemUncheckedCreateInput[]) {
     const o = await this.prisma.ven_orcamento.create({
       data: { ...cab, itens: { create: itens.map(({ orcamento_id: _o, ...i }) => i) } },

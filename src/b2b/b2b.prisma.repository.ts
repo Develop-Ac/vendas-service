@@ -8,6 +8,9 @@ export interface OrcamentoB2bItemInput {
   promocao: string | null;
   /** Preço unitário que o comprador viu; `null` quando ele não vê preço. */
   preco_unitario: number | null;
+  /** Promoção do portal: preço puro (sem margem) e fim. */
+  promocao_preco?: number | null;
+  promocao_fim?: Date | null;
 }
 
 export interface OrcamentoB2bGravado {
@@ -31,6 +34,8 @@ export interface OrcamentoB2bGravado {
     quantidade: number;
     promocao: string | null;
     preco_unitario: number | null;
+    promocao_preco?: number | null;
+    promocao_fim?: Date | null;
   }[];
 }
 
@@ -104,6 +109,8 @@ function paraGravado(row: LinhaB2b): OrcamentoB2bGravado {
       quantidade: item.quantidade,
       promocao: item.promocao,
       preco_unitario: paraNumero(item.preco_unitario),
+      promocao_preco: paraNumero(item.promocao_preco),
+      promocao_fim: item.promocao_fim,
     })),
   };
 }
@@ -246,6 +253,8 @@ export class B2bPrismaRepository {
             quantidade: item.quantidade,
             promocao: item.promocao,
             preco_unitario: item.preco_unitario,
+            promocao_preco: item.promocao_preco ?? null,
+            promocao_fim: item.promocao_fim ?? null,
           })),
         },
       },
