@@ -103,6 +103,11 @@ class QuemAtendeBodyDto {
     description: 'Gestão do atacado: assume/recusa no lugar do vendedor responsável',
   })
   gestao?: boolean;
+  @ApiProperty({
+    required: false,
+    description: 'Só com gestao: vendedor do orçamento ao assumir (padrão: o responsável)',
+  })
+  vendedor_codigo?: number;
 }
 
 class RecusarBodyDto extends QuemAtendeBodyDto {
@@ -190,7 +195,24 @@ export class B2bController {
       usuario_id: dto?.usuario_id,
       usuario_nome: dto?.usuario_nome,
       gestao: dto?.gestao === true,
+      vendedor_codigo:
+        dto?.vendedor_codigo != null ? Number(dto.vendedor_codigo) : null,
     });
+  }
+
+  @Put(':id/cliente')
+  @ApiOperation({
+    summary: 'Vincular a empresa do pedido ao cliente do Celta (gestão)',
+    description:
+      'Mesmo vínculo de PUT /b2b/empresas/:masterId/cliente, achando o master pela empresa do pedido. Devolve o cliente e o vendedor da carteira, se houver.',
+  })
+  @ApiParam({ name: 'id', description: 'id do registro, orderNumber ou pedidoId do portal' })
+  @ApiBody({ type: VincularClienteBodyDto })
+  async vincularDoPedido(
+    @Param('id') id: string,
+    @Body() dto: VincularClienteBodyDto,
+  ) {
+    return this.b2bService.vincularClienteDoPedido(id, Number(dto?.cli_codigo));
   }
 
   @Post(':id/recusar')
@@ -214,11 +236,10 @@ export class B2bController {
   @ApiOperation({
     summary: 'Atribuir o vendedor do pedido (gestão)',
     description:
-      'Vale só para este pedido: NÃO carteiriza o cliente. Recusa cliente que já tem vendedor na carteira, pedido já assumido e vendedor fora do atacado.',
+      'Vale só para este pedido (também sobre o vendedor da carteira, ex.: férias): NÃO carteiriza o cliente. Recusa pedido já assumido e vendedor fora do atacado.',
   })
   @ApiParam({ name: 'id', description: 'id do registro, orderNumber ou pedidoId do portal' })
   @ApiBody({ type: AtribuirVendedorBodyDto })
-  @ApiResponse({ status: 409, description: 'Cliente já tem vendedor na carteira' })
   async atribuirVendedor(
     @Param('id') id: string,
     @Body() dto: AtribuirVendedorBodyDto,

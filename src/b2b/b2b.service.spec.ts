@@ -309,16 +309,16 @@ describe('B2bService — cliente do Celta e vendedor responsável', () => {
       expect(r.responsavel.origem).toBe('PEDIDO');
     });
 
-    it('recusa cliente que já tem vendedor na carteira', async () => {
+    it('pode designar sobre o vendedor da carteira (vale só para o pedido)', async () => {
       const { service, prisma } = montar([], [], [
         [555, { rep_codigo: 9, rep_nome: 'Fernando' }],
       ]);
       prisma.buscarPorIdentificador.mockResolvedValue(PEDIDO);
 
-      await expect(service.atribuirVendedor('ORD-1', 7)).rejects.toThrow(
-        ConflictException,
-      );
-      expect(prisma.atribuirVendedor).not.toHaveBeenCalled();
+      const r = await service.atribuirVendedor('ORD-1', 7);
+
+      expect(r.responsavel).toEqual({ rep_codigo: 7, rep_nome: 'Alison', origem: 'PEDIDO' });
+      expect(prisma.atribuirVendedor).toHaveBeenCalled();
     });
 
     it('recusa pedido já assumido, sem vínculo ou vendedor fora do atacado', async () => {
@@ -578,6 +578,60 @@ describe('B2bService — assumir e recusar', () => {
     await expect(service.assumir('ORD-1', { rep_codigo: 9 })).rejects.toThrow('ERP fora');
     expect(prisma.liberarReserva).toHaveBeenCalledWith('g1');
     expect(prisma.concluirAssumir).not.toHaveBeenCalled();
+  });
+
+  it('gestão assume com o vendedor escolhido, mesmo sem responsável', async () => {
+    const { service, prisma, orcamento } = montar([]);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido({ cli_codigo: 999 }));
+    orcamento.produtosPorCodigo.mockResolvedValue([
+      { pro_codigo: 100, preco_tabela: 10 },
+      { pro_codigo: 200, preco_tabela: 9 },
+    ]);
+
+    await expect(service.assumir('ORD-1', { gestao: true })).rejects.toThrow(
+      BadRequestException,
+    );
+
+    await service.assumir('ORD-1', { gestao: true, vendedor_codigo: 7, usuario_nome: 'Gestora' });
+    expect(orcamento.criar.mock.calls[0][0]).toEqual(
+      expect.objectContaining({ rep_codigo: 7, rep_nome: 'Alison' }),
+    );
+    expect(prisma.atribuirVendedor).toHaveBeenCalledWith('g1', {
+      rep_codigo: 7,
+      rep_nome: 'Alison',
+      atribuido_por: 'Gestora',
+    });
+  });
+
+  it('vendedor não escolhe outro vendedor ao assumir', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido());
+    orcamento.produtosPorCodigo.mockResolvedValue([{ pro_codigo: 100, preco_tabela: 10 }]);
+
+    await service.assumir('ORD-1', { rep_codigo: 9, vendedor_codigo: 7 });
+
+    expect(orcamento.criar.mock.calls[0][0]).toEqual(expect.objectContaining({ rep_codigo: 9 }));
+  });
+
+  it('vincular pelo pedido acha o master pela empresa e devolve o vendedor da carteira', async () => {
+    const { service, prisma, repo } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(pedido({ cli_codigo: null }));
+    repo.listarEmpresas.mockResolvedValue([
+      { id: 'm-outra', company: 'Loja Y' },
+      { id: 'm1', company: 'Loja X' },
+    ]);
+
+    const r = await service.vincularClienteDoPedido('ORD-1', 555);
+
+    expect(repo.vincularCliente).toHaveBeenCalledWith('m1', 555);
+    expect(r).toEqual({
+      cli_codigo: 555,
+      cli_nome: 'LOJA X LTDA',
+      responsavel: { rep_codigo: 9, rep_nome: 'Fernando', origem: 'CARTEIRA' },
+    });
+
+    prisma.buscarParaAssumir.mockResolvedValue(pedido({ empresa: 'Sumiu' }));
+    await expect(service.vincularClienteDoPedido('ORD-1', 555)).rejects.toThrow('não encontrada');
   });
 
   it('recusar exige motivo e cancela no portal com ele', async () => {

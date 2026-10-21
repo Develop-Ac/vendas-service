@@ -97,6 +97,11 @@ export interface QuemAtende {
   usuario_nome?: string | null;
   /** Gestão do atacado: pode assumir no lugar do vendedor responsável. */
   gestao?: boolean;
+  /**
+   * Só a gestão: vendedor do orçamento ao assumir. Sem ele, vale o
+   * responsável (atribuído ao pedido ou da carteira).
+   */
+  vendedor_codigo?: number | null;
 }
 
 /** Só pedido ainda não assumido entra nas filas da gestão. */
@@ -456,10 +461,16 @@ export class B2bService {
       );
     }
     const [resumo] = await this.comResponsaveis([this.paraResumo(pedido)]);
-    const responsavel = resumo.responsavel;
+    // A gestão escolhe quem fica com a venda (inclusive outro que não o da
+    // carteira); o vendedor só assume o que é dele.
+    const escolhido =
+      quem.gestao && quem.vendedor_codigo != null
+        ? await this.vendedorDoAtacado(quem.vendedor_codigo)
+        : null;
+    const responsavel = escolhido ?? resumo.responsavel;
     if (!responsavel) {
       throw new BadRequestException(
-        `Pedido ${pedido.orderNumber} sem vendedor: atribua na tela B2B.`,
+        `Pedido ${pedido.orderNumber} sem vendedor: escolha quem atende.`,
       );
     }
     if (!quem.gestao && quem.rep_codigo !== responsavel.rep_codigo) {
@@ -525,6 +536,14 @@ export class B2bService {
       throw err;
     }
 
+    if (escolhido) {
+      // O pedido registra o vendedor escolhido, como num "designar".
+      await this.b2bPrismaRepository.atribuirVendedor(pedido.id, {
+        rep_codigo: escolhido.rep_codigo,
+        rep_nome: escolhido.rep_nome ?? '',
+        atribuido_por: quem.usuario_nome?.trim() || null,
+      });
+    }
     await this.b2bPrismaRepository.concluirAssumir(pedido.id, criado.id);
     this.avisos.b2bEncerrado(pedido.orderNumber);
     // O orçamento já existe: o portal fora do ar não pode desfazê-lo. Fica no
@@ -580,6 +599,59 @@ export class B2bService {
     await this.b2bPrismaRepository.registrarRecusa(pedido.id, texto);
     this.avisos.b2bEncerrado(pedido.orderNumber);
     return { id: pedido.id, status: 'CANCELLED' };
+  }
+
+  /** Vendedor ativo do atacado (comissão); 400 se não for. */
+  private async vendedorDoAtacado(
+    repCodigo: number,
+  ): Promise<{ rep_codigo: number; rep_nome: string; origem: 'PEDIDO' }> {
+    const v = (await this.orcamento.vendedores()).find(
+      (x) => x.rep_codigo === repCodigo,
+    );
+    if (!v) {
+      throw new BadRequestException(
+        `Vendedor ${repCodigo} não é um vendedor ativo do atacado.`,
+      );
+    }
+    return { rep_codigo: v.rep_codigo, rep_nome: v.rep_nome, origem: 'PEDIDO' };
+  }
+
+  /**
+   * Vínculo feito a partir do pedido (tela do orçamento da gestão). O portal
+   * vincula pelo master da empresa e o pedido só conhece o comprador: o master
+   * é achado pela empresa do pedido, a mesma `company` exata do portal.
+   */
+  async vincularClienteDoPedido(
+    identificador: string,
+    cliCodigo: number,
+  ): Promise<{ cli_codigo: number; cli_nome: string; responsavel: ResponsavelPedido | null }> {
+    const pedido =
+      await this.b2bPrismaRepository.buscarParaAssumir(identificador);
+    if (!pedido) {
+      throw new NotFoundException(`Pedido B2B não encontrado: ${identificador}`);
+    }
+    if (!pedido.empresa) {
+      throw new BadRequestException(
+        `Pedido ${pedido.orderNumber} sem empresa gravada: vincule pela tela Portal B2B.`,
+      );
+    }
+    const master = (await this.b2bRepository.listarEmpresas(false)).find(
+      (e) => e.company === pedido.empresa,
+    );
+    if (!master) {
+      throw new NotFoundException(
+        `Empresa "${pedido.empresa}" não encontrada no portal: vincule pela tela Portal B2B.`,
+      );
+    }
+    const r = await this.vincularCliente(master.id, cliCodigo);
+    const vendedor = (
+      await this.b2bPrismaRepository.vendedoresDaCarteira([cliCodigo])
+    ).get(cliCodigo);
+    return {
+      cli_codigo: r.cli_codigo,
+      cli_nome: r.cli_nome,
+      responsavel: vendedor ? { ...vendedor, origem: 'CARTEIRA' } : null,
+    };
   }
 
   private observacaoDoPedido(pedido: PedidoParaAssumir, fora: number[]): string {
@@ -694,9 +766,9 @@ export class B2bService {
   }
 
   /**
-   * A gestão escolhe o vendedor deste pedido. Vale só para o pedido: o
-   * cliente continua sem carteira até a gestão carteirizá-lo pela tela de
-   * carteirização. Cliente que já tem vendedor na carteira não aceita.
+   * A gestão escolhe o vendedor deste pedido. Vale só para o pedido — também
+   * quando o cliente já tem vendedor na carteira (férias, por exemplo): a
+   * carteira não muda; isso continua na tela de carteirização.
    */
   async atribuirVendedor(
     identificador: string,
@@ -723,23 +795,7 @@ export class B2bService {
         `Pedido ${pedido.orderNumber} sem cliente do Celta: vincule a empresa primeiro.`,
       );
     }
-    const daCarteira = (
-      await this.b2bPrismaRepository.vendedoresDaCarteira([pedido.cli_codigo])
-    ).get(pedido.cli_codigo);
-    if (daCarteira) {
-      throw new ConflictException(
-        `O cliente ${pedido.cli_codigo} já é da carteira de ${daCarteira.rep_nome ?? daCarteira.rep_codigo}.`,
-      );
-    }
-
-    const vendedor = (await this.orcamento.vendedores()).find(
-      (v) => v.rep_codigo === repCodigo,
-    );
-    if (!vendedor) {
-      throw new BadRequestException(
-        `Vendedor ${repCodigo} não é um vendedor ativo do atacado.`,
-      );
-    }
+    const vendedor = await this.vendedorDoAtacado(repCodigo);
 
     await this.b2bPrismaRepository.atribuirVendedor(pedido.id, {
       rep_codigo: vendedor.rep_codigo,
