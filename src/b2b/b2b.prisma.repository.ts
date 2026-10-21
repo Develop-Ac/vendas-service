@@ -205,6 +205,26 @@ export class B2bPrismaRepository {
   }
 
   /**
+   * Preço promocional e fim nos itens de pedidos AGUARDANDO gravados antes de o
+   * portal mandá-los: só onde ainda estão vazios.
+   */
+  async completarPromocoes(
+    itens: Array<{ orderNumber: string; pro_codigo: number; promocao_preco: number; promocao_fim: Date | null }>,
+  ): Promise<void> {
+    for (const i of itens) {
+      if (!Number.isInteger(i.pro_codigo)) continue;
+      await this.prisma.ven_orcamento_b2b_itens.updateMany({
+        where: {
+          pro_codigo: i.pro_codigo,
+          promocao_preco: null,
+          ven_orcamento_b2b: { orderNumber: i.orderNumber, status: 'PENDING' },
+        },
+        data: { promocao_preco: i.promocao_preco, promocao_fim: i.promocao_fim },
+      });
+    }
+  }
+
+  /**
    * Completa empresa, observação e endereço dos pedidos AGUARDANDO gravados
    * antes destas colunas — só onde estão vazios, um UPDATE por pedido.
    */
