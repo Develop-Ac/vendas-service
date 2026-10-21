@@ -44,7 +44,19 @@ export interface OrcamentoB2bInput {
   clienteViuPreco: boolean | null;
   margem: number | null;
   cli_codigo: number | null;
+  empresa: string | null;
+  observacao: string | null;
+  endereco: string | null;
   itens: OrcamentoB2bItemInput[];
+}
+
+/** O pedido gravado com o que o "assumir" precisa para montar o orçamento. */
+export interface PedidoParaAssumir extends OrcamentoB2bGravado {
+  empresa: string | null;
+  observacao: string | null;
+  endereco: string | null;
+  orcamento_id: string | null;
+  assumido_em: Date | null;
 }
 
 /** Vendedor do cliente na carteirização (espelho do ERP em ven_carteira_cliente). */
@@ -69,6 +81,44 @@ function paraNumero(valor: Prisma.Decimal | null): number | null {
   return valor === null ? null : valor.toNumber();
 }
 
+type LinhaB2b = Prisma.ven_orcamento_b2bGetPayload<{
+  include: { ven_orcamento_b2b_itens: true };
+}>;
+
+function paraGravado(row: LinhaB2b): OrcamentoB2bGravado {
+  return {
+    id: row.id,
+    orderNumber: row.orderNumber,
+    userId: row.userId,
+    pedidoId: row.pedidoId,
+    comprador: row.comprador,
+    status: row.status,
+    createdAt: row.createdAt,
+    clienteViuPreco: row.clienteViuPreco,
+    margem: paraNumero(row.margem),
+    cli_codigo: row.cli_codigo,
+    rep_codigo: row.rep_codigo,
+    rep_nome: row.rep_nome,
+    itens: row.ven_orcamento_b2b_itens.map((item) => ({
+      pro_codigo: item.pro_codigo,
+      quantidade: item.quantidade,
+      promocao: item.promocao,
+      preco_unitario: paraNumero(item.preco_unitario),
+    })),
+  };
+}
+
+function paraParaAssumir(row: LinhaB2b): PedidoParaAssumir {
+  return {
+    ...paraGravado(row),
+    empresa: row.empresa,
+    observacao: row.observacao,
+    endereco: row.endereco,
+    orcamento_id: row.orcamento_id,
+    assumido_em: row.assumido_em,
+  };
+}
+
 @Injectable()
 export class B2bPrismaRepository {
   private readonly logger = new Logger(B2bPrismaRepository.name);
@@ -81,27 +131,86 @@ export class B2bPrismaRepository {
       orderBy: { createdAt: 'desc' },
       include: { ven_orcamento_b2b_itens: true },
     });
+    return rows.map(paraGravado);
+  }
 
-    return rows.map((row) => ({
-      id: row.id,
-      orderNumber: row.orderNumber,
-      userId: row.userId,
-      pedidoId: row.pedidoId,
-      comprador: row.comprador,
-      status: row.status,
-      createdAt: row.createdAt,
-      clienteViuPreco: row.clienteViuPreco,
-      margem: paraNumero(row.margem),
-      cli_codigo: row.cli_codigo,
-      rep_codigo: row.rep_codigo,
-      rep_nome: row.rep_nome,
-      itens: row.ven_orcamento_b2b_itens.map((item) => ({
-        pro_codigo: item.pro_codigo,
-        quantidade: item.quantidade,
-        promocao: item.promocao,
-        preco_unitario: paraNumero(item.preco_unitario),
-      })),
-    }));
+  /**
+   * Pedidos esperando atendimento, do banco (a busca de cada minuto o mantém
+   * em dia): pendentes, criados a partir do corte, sem orçamento nem recusa.
+   */
+  async listarAguardando(desde: Date): Promise<PedidoParaAssumir[]> {
+    const rows = await this.prisma.ven_orcamento_b2b.findMany({
+      where: {
+        status: 'PENDING',
+        createdAt: { gte: desde },
+        orcamento_id: null,
+        recusado_em: null,
+      },
+      orderBy: { createdAt: 'asc' },
+      include: { ven_orcamento_b2b_itens: true },
+    });
+    return rows.map(paraParaAssumir);
+  }
+
+  async buscarParaAssumir(identificador: string): Promise<PedidoParaAssumir | null> {
+    const achado = await this.buscarPorIdentificador(identificador);
+    if (!achado) return null;
+    const row = await this.prisma.ven_orcamento_b2b.findUnique({
+      where: { id: achado.id },
+      include: { ven_orcamento_b2b_itens: true },
+    });
+    return row ? paraParaAssumir(row) : null;
+  }
+
+  /**
+   * Reserva o pedido para quem assume — antes de criar o orçamento, para dois
+   * cliques (ou vendedor e gestão juntos) não gerarem dois. `false` = alguém
+   * já reservou ou o pedido não está mais aguardando.
+   */
+  async reservar(id: string, por: string): Promise<boolean> {
+    const { count } = await this.prisma.ven_orcamento_b2b.updateMany({
+      where: { id, status: 'PENDING', assumido_em: null, orcamento_id: null, recusado_em: null },
+      data: { assumido_em: new Date(), assumido_por: por },
+    });
+    return count === 1;
+  }
+
+  /** Desfaz a reserva quando a criação do orçamento falhou. */
+  async liberarReserva(id: string): Promise<void> {
+    await this.prisma.ven_orcamento_b2b.updateMany({
+      where: { id, orcamento_id: null },
+      data: { assumido_em: null, assumido_por: null },
+    });
+  }
+
+  async concluirAssumir(id: string, orcamentoId: string): Promise<void> {
+    await this.prisma.ven_orcamento_b2b.update({
+      where: { id },
+      data: { orcamento_id: orcamentoId, status: 'PROCESSING' },
+    });
+  }
+
+  async registrarRecusa(id: string, motivo: string): Promise<void> {
+    await this.prisma.ven_orcamento_b2b.update({
+      where: { id },
+      data: { status: 'CANCELLED', recusa_motivo: motivo, recusado_em: new Date() },
+    });
+  }
+
+  /**
+   * Completa empresa, observação e endereço dos pedidos AGUARDANDO gravados
+   * antes destas colunas — só onde estão vazios, um UPDATE por pedido.
+   */
+  async completarDoPortal(
+    pedidos: Array<{ orderNumber: string; empresa: string | null; observacao: string | null; endereco: string | null }>,
+  ): Promise<void> {
+    for (const p of pedidos) {
+      if (!p.empresa) continue;
+      await this.prisma.ven_orcamento_b2b.updateMany({
+        where: { orderNumber: p.orderNumber, status: 'PENDING', empresa: null },
+        data: { empresa: p.empresa, observacao: p.observacao, endereco: p.endereco },
+      });
+    }
   }
 
   /** Dos orderNumbers informados, os que já estão gravados. */
@@ -125,6 +234,9 @@ export class B2bPrismaRepository {
         clienteViuPreco: pedido.clienteViuPreco,
         margem: pedido.margem,
         cli_codigo: pedido.cli_codigo,
+        empresa: pedido.empresa,
+        observacao: pedido.observacao,
+        endereco: pedido.endereco,
         // Sem status no payload, fica o default do banco ('PENDING').
         ...(pedido.status ? { status: pedido.status } : {}),
         ...(pedido.createdAt ? { createdAt: pedido.createdAt } : {}),

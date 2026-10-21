@@ -58,7 +58,7 @@ export const CATALOGO_VENDAS: Catalogo = {
     descricao: 'Pedido novo do portal B2B para o vendedor responsável pelo cliente.',
     titulo: 'Novo pedido B2B: {cliente}',
     corpo: '{itens} item(ns){valor}',
-    link: '/vendas/b2b',
+    link: '/vendas/orcamento',
     canais: ['badge'],
     prioridade: 'alta',
     alvo: { tipo: 'usuario' },

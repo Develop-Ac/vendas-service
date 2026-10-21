@@ -2522,10 +2522,22 @@ model ven_orcamento_b2b {
   rep_nome                String?                   @db.VarChar(100)
   rep_atribuido_por       String?                   @db.VarChar(100)
   rep_atribuido_em        DateTime?                 @db.Timestamptz(6)
+  /// Do pedido no portal: empresa do comprador, observação e endereço.
+  empresa                 String?                   @db.VarChar(160)
+  observacao              String?
+  endereco                String?                   @db.VarChar(300)
+  /// ven_orcamento criado ao assumir.
+  orcamento_id            String?                   @db.VarChar(30)
+  /// Quem assumiu e quando; preenchido ANTES de criar o orçamento (trava o clique duplo).
+  assumido_em             DateTime?                 @db.Timestamptz(6)
+  assumido_por            String?                   @db.VarChar(100)
+  recusa_motivo           String?
+  recusado_em             DateTime?                 @db.Timestamptz(6)
   ven_orcamento_b2b_itens ven_orcamento_b2b_itens[]
 
   @@index([userId], map: "idx_orc_b2b_user")
   @@index([cli_codigo], map: "idx_orc_b2b_cli")
+  @@index([status], map: "idx_orc_b2b_status")
 }
 
 model ven_orcamento_b2b_itens {
