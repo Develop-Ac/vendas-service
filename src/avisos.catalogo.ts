@@ -54,6 +54,27 @@ export const CATALOGO_VENDAS: Catalogo = {
     // Não existe "não liberar": ou libera agora, ou fecha o diálogo e o aviso fica pendente.
     acao_permite_nao: false,
   },
+  'b2b.novo': {
+    descricao: 'Pedido novo do portal B2B para o vendedor responsável pelo cliente.',
+    titulo: 'Novo pedido B2B: {cliente}',
+    corpo: '{itens} item(ns){valor}',
+    link: '/vendas/b2b',
+    canais: ['badge'],
+    prioridade: 'alta',
+    alvo: { tipo: 'usuario' },
+    // agrupar = chave por pedido: é o que permite tirar o aviso quando o vendedor assume
+    agrupar: true,
+  },
+  'b2b.sem_responsavel': {
+    descricao: 'Pedido do portal B2B sem vendedor: empresa sem vínculo com o Celta ou cliente sem carteira.',
+    titulo: 'Pedido B2B sem vendedor: {empresa}',
+    corpo: '{motivo}',
+    link: '/vendas/b2b',
+    canais: ['badge'],
+    prioridade: 'alta',
+    alvo: { tipo: 'usuario' },
+    agrupar: true,
+  },
   'orcamento.aprovacao': {
     descricao: 'Vendedor mandou orçamento acima do desconto máximo para aprovação da gerência.',
     titulo: 'Orçamento {numero} aguardando aprovação',

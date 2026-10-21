@@ -242,4 +242,19 @@ export class B2bPrismaRepository {
     });
     return rows.map((r) => r.cli_codigo as number);
   }
+
+  /** Itens e total cotado do pedido gravado — o corpo do aviso ao vendedor. */
+  async resumoDoPedido(id: string): Promise<{ itens: number; valor: number | null }> {
+    const itens = await this.prisma.ven_orcamento_b2b_itens.findMany({
+      where: { ven_orcamento_b2b_id: id },
+      select: { quantidade: true, preco_unitario: true },
+    });
+    const comPreco = itens.filter((i) => i.preco_unitario !== null);
+    const centavos = comPreco.reduce(
+      (acc, i) =>
+        acc + Math.round((paraNumero(i.preco_unitario) as number) * 100) * i.quantidade,
+      0,
+    );
+    return { itens: itens.length, valor: comPreco.length ? centavos / 100 : null };
+  }
 }
