@@ -83,9 +83,16 @@ export interface PortalOrder {
   margem?: number | null;
 }
 
-/** Base da API do portal. */
+/**
+ * Base da API do portal. A barra final sai daqui, como no mais-vendidos:
+ * `PORTAL_B2B_URL` gravado com `/` no fim viraria `//api/...`, e o portal
+ * responde 404 nesse caminho.
+ */
 function urlPortal(caminho: string): string {
-  const baseUrl = process.env.PORTAL_B2B_URL ?? 'http://localhost:3000';
+  const baseUrl = (process.env.PORTAL_B2B_URL ?? 'http://localhost:3000').replace(
+    /\/+$/,
+    '',
+  );
   return `${baseUrl}/api${caminho}`;
 }
 
