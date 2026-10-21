@@ -1,9 +1,10 @@
-import { Body, Controller, Get, Param, Put } from '@nestjs/common';
+import { Body, Controller, Get, Param, Put, Query } from '@nestjs/common';
 import {
   ApiBody,
   ApiOperation,
   ApiParam,
   ApiProperty,
+  ApiQuery,
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
@@ -25,7 +26,19 @@ class PedidoUsuarioResumoDto {
   @ApiProperty({ example: '35cd4939-297b-4ec8-85b6-b3351de36f73' }) id!: string;
   @ApiProperty({ example: 'João Comprador' }) nome!: string;
   @ApiProperty({ example: '(11) 98888-8888' }) phone!: string;
-  @ApiProperty({ example: 'Barada' }) carteira!: string;
+  @ApiProperty({ example: 'Barrada' }) carteira!: string;
+  @ApiProperty({ example: 'Auto Peças Exemplo' }) company!: string;
+}
+
+class ResponsavelPedidoDto {
+  @ApiProperty({ example: 123 }) rep_codigo!: number;
+  @ApiProperty({ example: 'Fulano', nullable: true }) rep_nome!: string | null;
+  @ApiProperty({
+    enum: ['CARTEIRA', 'PEDIDO'],
+    description:
+      '`CARTEIRA` = vendedor do cliente na carteirização; `PEDIDO` = atribuído pela gestão só a este pedido.',
+  })
+  origem!: 'CARTEIRA' | 'PEDIDO';
 }
 
 class PedidoResumoDto {
@@ -48,6 +61,36 @@ class PedidoResumoDto {
     description: 'Soma de preco_unitario × quantidade dos itens com preço.',
   })
   valorTotal!: number | null;
+  @ApiProperty({
+    example: 12345,
+    nullable: true,
+    description: 'Cliente do Celta da empresa. `null` = empresa sem vínculo.',
+  })
+  cli_codigo!: number | null;
+  @ApiProperty({ type: ResponsavelPedidoDto, nullable: true })
+  responsavel!: ResponsavelPedidoDto | null;
+}
+
+class EmpresaPortalDto {
+  @ApiProperty({ description: 'id do usuário master no portal' }) id!: string;
+  @ApiProperty() name!: string;
+  @ApiProperty() email!: string;
+  @ApiProperty({ nullable: true }) company!: string | null;
+  @ApiProperty({ nullable: true }) carteira!: string | null;
+  @ApiProperty({ nullable: true, example: 12345 }) cliCodigo!: number | null;
+  @ApiProperty() createdAt!: string;
+}
+
+class VincularClienteBodyDto {
+  @ApiProperty({ example: 12345, description: 'CLI_CODIGO do Celta' })
+  cli_codigo!: number;
+}
+
+class AtribuirVendedorBodyDto {
+  @ApiProperty({ example: 123, description: 'REP_CODIGO do vendedor do atacado' })
+  rep_codigo!: number;
+  @ApiProperty({ required: false, description: 'Quem atribuiu (trilha)' })
+  usuario_nome?: string;
 }
 
 class AtualizarStatusPedidoDto {
@@ -80,6 +123,38 @@ export class B2bController {
     return this.b2bService.listarPedidos();
   }
 
+  // Antes de `status/:id` e de qualquer `:id`: rota fixa.
+  @Get('sem-responsavel')
+  @ApiOperation({
+    summary: 'Pedidos aguardando sem vendedor',
+    description:
+      'Pedidos ainda não assumidos (PENDING) de cliente já vinculado que não tem vendedor na carteira nem atribuição da gestão.',
+  })
+  @ApiResponse({ status: 200, type: [PedidoResumoDto] })
+  async semResponsavel() {
+    return this.b2bService.pedidosSemResponsavel();
+  }
+
+  @Put(':id/vendedor')
+  @ApiOperation({
+    summary: 'Atribuir o vendedor do pedido (gestão)',
+    description:
+      'Vale só para este pedido: NÃO carteiriza o cliente. Recusa cliente que já tem vendedor na carteira, pedido já assumido e vendedor fora do atacado.',
+  })
+  @ApiParam({ name: 'id', description: 'id do registro, orderNumber ou pedidoId do portal' })
+  @ApiBody({ type: AtribuirVendedorBodyDto })
+  @ApiResponse({ status: 409, description: 'Cliente já tem vendedor na carteira' })
+  async atribuirVendedor(
+    @Param('id') id: string,
+    @Body() dto: AtribuirVendedorBodyDto,
+  ) {
+    return this.b2bService.atribuirVendedor(
+      id,
+      Number(dto?.rep_codigo),
+      dto?.usuario_nome,
+    );
+  }
+
   @Put('status/:id')
   @ApiOperation({
     summary: 'Atualiza o status de um pedido B2B',
@@ -103,5 +178,40 @@ export class B2bController {
     @Body() dto: AtualizarStatusPedidoDto,
   ) {
     return this.b2bService.atualizarStatus(id, dto?.status);
+  }
+}
+
+@ApiTags('B2B')
+@Controller('b2b/empresas')
+export class B2bEmpresasController {
+  constructor(private readonly b2bService: B2bService) {}
+
+  @Get()
+  @ApiOperation({
+    summary: 'Empresas do portal B2B',
+    description:
+      'Uma linha por master da empresa no portal. `?semVinculo=1` deixa só as que ainda não têm cliente do Celta.',
+  })
+  @ApiQuery({ name: 'semVinculo', required: false, example: '1' })
+  @ApiResponse({ status: 200, type: [EmpresaPortalDto] })
+  async listar(@Query('semVinculo') semVinculo?: string) {
+    return this.b2bService.listarEmpresas(
+      semVinculo === '1' || semVinculo === 'true',
+    );
+  }
+
+  @Put(':masterId/cliente')
+  @ApiOperation({
+    summary: 'Vincular a empresa do portal ao cliente do Celta',
+    description:
+      'Confere o cliente no ERP e grava o vínculo no portal (master e equipe). Os pedidos da empresa passam a ter o cliente e o vendedor da carteira.',
+  })
+  @ApiBody({ type: VincularClienteBodyDto })
+  @ApiResponse({ status: 404, description: 'Cliente não encontrado no ERP' })
+  async vincular(
+    @Param('masterId') masterId: string,
+    @Body() dto: VincularClienteBodyDto,
+  ) {
+    return this.b2bService.vincularCliente(masterId, Number(dto?.cli_codigo));
   }
 }

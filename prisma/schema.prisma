@@ -2514,9 +2514,18 @@ model ven_orcamento_b2b {
   status                  String                    @default("PENDING") @db.VarChar(30)
   clienteViuPreco         Boolean?
   margem                  Decimal?                  @db.Decimal(7, 2)
+  /// Cliente do Celta da empresa do comprador (vínculo feito na tela B2B).
+  cli_codigo              Int?
+  /// Vendedor atribuído pela gestão SÓ para este pedido, quando o cliente não
+  /// tem vendedor na carteira. Não carteiriza o cliente.
+  rep_codigo              Int?
+  rep_nome                String?                   @db.VarChar(100)
+  rep_atribuido_por       String?                   @db.VarChar(100)
+  rep_atribuido_em        DateTime?                 @db.Timestamptz(6)
   ven_orcamento_b2b_itens ven_orcamento_b2b_itens[]
 
   @@index([userId], map: "idx_orc_b2b_user")
+  @@index([cli_codigo], map: "idx_orc_b2b_cli")
 }
 
 model ven_orcamento_b2b_itens {

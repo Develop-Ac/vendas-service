@@ -21,6 +21,11 @@ export interface OrcamentoB2bGravado {
   /** `null` nos pedidos gravados antes da coluna existir. */
   clienteViuPreco: boolean | null;
   margem: number | null;
+  /** Cliente do Celta da empresa; `null` = ainda sem vínculo. */
+  cli_codigo: number | null;
+  /** Vendedor atribuído pela gestão só para este pedido. */
+  rep_codigo: number | null;
+  rep_nome: string | null;
   itens: {
     pro_codigo: number;
     quantidade: number;
@@ -38,7 +43,14 @@ export interface OrcamentoB2bInput {
   createdAt: Date | null;
   clienteViuPreco: boolean | null;
   margem: number | null;
+  cli_codigo: number | null;
   itens: OrcamentoB2bItemInput[];
+}
+
+/** Vendedor do cliente na carteirização (espelho do ERP em ven_carteira_cliente). */
+export interface VendedorDaCarteira {
+  rep_codigo: number;
+  rep_nome: string | null;
 }
 
 /* =============================================================================
@@ -80,6 +92,9 @@ export class B2bPrismaRepository {
       createdAt: row.createdAt,
       clienteViuPreco: row.clienteViuPreco,
       margem: paraNumero(row.margem),
+      cli_codigo: row.cli_codigo,
+      rep_codigo: row.rep_codigo,
+      rep_nome: row.rep_nome,
       itens: row.ven_orcamento_b2b_itens.map((item) => ({
         pro_codigo: item.pro_codigo,
         quantidade: item.quantidade,
@@ -109,6 +124,7 @@ export class B2bPrismaRepository {
         comprador: pedido.comprador,
         clienteViuPreco: pedido.clienteViuPreco,
         margem: pedido.margem,
+        cli_codigo: pedido.cli_codigo,
         // Sem status no payload, fica o default do banco ('PENDING').
         ...(pedido.status ? { status: pedido.status } : {}),
         ...(pedido.createdAt ? { createdAt: pedido.createdAt } : {}),
@@ -131,7 +147,13 @@ export class B2bPrismaRepository {
    */
   async buscarPorIdentificador(
     identificador: string,
-  ): Promise<{ id: string; orderNumber: string; pedidoId: string | null } | null> {
+  ): Promise<{
+    id: string;
+    orderNumber: string;
+    pedidoId: string | null;
+    status: string;
+    cli_codigo: number | null;
+  } | null> {
     const where: Prisma.ven_orcamento_b2bWhereInput[] = [
       { orderNumber: identificador },
       { pedidoId: identificador },
@@ -142,7 +164,13 @@ export class B2bPrismaRepository {
 
     return this.prisma.ven_orcamento_b2b.findFirst({
       where: { OR: where },
-      select: { id: true, orderNumber: true, pedidoId: true },
+      select: {
+        id: true,
+        orderNumber: true,
+        pedidoId: true,
+        status: true,
+        cli_codigo: true,
+      },
     });
   }
 
@@ -151,6 +179,57 @@ export class B2bPrismaRepository {
     await this.prisma.ven_orcamento_b2b.update({
       where: { id },
       data: { status },
+    });
+  }
+
+  /**
+   * Preenche o cliente do Celta nos pedidos gravados antes do vínculo da
+   * empresa. Só onde ainda está vazio: um vínculo trocado depois não reescreve
+   * o cliente de pedido antigo.
+   */
+  async preencherCliente(orderNumbers: string[], cliCodigo: number): Promise<number> {
+    if (!orderNumbers.length) return 0;
+    const { count } = await this.prisma.ven_orcamento_b2b.updateMany({
+      where: { orderNumber: { in: orderNumbers }, cli_codigo: null },
+      data: { cli_codigo: cliCodigo },
+    });
+    return count;
+  }
+
+  /** O vendedor de cada cliente na carteirização; cliente sem vendedor fica de fora. */
+  async vendedoresDaCarteira(
+    cliCodigos: number[],
+  ): Promise<Map<number, VendedorDaCarteira>> {
+    if (!cliCodigos.length) return new Map();
+    const rows = await this.prisma.ven_carteira_cliente.findMany({
+      where: {
+        cli_codigo: { in: [...new Set(cliCodigos)] },
+        trash: 0,
+        rep_codigo: { not: null },
+      },
+      select: { cli_codigo: true, rep_codigo: true, rep_nome: true },
+    });
+    return new Map(
+      rows.map((r) => [
+        r.cli_codigo,
+        { rep_codigo: r.rep_codigo as number, rep_nome: r.rep_nome },
+      ]),
+    );
+  }
+
+  /** Vendedor do pedido, escolhido pela gestão. Não toca na carteira do cliente. */
+  async atribuirVendedor(
+    id: string,
+    vendedor: { rep_codigo: number; rep_nome: string; atribuido_por: string | null },
+  ): Promise<void> {
+    await this.prisma.ven_orcamento_b2b.update({
+      where: { id },
+      data: {
+        rep_codigo: vendedor.rep_codigo,
+        rep_nome: vendedor.rep_nome,
+        rep_atribuido_por: vendedor.atribuido_por,
+        rep_atribuido_em: new Date(),
+      },
     });
   }
 }
