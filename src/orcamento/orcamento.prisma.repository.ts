@@ -5,6 +5,7 @@ import type { ven_bolsa_oportunidade, ven_produto_dia } from '@prisma/client';
 import { ClienteDevido, ItemProdutoDia, MotivoFora } from './produtos-dia';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } from './regua';
+import { PROMOCAO_PORTAL } from './promocao-portal';
 
 /* =============================================================================
    ORÇAMENTO — persistência no Postgres da intranet.
@@ -1089,10 +1090,16 @@ export class OrcamentoPrismaRepository {
       where: { rep_codigo: rep, status: 'FECHADO', desfecho_em: { gte: desde } },
       select: {
         id: true, numero: true, cli_codigo: true, rep_codigo: true, celta_orcamento: true, celta_importado_em: true, desfecho_em: true,
-        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, custo_ref: true }, orderBy: { item: 'asc' } },
+        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, custo_ref: true, promocao_codigo: true, fora_promocao: true }, orderBy: { item: 'asc' } },
       },
     });
-    return rows.map((r) => ({ ...r, itens: r.itens.map((i) => ({ pro_codigo: i.pro_codigo, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), custo_ref: nn(i.custo_ref) })) }));
+    return rows.map((r) => ({
+      ...r,
+      itens: r.itens.map((i) => ({
+        pro_codigo: i.pro_codigo, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), custo_ref: nn(i.custo_ref),
+        promo_portal: i.promocao_codigo === PROMOCAO_PORTAL && !i.fora_promocao,
+      })),
+    }));
   }
 
   /** Itens e ajustes da bolsa dos orçamentos — a bolsa do orçamento recalculada na leitura. */

@@ -1,5 +1,6 @@
 import { corpoParaCelta } from './celta';
-import { bolsaDoOrcamento } from './extrato-bolsa';
+import { bolsaDoOrcamento, bolsaNfPorOrcamento, casarOrcamentos, valoresLinha } from './extrato-bolsa';
+import { fracaoPromoPortal } from './promocao-portal';
 import { PromocaoItem } from './orcamento.erp.repository';
 import { comPromosDoPortal, PROMOCAO_PORTAL, PromosPortal } from './orcamento.service';
 
@@ -46,5 +47,46 @@ describe('item em promoção do portal no orçamento', () => {
     } as never);
     expect(JSON.stringify(corpo)).not.toContain('promocao');
     expect(corpo.itens[0]).toEqual(expect.objectContaining({ pro_codigo: 10, quantidade: 2 }));
+  });
+});
+
+describe('bolsa do mês: venda em promoção do portal (o BI não a marca)', () => {
+  const linha = { liquido: 160, custo_bolsa: 200, custo_produto: 200, promocao: false, servico: false, ajuste: 0 };
+
+  it('linha inteira em promoção do portal: metade do negativo, igual à do Celta', () => {
+    const celta = valoresLinha({ ...linha, promocao: true }, 1);
+    const portal = valoresLinha({ ...linha, promo_portal: 1 }, 1);
+    expect(portal).toEqual(celta);
+    expect(portal.absorvido).toBe(20);
+  });
+
+  it('só parte da linha veio do orçamento em promoção: metade proporcional', () => {
+    expect(valoresLinha({ ...linha, promo_portal: 0.5 }, 1).absorvido).toBe(10);
+    expect(valoresLinha(linha, 1).absorvido).toBe(0);
+  });
+
+  it('a fração é a quantidade casada com itens em promoção do portal', () => {
+    expect(fracaoPromoPortal(4, [{ quantidade: 2, promo_portal: true }, { quantidade: 2 }])).toBe(0.5);
+    expect(fracaoPromoPortal(4, [{ quantidade: 4 }])).toBe(0);
+    expect(fracaoPromoPortal(0, [{ quantidade: 4, promo_portal: true }])).toBe(0);
+  });
+
+  it('o casamento leva a marca do item até a NF e a bolsa por orçamento a aplica', () => {
+    const nf = {
+      empresa: 3, serie: '1', nfs: 10, pro_codigo: 10, cli_codigo: 1, rep_codigo: 9,
+      emissao: new Date('2026-10-20T00:00:00'), devolucao: false, quantidade: 2,
+      preco_unit: 80, liquido: 160, custo: 200, promocao: false, custo_produto: 200, servico: false, ajuste: 0,
+    };
+    const orc = (promo_portal: boolean) => ({
+      id: 'O1', numero: 1, cli_codigo: 1, rep_codigo: 9, inicio: new Date('2026-10-19T10:00:00'),
+      nf_orcamento: null, nfs_condicional: [],
+      itens: [{ pro_codigo: 10, quantidade: 2, preco_unit: 80, custo_ref: 100, promo_portal }],
+    });
+    const comPromo = casarOrcamentos([orc(true)], [nf]);
+    const semPromo = casarOrcamentos([orc(false)], [nf]);
+    expect(comPromo.porLinha.get(0)?.[0].promo_portal).toBe(true);
+    const com = bolsaNfPorOrcamento(comPromo.porOrcamento, [nf], 1).get('O1')!;
+    const sem = bolsaNfPorOrcamento(semPromo.porOrcamento, [nf], 1).get('O1')!;
+    expect(com - sem).toBe(20);
   });
 });

@@ -2,6 +2,7 @@ import { gerarPdfOrcamento, ModoDesconto, PdfItem, PdfOrcamento } from './orcame
 import { mensagemWhatsapp } from './orcamento.mensagem';
 import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
+import { comPromosDoPortal, fracaoPromoPortal, PromosPortal } from './promocao-portal';
 import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta, ordenarBuscaClientes } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional, mesesAnteriores } from './orcamento.bi.repository';
 import { celulasDoOrcamento, comissaoComOrcamento } from './comissao';
@@ -570,9 +571,36 @@ export class OrcamentoService {
    */
   private mesDaBolsa(rep: number, periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], mesesAjuste: number) {
     return Promise.all([
-      this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
+      // O BI só conhece a promoção do Celta: a do portal B2B (venda normal no
+      // Celta) entra pela NF casada com o orçamento.
+      Promise.all([
+        this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
+        this.absorvidoPromoPortalNoMes(rep, periodo, piso, servicos),
+      ]).then(([v, portal]) => ({ ...v, absorvido: v.absorvido + portal })),
       this.efetivoAjustes(rep, mesesAjuste, piso).then((ls) => ls.filter((l) => mesmoMes(l.emissao, periodo))),
     ]);
+  }
+
+  /**
+   * Metade do negativo das vendas do mês em promoção do PORTAL B2B: NF casada
+   * com item de orçamento FECHADO em promoção do portal, a mesma conta do BI
+   * para a promoção do Celta. Casamento indisponível → 0 (a bolsa não cai).
+   */
+  private async absorvidoPromoPortalNoMes(rep: number, periodo: { ano: number; mes: number }, piso: number, servicos: number[]) {
+    const c = await this.casamentoDoRep(rep).catch((e) => {
+      this.logger.warn(`Promoção do portal na bolsa do mês indisponível (rep ${rep}): ${(e as Error).message}`);
+      return null;
+    });
+    if (!c) return 0;
+    const fora = new Set(servicos);
+    let total = 0;
+    c.linhas.forEach((l, i) => {
+      if (l.devolucao || l.promocao || fora.has(l.pro_codigo) || !mesmoMes(l.emissao, periodo)) return;
+      const promo_portal = fracaoPromoPortal(l.quantidade, c.porLinha.get(i) ?? []);
+      if (!promo_portal) return;
+      total += valoresLinha({ liquido: l.liquido, custo_bolsa: 0, custo_produto: l.custo_produto, promocao: false, servico: false, ajuste: 0, promo_portal }, piso).absorvido;
+    });
+    return total;
   }
 
   /** Códigos de serviço (subtipo 09) no ERP; indisponível → lista vazia (o serviço fica na bolsa). */
@@ -2205,13 +2233,17 @@ export class OrcamentoService {
         if (n) { r.nota_fiscal ??= n.nota_fiscal; r.chave_nfe ??= n.chave_nfe; }
       }
     }
-    const linhas = rows.sort((a, b) => a.nfs - b.nfs || a.item - b.item).map((r) => ({ ...r, ajuste: 0 }));
-    atribuirAjustes(linhas, ajustes);
     const indice = new Map((cas?.linhas ?? []).map((l, i) => [`${l.empresa}|${l.serie}|${l.nfs}|${l.item}`, i]));
-    const itens = linhas.map((r) => {
+    const casadasDe = (r: { empresa: number; serie: string; nfs: number; item: number }) => {
       const i = indice.get(`${r.empresa}|${r.serie}|${r.nfs}|${r.item}`);
-      return { r, v: valoresLinha(r, piso), casadas: i == null ? [] : (cas!.porLinha.get(i) ?? []) };
-    });
+      return i == null ? [] : (cas!.porLinha.get(i) ?? []);
+    };
+    // Venda em promoção do portal B2B: o BI não a marca; vem da NF casada (como no card).
+    const linhas = rows
+      .sort((a, b) => a.nfs - b.nfs || a.item - b.item)
+      .map((r) => ({ ...r, ajuste: 0, promo_portal: r.devolucao ? 0 : fracaoPromoPortal(Math.abs(r.quantidade), casadasDe(r)) }));
+    atribuirAjustes(linhas, ajustes);
+    const itens = linhas.map((r) => ({ r, v: valoresLinha(r, piso), casadas: casadasDe(r) }));
     const notas = new Map<string, typeof itens>();
     for (const x of itens) {
       const chave = `${x.r.empresa}|${x.r.serie}|${x.r.nfs}`;
@@ -2707,40 +2739,4 @@ function precoOportunidade(p: ProdutoErp) {
   return precoDaTabela(p as unknown as Record<string, unknown>, '2');
 }
 
-/**
- * Código de promoção dos itens em promoção do PORTAL B2B. Ela não existe no
- * Celta (códigos de lá são positivos), mas o item é promoção como qualquer
- * outra: `promocao_codigo != null` liga preço fechado, metade do negativo da
- * bolsa para a empresa, validade até o fim e "vender fora da promoção". A
- * importação no Celta não manda o código — o item vai com o preço normal.
- */
-export const PROMOCAO_PORTAL = 0;
-
-/** Promoção do portal por produto: preço que o comprador viu (com a margem) e o fim. */
-export type PromosPortal = Map<number, { preco: number; fim: Date; descricao: string }>;
-
-const ymd = (d: Date) => d.toISOString().slice(0, 10);
-
-/**
- * Soma as promoções do portal às do Celta, como se fossem do ERP. Promoção
- * do Celta no mesmo item vence (é a que o ERP e o BI conhecem). Vencida
- * (fim antes de hoje, horário de Cuiabá) não vale mais — como no Celta.
- */
-export function comPromosDoPortal(promos: Map<number, PromocaoItem>, portal: PromosPortal | undefined, hoje = ymd(new Date(Date.now() - 4 * 3_600_000))) {
-  if (!portal?.size) return promos;
-  for (const [pro_codigo, p] of portal) {
-    const fim = ymd(p.fim);
-    if (promos.has(pro_codigo) || fim < hoje || !(p.preco > 0)) continue;
-    promos.set(pro_codigo, {
-      pro_codigo,
-      prom_codigo: PROMOCAO_PORTAL,
-      descricao: p.descricao,
-      data_final: fim,
-      somente_avista: false,
-      durar_estoque: false,
-      valor: p.preco,
-      valor_balcao: null,
-    });
-  }
-  return promos;
-}
+export { comPromosDoPortal, PROMOCAO_PORTAL, type PromosPortal } from './promocao-portal';
