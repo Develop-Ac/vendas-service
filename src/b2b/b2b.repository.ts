@@ -132,8 +132,12 @@ export class B2bRepository {
 
   constructor(private readonly httpService: HttpService) {}
 
-  async listarPedidos(): Promise<responsePedidoApi> {
-    const url = urlPortal('/pedidos');
+  /**
+   * Uma página de pedidos do portal, do mais novo para o mais antigo. 200 é o
+   * teto de `limit` do portal.
+   */
+  async listarPedidos(page = 1, limit = 200): Promise<responsePedidoApi> {
+    const url = urlPortal(`/pedidos?page=${page}&limit=${limit}`);
 
     try {
       const res = await firstValueFrom(

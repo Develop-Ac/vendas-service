@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException } from '@nestjs/common';
+import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { OrcamentoService } from '../orcamento/orcamento.service';
 import { B2bCarteiraService } from './b2b.carteira.service';
 import { B2bService } from './b2b.service';
@@ -86,6 +87,7 @@ function montar(
       .fn()
       .mockResolvedValue(new Set(gravados.map((g) => g.orderNumber))),
     salvarPedido: jest.fn().mockResolvedValue(undefined),
+    resumoDoPedido: jest.fn().mockResolvedValue({ itens: 2, valor: 50 }),
     preencherCliente: jest.fn().mockResolvedValue(1),
     vendedoresDaCarteira: jest.fn().mockResolvedValue(new Map(carteira)),
     buscarPorIdentificador: jest.fn(),
@@ -98,13 +100,20 @@ function montar(
       .mockResolvedValue([{ rep_codigo: 7, rep_nome: 'Alison', papel: null }]),
   };
   const carteiraPortal = { enviarCliente: jest.fn().mockResolvedValue(undefined) };
+  const avisos = {
+    b2bNovo: jest.fn().mockResolvedValue(undefined),
+    b2bSemResponsavel: jest.fn().mockResolvedValue(undefined),
+    b2bEncerrado: jest.fn(),
+  };
   return {
     service: new B2bService(
       repo as unknown as B2bRepository,
       prisma as unknown as B2bPrismaRepository,
       orcamento as unknown as OrcamentoService,
       carteiraPortal as unknown as B2bCarteiraService,
+      avisos as unknown as AvisosVendasService,
     ),
+    avisos,
     repo,
     prisma,
     orcamento,
@@ -314,5 +323,123 @@ describe('B2bService — cliente do Celta e vendedor responsável', () => {
 
       expect(prisma.atribuirVendedor).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('B2bService.sincronizarComPortal — busca a cada minuto', () => {
+  const AGORA = new Date().toISOString();
+  const ANTIGO = '2020-01-01T00:00:00.000Z';
+  const pedidoEm = (n: string, createdAt: string, cliCodigo: number | null = 555) => {
+    const p = pedidoPortal({ orderNumber: n, id: n, createdAt });
+    p.user = { ...p.user, company: 'Loja X', cliCodigo };
+    return p;
+  };
+
+  afterEach(() => {
+    delete process.env.B2B_PEDIDOS_DESDE;
+  });
+
+  it('pedido novo é gravado e avisa o vendedor da carteira', async () => {
+    const { service, prisma, avisos } = montar([pedidoEm('ORD-9', AGORA)], [], [
+      [555, { rep_codigo: 9, rep_nome: 'Fernando' }],
+    ]);
+
+    await expect(service.sincronizarComPortal()).resolves.toEqual({
+      novos: 1,
+      avisados: 1,
+    });
+    expect(prisma.salvarPedido).toHaveBeenCalledWith(
+      expect.objectContaining({ orderNumber: 'ORD-9' }),
+    );
+    expect(avisos.b2bNovo).toHaveBeenCalledWith(
+      expect.objectContaining({ orderNumber: 'ORD-9', rep_codigo: 9, cliente: 'Loja X' }),
+    );
+  });
+
+  it('sem vínculo ou sem vendedor, o aviso vai para a gestão', async () => {
+    const { service, avisos } = montar([
+      pedidoEm('ORD-A', AGORA, null),
+      pedidoEm('ORD-B', AGORA, 777),
+    ]);
+
+    await service.sincronizarComPortal();
+
+    expect(avisos.b2bNovo).not.toHaveBeenCalled();
+    expect(avisos.b2bSemResponsavel).toHaveBeenCalledWith(
+      expect.objectContaining({ orderNumber: 'ORD-A', motivo: expect.stringContaining('sem vínculo') }),
+    );
+    expect(avisos.b2bSemResponsavel).toHaveBeenCalledWith(
+      expect.objectContaining({ orderNumber: 'ORD-B', motivo: expect.stringContaining('777') }),
+    );
+  });
+
+  it('pedido antigo (antes do corte) é gravado calado', async () => {
+    process.env.B2B_PEDIDOS_DESDE = '2026-10-01T00:00:00-04:00';
+    const { service, prisma, avisos } = montar([pedidoEm('ORD-V', ANTIGO)]);
+
+    await expect(service.sincronizarComPortal()).resolves.toEqual({
+      novos: 1,
+      avisados: 0,
+    });
+    expect(prisma.salvarPedido).toHaveBeenCalled();
+    expect(avisos.b2bNovo).not.toHaveBeenCalled();
+    expect(avisos.b2bSemResponsavel).not.toHaveBeenCalled();
+  });
+
+  it('pedido já gravado não avisa de novo', async () => {
+    const { service, avisos } = montar(
+      [pedidoEm('ORD-1', AGORA)],
+      [gravadoBase({ orderNumber: 'ORD-1' })],
+    );
+
+    await expect(service.sincronizarComPortal()).resolves.toEqual({
+      novos: 0,
+      avisados: 0,
+    });
+    expect(avisos.b2bNovo).not.toHaveBeenCalled();
+  });
+
+  it('lê página a página e para na primeira sem novidade', async () => {
+    const { service, repo, prisma } = montar([]);
+    repo.listarPedidos
+      .mockResolvedValueOnce({ data: [pedidoEm('N1', AGORA)], pagination: { pages: 3 } })
+      .mockResolvedValueOnce({ data: [pedidoEm('V1', ANTIGO)], pagination: { pages: 3 } });
+    // V1 já está gravado; N1 não.
+    prisma.orderNumbersExistentes.mockImplementation(
+      async (ns: string[]) => new Set(ns.filter((n) => n === 'V1')),
+    );
+
+    await service.sincronizarComPortal();
+
+    expect(repo.listarPedidos.mock.calls.map((c) => c[0])).toEqual([1, 2]);
+  });
+
+  it('a listagem da tela (Atualizar) lê todas as páginas', async () => {
+    const { service, repo } = montar([]);
+    repo.listarPedidos
+      .mockResolvedValueOnce({ data: [pedidoEm('P1', AGORA)], pagination: { pages: 2 } })
+      .mockResolvedValueOnce({ data: [pedidoEm('P2', ANTIGO)], pagination: { pages: 2 } });
+
+    const pedidos = await service.listarPedidos();
+
+    expect(pedidos.map((p) => p.orderNumber).sort()).toEqual(['P1', 'P2']);
+  });
+
+  it('atribuir vendedor tira o aviso da gestão e avisa o vendedor escolhido', async () => {
+    const { service, prisma, avisos } = montar([]);
+    prisma.buscarPorIdentificador.mockResolvedValue({
+      id: 'g1',
+      orderNumber: 'ORD-1',
+      pedidoId: 'p1',
+      status: 'PENDING',
+      cli_codigo: 555,
+    });
+
+    await service.atribuirVendedor('ORD-1', 7);
+
+    expect(avisos.b2bEncerrado).toHaveBeenCalledWith('ORD-1');
+    expect(avisos.b2bNovo).toHaveBeenCalledWith(
+      expect.objectContaining({ orderNumber: 'ORD-1', rep_codigo: 7, itens: 2, valor: 50 }),
+    );
   });
 });

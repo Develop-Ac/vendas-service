@@ -5,9 +5,10 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { OrcamentoService } from '../orcamento/orcamento.service';
 import { B2bCarteiraService } from './b2b.carteira.service';
-import { B2bRepository, PortalEmpresa } from './b2b.repository';
+import { B2bRepository, PortalEmpresa, PortalOrder } from './b2b.repository';
 import {
   B2bPrismaRepository,
   OrcamentoB2bGravado,
@@ -70,6 +71,52 @@ export interface PedidoResumo {
 /** Só pedido ainda não assumido entra nas filas da gestão. */
 const STATUS_AGUARDANDO = 'PENDING';
 
+/** Teto de páginas lidas do portal (200 pedidos cada): trava contra laço sem fim. */
+const MAX_PAGINAS = 50;
+
+/** Sem `B2B_PEDIDOS_DESDE`, só pedido das últimas 2 h avisa — reinício não vira enxurrada. */
+const JANELA_AVISO_MS = 2 * 3_600_000;
+
+/**
+ * A partir de quando um pedido novo gera aviso: `B2B_PEDIDOS_DESDE` (a data de
+ * entrada no ar) ou, sem ela, as últimas 2 h. Pedido antigo que só agora foi
+ * gravado entra no histórico, calado.
+ */
+export function corteDeAviso(agora = Date.now()): number {
+  const desde = Date.parse(process.env.B2B_PEDIDOS_DESDE ?? '');
+  return Number.isNaN(desde) ? agora - JANELA_AVISO_MS : desde;
+}
+
+/** Pedido do portal no formato da intranet. */
+function resumoDoPortal(pedido: PortalOrder): PedidoResumo {
+  return {
+    orderNumber: pedido.orderNumber,
+    createdAt: pedido.createdAt,
+    pedidoId: pedido.id,
+    comprador: pedido.comprador,
+    status: pedido.status,
+    // Portal antigo, sem o campo: "não sei", e não "não viu".
+    clienteViuPreco: pedido.clienteViuPreco ?? null,
+    margem: pedido.margem ?? null,
+    valorTotal: null,
+    cli_codigo: pedido.user?.cliCodigo ?? null,
+    responsavel: null,
+    items: pedido.items.map((item) => ({
+      pro_codigo: item.product?.proCodigo,
+      quantidade: item.quantity,
+      promocao: item.product?.promotion?.textoPromocional || null,
+      preco_unitario: item.precoUnitario ?? null,
+    })),
+    user: {
+      id: pedido.user?.id,
+      nome: pedido.user?.name,
+      phone: pedido.user?.phone,
+      carteira: pedido.user?.carteira,
+      company: pedido.user?.company,
+    },
+  };
+}
+
 /**
  * Total cotado: soma dos itens que têm preço. Calculado na saída, depois da
  * fusão banco + portal, para valer igual nas duas fontes.
@@ -97,7 +144,83 @@ export class B2bService {
     private readonly b2bPrismaRepository: B2bPrismaRepository,
     private readonly orcamento: OrcamentoService,
     private readonly carteira: B2bCarteiraService,
+    private readonly avisos: AvisosVendasService,
   ) {}
+
+  /* --------------------------------------------- sincronização com o portal */
+
+  /**
+   * O que roda a cada minuto (B2bPedidosScheduler): lê o portal do pedido
+   * mais novo para o mais antigo e para na primeira página sem novidade. Grava
+   * os novos, completa o cliente dos já gravados e avisa quem atende.
+   * O portal não avisa a intranet (a rede só abre daqui para a nuvem), então
+   * é esta leitura que traz o pedido sem ninguém abrir a tela.
+   */
+  async sincronizarComPortal(): Promise<{ novos: number; avisados: number }> {
+    const novos: PedidoResumo[] = [];
+    for (let page = 1; page <= MAX_PAGINAS; page++) {
+      const r = await this.b2bRepository.listarPedidos(page);
+      const resumos = r.data.map(resumoDoPortal).filter((p) => p.orderNumber);
+      if (!resumos.length) break;
+
+      const existentes = await this.b2bPrismaRepository.orderNumbersExistentes(
+        resumos.map((p) => p.orderNumber),
+      );
+      await this.preencherClientes(
+        resumos.filter((p) => existentes.has(p.orderNumber)),
+      );
+      const daPagina = resumos.filter((p) => !existentes.has(p.orderNumber));
+      await this.gravarPedidosNovos(daPagina);
+      novos.push(...daPagina);
+
+      if (!daPagina.length || page >= (r.pagination?.pages ?? 1)) break;
+    }
+
+    const avisados = await this.avisarNovos(novos);
+    if (novos.length) {
+      this.logger.log(
+        `Portal B2B: ${novos.length} pedido(s) novo(s), ${avisados} aviso(s).`,
+      );
+    }
+    return { novos: novos.length, avisados };
+  }
+
+  /**
+   * Aviso de pedido novo ainda aguardando: ao vendedor responsável; sem ele, à
+   * gestão do atacado (que vincula a empresa ou atribui o vendedor).
+   */
+  private async avisarNovos(novos: PedidoResumo[]): Promise<number> {
+    const corte = corteDeAviso();
+    const avisar = novos.filter(
+      (p) =>
+        p.status === STATUS_AGUARDANDO &&
+        Date.parse(p.createdAt ?? '') >= corte,
+    );
+    if (!avisar.length) return 0;
+
+    for (const p of await this.comResponsaveis(avisar.map(comValorTotal))) {
+      const cliente = p.user?.company || p.user?.nome || p.orderNumber;
+      if (p.responsavel) {
+        void this.avisos.b2bNovo({
+          orderNumber: p.orderNumber,
+          cliente,
+          rep_codigo: p.responsavel.rep_codigo,
+          itens: p.items.length,
+          valor: p.valorTotal,
+        });
+      } else {
+        void this.avisos.b2bSemResponsavel({
+          orderNumber: p.orderNumber,
+          empresa: cliente,
+          motivo:
+            p.cli_codigo == null
+              ? 'Empresa sem vínculo com o Celta: vincule na tela B2B.'
+              : `Cliente ${p.cli_codigo} sem vendedor na carteira: atribua na tela B2B.`,
+        });
+      }
+    }
+    return avisar.length;
+  }
 
   /**
    * Troca o status do pedido em ven_orcamento_b2b. O identificador da rota pode
@@ -367,6 +490,17 @@ export class B2bService {
       rep_nome: vendedor.rep_nome,
       atribuido_por: usuarioNome?.trim() || null,
     });
+    // Sai da caixa da gestão e vai para o vendedor escolhido.
+    this.avisos.b2bEncerrado(pedido.orderNumber);
+    const resumo = await this.b2bPrismaRepository
+      .resumoDoPedido(pedido.id)
+      .catch(() => ({ itens: 0, valor: null }));
+    void this.avisos.b2bNovo({
+      orderNumber: pedido.orderNumber,
+      cliente: `Cliente ${pedido.cli_codigo}`,
+      rep_codigo: vendedor.rep_codigo,
+      ...resumo,
+    });
     return {
       id: pedido.id,
       responsavel: {
@@ -426,34 +560,15 @@ export class B2bService {
    */
   private async lerPedidosDoPortal(tolerante: boolean): Promise<PedidoResumo[]> {
     try {
-      const pedidos = await this.b2bRepository.listarPedidos();
-
-      return pedidos.data.map((pedido) => ({
-        orderNumber: pedido.orderNumber,
-        createdAt: pedido.createdAt,
-        pedidoId: pedido.id,
-        comprador: pedido.comprador,
-        status: pedido.status,
-        // Portal antigo, sem o campo: "não sei", e não "não viu".
-        clienteViuPreco: pedido.clienteViuPreco ?? null,
-        margem: pedido.margem ?? null,
-        valorTotal: null,
-        cli_codigo: pedido.user?.cliCodigo ?? null,
-        responsavel: null,
-        items: pedido.items.map((item) => ({
-          pro_codigo: item.product?.proCodigo,
-          quantidade: item.quantity,
-          promocao: item.product?.promotion?.textoPromocional || null,
-          preco_unitario: item.precoUnitario ?? null,
-        })),
-        user: {
-          id: pedido.user?.id,
-          nome: pedido.user?.name,
-          phone: pedido.user?.phone,
-          carteira: pedido.user?.carteira,
-          company: pedido.user?.company,
-        },
-      }));
+      // Todas as páginas: antes só a primeira (50), e o pedido mais antigo que
+      // isso sumia da tela.
+      const pedidos: PortalOrder[] = [];
+      for (let page = 1; page <= MAX_PAGINAS; page++) {
+        const r = await this.b2bRepository.listarPedidos(page);
+        pedidos.push(...r.data);
+        if (!r.data.length || page >= (r.pagination?.pages ?? 1)) break;
+      }
+      return pedidos.map(resumoDoPortal);
     } catch (err: any) {
       if (!tolerante) throw err;
       this.logger.error(

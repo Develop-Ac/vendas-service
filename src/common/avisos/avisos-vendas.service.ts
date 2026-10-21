@@ -175,6 +175,39 @@ export class AvisosVendasService {
     this.avisos.emitir('produtos.dia', { ref: data, vars: { total: resumo.total, bolsa: brl(resumo.bolsa), fora: resumo.fora }, usuarios });
   }
 
+  /** Pedido novo do portal B2B: vai para o vendedor responsável (ref = orderNumber). */
+  async b2bNovo(p: { orderNumber: string; cliente: string; rep_codigo: number; itens: number; valor: number | null }) {
+    const usuarios = await this.usuariosDoRep(p.rep_codigo);
+    if (!usuarios.length) return;
+    this.avisos.emitir('b2b.novo', {
+      ref: p.orderNumber,
+      vars: { cliente: p.cliente, itens: p.itens, valor: p.valor != null ? ` · ${brl(p.valor)}` : '' },
+      usuarios,
+      link: '/vendas/b2b',
+    });
+  }
+
+  /**
+   * Pedido B2B sem vendedor (empresa sem vínculo ou cliente sem carteira): a
+   * gestão do atacado é quem vincula ou atribui, na tela B2B.
+   */
+  async b2bSemResponsavel(p: { orderNumber: string; empresa: string; motivo: string }) {
+    const usuarios = await this.gestaoAtacado();
+    if (!usuarios.length) return;
+    this.avisos.emitir('b2b.sem_responsavel', {
+      ref: p.orderNumber,
+      vars: { empresa: p.empresa, motivo: p.motivo },
+      usuarios,
+      link: '/vendas/b2b',
+    });
+  }
+
+  /** O pedido B2B foi atendido (assumido, recusado, vendedor atribuído): os avisos dele somem. */
+  b2bEncerrado(orderNumber: string) {
+    this.avisos.resolver('b2b.novo', orderNumber);
+    this.avisos.resolver('b2b.sem_responsavel', orderNumber);
+  }
+
   /** Vendedor mandou orçamento acima do desconto máximo para a gerência aprovar. */
   async orcamentoAprovacao(o: { id: string; numero: number; cli_codigo: number; cli_nome: string | null; rep_codigo: number | null; rep_nome: string | null; total: unknown }) {
     const usuarios = await this.aprovadores();
