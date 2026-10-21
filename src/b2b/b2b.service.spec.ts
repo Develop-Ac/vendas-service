@@ -90,6 +90,7 @@ function montar(
     salvarPedido: jest.fn().mockResolvedValue(undefined),
     resumoDoPedido: jest.fn().mockResolvedValue({ itens: 2, valor: 50 }),
     completarDoPortal: jest.fn().mockResolvedValue(undefined),
+    completarPromocoes: jest.fn().mockResolvedValue(undefined),
     listarAguardando: jest.fn().mockResolvedValue([]),
     buscarParaAssumir: jest.fn(),
     reservar: jest.fn().mockResolvedValue(true),
@@ -398,6 +399,18 @@ describe('B2bService.sincronizarComPortal — busca a cada minuto', () => {
     expect(avisos.b2bSemResponsavel).not.toHaveBeenCalled();
   });
 
+  it('pedido aguardando já gravado ganha o preço promocional que o portal passou a mandar', async () => {
+    const p = pedidoEm('ORD-1', AGORA);
+    p.items[0] = { ...p.items[0], promocaoTexto: 'Queima', promocaoPreco: '8.00', promocaoFim: '2026-11-30T23:59:59.000Z' };
+    const { service, prisma } = montar([p], [gravadoBase({ orderNumber: 'ORD-1' })]);
+
+    await service.sincronizarComPortal();
+
+    expect(prisma.completarPromocoes).toHaveBeenCalledWith([
+      { orderNumber: 'ORD-1', pro_codigo: 100, promocao_preco: 8, promocao_fim: new Date('2026-11-30T00:00:00Z') },
+    ]);
+  });
+
   it('pedido já gravado não avisa de novo', async () => {
     const { service, avisos } = montar(
       [pedidoEm('ORD-1', AGORA)],
@@ -496,7 +509,8 @@ describe('B2bService — assumir e recusar', () => {
         rep_codigo: 9,
         itens: [
           { pro_codigo: 100, quantidade: 3, preco_base: 12.5 },
-          { pro_codigo: 200, quantidade: 1, preco_base: 8 },
+          // item 200 tem o selo de promoção (pedido antigo, sem preço promocional): vai como promoção
+          { pro_codigo: 200, quantidade: 1 },
         ],
       }),
     );
@@ -507,6 +521,37 @@ describe('B2bService — assumir e recusar', () => {
     expect(prisma.concluirAssumir).toHaveBeenCalledWith('g1', 'orc1');
     expect(repo.atualizarStatusPedido).toHaveBeenCalledWith('p1', 'PROCESSING');
     expect(avisos.b2bEncerrado).toHaveBeenCalledWith('ORD-1');
+  });
+
+  it('preço visto abaixo da tabela do cliente no Celta vale como unitário fechado', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(
+      pedido({ itens: [{ pro_codigo: 100, quantidade: 1, promocao: null, preco_unitario: 35 }] }),
+    );
+    // cliente varejo no Celta: tabela 55; no portal ele comprou pelo atacado (35)
+    orcamento.produtosPorCodigo.mockResolvedValue([{ pro_codigo: 100, preco_tabela: 55 }]);
+
+    await service.assumir('ORD-1', { rep_codigo: 9 });
+
+    expect(orcamento.criar.mock.calls[0][0].itens).toEqual([
+      { pro_codigo: 100, quantidade: 1, preco_unit: 35 },
+    ]);
+  });
+
+  it('pedido antigo só com o selo de promoção: promoção pelo preço visto, validade padrão', async () => {
+    const { service, prisma, orcamento } = montar([], [], CARTEIRA);
+    prisma.buscarParaAssumir.mockResolvedValue(
+      pedido({ itens: [{ pro_codigo: 100, quantidade: 1, promocao: 'Queima', preco_unitario: 30 }] }),
+    );
+    orcamento.produtosPorCodigo.mockResolvedValue([{ pro_codigo: 100, preco_tabela: 55 }]);
+
+    await service.assumir('ORD-1', { rep_codigo: 9 });
+
+    const [dto, opcoes] = orcamento.criar.mock.calls[0];
+    expect(dto.itens).toEqual([{ pro_codigo: 100, quantidade: 1 }]);
+    const promo = opcoes.promosPortal.get(100);
+    expect(promo.preco).toBe(30);
+    expect(promo.fim.getTime()).toBeGreaterThan(Date.now() + 6 * 86_400_000);
   });
 
   it('cliente que não viu preço: tabela com a margem do comprador, e a observação avisa', async () => {

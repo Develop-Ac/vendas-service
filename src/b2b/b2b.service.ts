@@ -110,6 +110,9 @@ export interface QuemAtende {
 /** Só pedido ainda não assumido entra nas filas da gestão. */
 const STATUS_AGUARDANDO = 'PENDING';
 
+/** Promoção do portal sem o fim congelado (pedido antigo): vale 7 dias, a validade padrão. */
+const VALIDADE_SEM_FIM_MS = 7 * 86_400_000;
+
 /** Teto de páginas lidas do portal (200 pedidos cada): trava contra laço sem fim. */
 const MAX_PAGINAS = 50;
 
@@ -145,7 +148,11 @@ function resumoDoPortal(pedido: PortalOrder): PedidoResumo {
     items: pedido.items.map((item) => ({
       pro_codigo: item.product?.proCodigo,
       quantidade: item.quantity,
-      promocao: item.product?.promotion?.textoPromocional || null,
+      // O selo congelado no pedido; o da promoção atual do produto só para pedido antigo.
+      promocao:
+        item.promocaoTexto !== undefined
+          ? item.promocaoTexto || null
+          : item.product?.promotion?.textoPromocional || null,
       preco_unitario: item.precoUnitario ?? null,
       promocao_preco:
         item.promocaoPreco != null && Number.isFinite(Number(item.promocaoPreco))
@@ -214,6 +221,24 @@ export class B2bService {
       );
       const jaGravados = resumos.filter((p) => existentes.has(p.orderNumber));
       await this.preencherClientes(jaGravados);
+      await this.b2bPrismaRepository
+        .completarPromocoes(
+          jaGravados
+            .filter((p) => p.status === STATUS_AGUARDANDO)
+            .flatMap((p) =>
+              p.items
+                .filter((it) => it.promocao_preco != null)
+                .map((it) => ({
+                  orderNumber: p.orderNumber,
+                  pro_codigo: Number(it.pro_codigo),
+                  promocao_preco: it.promocao_preco as number,
+                  promocao_fim: it.promocao_fim ? new Date(`${it.promocao_fim}T00:00:00Z`) : null,
+                })),
+            ),
+        )
+        .catch((err: any) =>
+          this.logger.warn(`Completar promoção dos pedidos B2B gravados: ${err?.message}`),
+        );
       await this.b2bPrismaRepository
         .completarDoPortal(
           jaGravados
@@ -522,34 +547,48 @@ export class B2bService {
       // metade da bolsa, validade até o fim). Preço = o que o comprador viu, a
       // promoção com a margem dele — também quando ele não via preço.
       const promosPortal: PromosPortal = new Map();
+      const viuPreco = (i: { preco_unitario: number | null }) =>
+        pedido.clienteViuPreco === true && Number(i.preco_unitario) > 0;
       for (const i of validos) {
-        if (!(Number(i.promocao_preco) > 0) || !i.promocao_fim) continue;
+        // Preço da promoção: o que o comprador viu; sem preço visto, a promoção
+        // pura com a margem. Pedido gravado antes do preço promocional chegar
+        // só tem o selo: vale o preço visto, se houver.
+        const preco = viuPreco(i)
+          ? Number(i.preco_unitario)
+          : Number(i.promocao_preco) > 0
+            ? comMargem(Number(i.promocao_preco))
+            : null;
+        const emPromocao = Number(i.promocao_preco) > 0 || !!i.promocao;
+        if (!emPromocao || preco == null) continue;
         promosPortal.set(i.pro_codigo, {
-          preco:
-            pedido.clienteViuPreco && Number(i.preco_unitario) > 0
-              ? Number(i.preco_unitario)
-              : comMargem(Number(i.promocao_preco)),
-          fim: i.promocao_fim,
+          preco,
+          // Sem o fim congelado (pedido antigo), vale pela validade padrão.
+          fim: i.promocao_fim ?? new Date(Date.now() + VALIDADE_SEM_FIM_MS),
           descricao: `Promoção do portal B2B${i.promocao ? `: ${i.promocao}` : ''}`.slice(0, 200),
         });
       }
 
       const itens = validos.map((i) => {
         const tabela = Number(porCodigo.get(i.pro_codigo)?.preco_tabela ?? 0);
-        const base =
-          pedido.clienteViuPreco && i.preco_unitario != null
-            ? i.preco_unitario
-            : margem > 0 && tabela > 0
-              ? comMargem(tabela)
-              : null;
-        return {
-          pro_codigo: i.pro_codigo,
-          quantidade: i.quantidade,
-          // Em promoção o preço é o da promoção: base acima da tabela não vale.
-          ...(base != null && base > 0 && !promosPortal.has(i.pro_codigo)
-            ? { preco_base: base }
-            : {}),
-        };
+        // Em promoção o preço é o da promoção (vem por promosPortal).
+        if (promosPortal.has(i.pro_codigo)) {
+          return { pro_codigo: i.pro_codigo, quantidade: i.quantidade };
+        }
+        // O preço que veio do portal vale sobre a tabela do cliente no Celta
+        // (que pode ser outra: varejo, atacado especial): acima dela é base do
+        // desconto; abaixo, unitário fechado — a régua e a alçada julgam.
+        const visto = viuPreco(i)
+          ? Number(i.preco_unitario)
+          : margem > 0 && tabela > 0
+            ? comMargem(tabela)
+            : null;
+        const preco =
+          visto == null || !(tabela > 0) || Math.abs(visto - tabela) < 0.005
+            ? {}
+            : visto > tabela
+              ? { preco_base: visto }
+              : { preco_unit: visto };
+        return { pro_codigo: i.pro_codigo, quantidade: i.quantidade, ...preco };
       });
 
       criado = await this.orcamento.criar({

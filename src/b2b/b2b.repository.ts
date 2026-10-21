@@ -38,6 +38,8 @@ export interface PortalOrderItem {
    * pelo portal. `null` quando ele não vê preço ou o pedido é anterior ao campo.
    */
   precoUnitario?: number | null;
+  /** Selo da promoção congelado no pedido (`null` = o item não estava em promoção). */
+  promocaoTexto?: string | null;
   /** Preço promocional puro (sem margem) e fim da promoção — só para a intranet. */
   promocaoPreco?: number | string | null;
   promocaoFim?: string | null;
