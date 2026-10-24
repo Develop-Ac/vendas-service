@@ -10,6 +10,7 @@ import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { SalvarOrcamentoDto } from '../orcamento/dto/orcamento.dto';
 import { OrcamentoService, PromosPortal } from '../orcamento/orcamento.service';
 import { B2bCarteiraService } from './b2b.carteira.service';
+import { semMargem } from './b2b.margem';
 import { B2bRepository, PortalEmpresa, PortalOrder } from './b2b.repository';
 import {
   B2bPrismaRepository,
@@ -23,8 +24,9 @@ export interface PedidoItemResumo {
   quantidade: number;
   promocao: string | null;
   /**
-   * Preço unitário que o comprador viu ao cotar (tabela + margem), congelado
-   * pelo portal. `null` quando ele não viu preço ou a peça não tinha preço.
+   * Preço unitário que o comprador viu ao cotar, SEM a margem dele: a margem é
+   * da loja cliente e não entra na intranet (`semMargem`). `null` quando ele
+   * não viu preço ou a peça não tinha preço.
    */
   preco_unitario: number | null;
   /** Promoção do portal: preço puro (sem margem) e fim (YYYY-MM-DD). */
@@ -64,7 +66,7 @@ export interface PedidoResumo {
    * `null` só quando nem o banco nem o portal sabem (pedido antigo).
    */
   clienteViuPreco: boolean | null;
-  /** Margem (%) do comprador já embutida no `preco_unitario`. */
+  /** Margem (%) que o comprador via; já tirada do `preco_unitario`. */
   margem: number | null;
   /** Soma de `preco_unitario × quantidade` dos itens com preço; `null` sem preço. */
   valorTotal: number | null;
@@ -153,7 +155,7 @@ function resumoDoPortal(pedido: PortalOrder): PedidoResumo {
         item.promocaoTexto !== undefined
           ? item.promocaoTexto || null
           : item.product?.promotion?.textoPromocional || null,
-      preco_unitario: item.precoUnitario ?? null,
+      preco_unitario: semMargem(item.precoUnitario, pedido.margem),
       promocao_preco:
         item.promocaoPreco != null && Number.isFinite(Number(item.promocaoPreco))
           ? Number(item.promocaoPreco)
@@ -469,10 +471,12 @@ export class B2bService {
   /**
    * O vendedor (ou a gestão, no lugar dele) assume o pedido: vira orçamento do
    * atacado em RASCUNHO, com o vendedor responsável, e o portal passa para
-   * "em atendimento". O preço é o que o cliente viu (`preco_base`: acima da
-   * tabela vale como base do desconto; igual ou abaixo, vale a tabela); sem
-   * preço visto, a tabela com a margem do comprador. Item que não existe mais
-   * no ERP fica de fora e é anotado na observação.
+   * "em atendimento". O preço é o que o cliente viu, sem a margem dele
+   * (`preco_base`: acima da tabela vale como base do desconto; igual ou abaixo,
+   * vale a tabela); sem preço visto, a tabela. Item que não existe mais no ERP
+   * fica de fora e é anotado na observação.
+   *
+   * A margem do comprador é da loja cliente, não da AC: não entra no orçamento.
    */
   async assumir(
     identificador: string,
@@ -539,24 +543,20 @@ export class B2bService {
         );
       }
 
-      const margem = Number(pedido.margem ?? 0);
-      const comMargem = (preco: number) =>
-        Math.round(preco * (1 + (margem > 0 ? margem : 0) / 100) * 100) / 100;
-
       // Promoção do portal: o orçamento a trata como promoção (preço fechado,
-      // metade da bolsa, validade até o fim). Preço = o que o comprador viu, a
-      // promoção com a margem dele — também quando ele não via preço.
+      // metade da bolsa, validade até o fim). Preço = o que o comprador viu
+      // (sem a margem), ou a promoção pura quando ele não via preço.
       const promosPortal: PromosPortal = new Map();
       const viuPreco = (i: { preco_unitario: number | null }) =>
         pedido.clienteViuPreco === true && Number(i.preco_unitario) > 0;
       for (const i of validos) {
         // Preço da promoção: o que o comprador viu; sem preço visto, a promoção
-        // pura com a margem. Pedido gravado antes do preço promocional chegar
-        // só tem o selo: vale o preço visto, se houver.
+        // pura. Pedido gravado antes do preço promocional chegar só tem o
+        // selo: vale o preço visto, se houver.
         const preco = viuPreco(i)
           ? Number(i.preco_unitario)
           : Number(i.promocao_preco) > 0
-            ? comMargem(Number(i.promocao_preco))
+            ? Number(i.promocao_preco)
             : null;
         const emPromocao = Number(i.promocao_preco) > 0 || !!i.promocao;
         if (!emPromocao || preco == null) continue;
@@ -577,11 +577,7 @@ export class B2bService {
         // O preço que veio do portal vale sobre a tabela do cliente no Celta
         // (que pode ser outra: varejo, atacado especial): acima dela é base do
         // desconto; abaixo, unitário fechado — a régua e a alçada julgam.
-        const visto = viuPreco(i)
-          ? Number(i.preco_unitario)
-          : margem > 0 && tabela > 0
-            ? comMargem(tabela)
-            : null;
+        const visto = viuPreco(i) ? Number(i.preco_unitario) : null;
         const preco =
           visto == null || !(tabela > 0) || Math.abs(visto - tabela) < 0.005
             ? {}

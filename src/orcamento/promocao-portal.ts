@@ -9,7 +9,7 @@ import type { PromocaoItem } from './orcamento.erp.repository';
  */
 export const PROMOCAO_PORTAL = 0;
 
-/** Promoção do portal por produto: preço que o comprador viu (com a margem) e o fim. */
+/** Promoção do portal por produto: preço que o comprador viu (sem a margem dele) e o fim. */
 export type PromosPortal = Map<number, { preco: number; fim: Date; descricao: string }>;
 
 const ymd = (d: Date) => d.toISOString().slice(0, 10);
