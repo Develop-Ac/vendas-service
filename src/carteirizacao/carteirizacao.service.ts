@@ -672,9 +672,13 @@ export class CarteirizacaoService {
 
   // ------------------------------------------------------------- vendedores
   async listarVendedores() {
-    const [base, carteira] = await Promise.all([
+    // A base (cadastro de clientes do ERP) só conhece quem já tem cliente na carteira.
+    // Vendedor novo do atacado, ainda sem carteira, só existe na equipe do canal (BI) —
+    // sem ele aqui, não dá para carteirizar para ele.
+    const [base, carteira, ativos] = await Promise.all([
       this.fonte.listarVendedoresAtacado(),
       this.overlay.listarCarteira(),
+      this.vendedoresAtivosAtacado(),
     ]);
 
     const nomeMap = new Map<number, string>();
@@ -683,10 +687,11 @@ export class CarteirizacaoService {
       this.vendedorNomeCache.set(v.rep_codigo, v.rep_nome);
     });
 
-    // reps presentes só no overlay (atribuídos manualmente)
-    const repsOverlay = new Set(
-      carteira.filter((c) => c.rep_codigo != null).map((c) => c.rep_codigo as number),
-    );
+    // reps presentes só no overlay (atribuídos manualmente) ou só na equipe ativa
+    const repsOverlay = new Set([
+      ...carteira.filter((c) => c.rep_codigo != null).map((c) => c.rep_codigo as number),
+      ...ativos,
+    ]);
     const faltantes = [...repsOverlay].filter((r) => !nomeMap.has(r));
     if (faltantes.length) {
       const nomes = await this.fonte.nomesRepresentantes(faltantes);
