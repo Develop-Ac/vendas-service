@@ -1,12 +1,16 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { semMargem } from './b2b.margem';
 
 export interface OrcamentoB2bItemInput {
   pro_codigo: number;
   quantidade: number;
   promocao: string | null;
-  /** Preço unitário que o comprador viu; `null` quando ele não vê preço. */
+  /**
+   * Preço unitário que o comprador viu, já SEM a margem dele (o preço da
+   * tabela); `null` quando ele não vê preço.
+   */
   preco_unitario: number | null;
   /** Promoção do portal: preço puro (sem margem) e fim. */
   promocao_preco?: number | null;
@@ -91,6 +95,12 @@ type LinhaB2b = Prisma.ven_orcamento_b2bGetPayload<{
 }>;
 
 function paraGravado(row: LinhaB2b): OrcamentoB2bGravado {
+  const margem = paraNumero(row.margem);
+  // Linha gravada antes de a margem sair da intranet: o preço ainda a tem.
+  const preco = (valor: Prisma.Decimal | null) =>
+    row.precoSemMargem
+      ? paraNumero(valor)
+      : semMargem(paraNumero(valor), margem);
   return {
     id: row.id,
     orderNumber: row.orderNumber,
@@ -100,7 +110,7 @@ function paraGravado(row: LinhaB2b): OrcamentoB2bGravado {
     status: row.status,
     createdAt: row.createdAt,
     clienteViuPreco: row.clienteViuPreco,
-    margem: paraNumero(row.margem),
+    margem,
     cli_codigo: row.cli_codigo,
     rep_codigo: row.rep_codigo,
     rep_nome: row.rep_nome,
@@ -108,7 +118,7 @@ function paraGravado(row: LinhaB2b): OrcamentoB2bGravado {
       pro_codigo: item.pro_codigo,
       quantidade: item.quantidade,
       promocao: item.promocao,
-      preco_unitario: paraNumero(item.preco_unitario),
+      preco_unitario: preco(item.preco_unitario),
       promocao_preco: paraNumero(item.promocao_preco),
       promocao_fim: item.promocao_fim,
     })),
@@ -260,6 +270,8 @@ export class B2bPrismaRepository {
         comprador: pedido.comprador,
         clienteViuPreco: pedido.clienteViuPreco,
         margem: pedido.margem,
+        // Os itens chegam aqui já sem a margem (`resumoDoPortal`).
+        precoSemMargem: true,
         cli_codigo: pedido.cli_codigo,
         empresa: pedido.empresa,
         observacao: pedido.observacao,
@@ -386,14 +398,26 @@ export class B2bPrismaRepository {
 
   /** Itens e total cotado do pedido gravado — o corpo do aviso ao vendedor. */
   async resumoDoPedido(id: string): Promise<{ itens: number; valor: number | null }> {
-    const itens = await this.prisma.ven_orcamento_b2b_itens.findMany({
-      where: { ven_orcamento_b2b_id: id },
-      select: { quantidade: true, preco_unitario: true },
+    const pedido = await this.prisma.ven_orcamento_b2b.findUnique({
+      where: { id },
+      select: {
+        margem: true,
+        precoSemMargem: true,
+        ven_orcamento_b2b_itens: {
+          select: { quantidade: true, preco_unitario: true },
+        },
+      },
     });
-    const comPreco = itens.filter((i) => i.preco_unitario !== null);
+    const margem = paraNumero(pedido?.margem ?? null);
+    const itens = (pedido?.ven_orcamento_b2b_itens ?? []).map((i) => ({
+      quantidade: i.quantidade,
+      preco: pedido?.precoSemMargem
+        ? paraNumero(i.preco_unitario)
+        : semMargem(paraNumero(i.preco_unitario), margem),
+    }));
+    const comPreco = itens.filter((i) => i.preco !== null);
     const centavos = comPreco.reduce(
-      (acc, i) =>
-        acc + Math.round((paraNumero(i.preco_unitario) as number) * 100) * i.quantidade,
+      (acc, i) => acc + Math.round((i.preco as number) * 100) * i.quantidade,
       0,
     );
     return { itens: itens.length, valor: comPreco.length ? centavos / 100 : null };

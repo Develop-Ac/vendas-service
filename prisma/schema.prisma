@@ -2515,6 +2515,9 @@ model ven_orcamento_b2b {
   status                  String                    @default("PENDING") @db.VarChar(30)
   clienteViuPreco         Boolean?
   margem                  Decimal?                  @db.Decimal(7, 2)
+  /// `true` = `preco_unitario` dos itens já gravado sem a margem do comprador.
+  /// `false` = linha anterior: o preço tem a margem e sai dividido na leitura.
+  precoSemMargem          Boolean                   @default(false)
   /// Cliente do Celta da empresa do comprador (vínculo feito na tela B2B).
   cli_codigo              Int?
   /// Vendedor atribuído pela gestão SÓ para este pedido, quando o cliente não

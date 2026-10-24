@@ -36,6 +36,7 @@ export interface PortalOrderItem {
   /**
    * Preço unitário que o comprador viu ao cotar (tabela + margem), congelado
    * pelo portal. `null` quando ele não vê preço ou o pedido é anterior ao campo.
+   * A intranet tira a margem na entrada (`semMargem`).
    */
   precoUnitario?: number | null;
   /** Selo da promoção congelado no pedido (`null` = o item não estava em promoção). */
