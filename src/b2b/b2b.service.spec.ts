@@ -35,7 +35,7 @@ function pedidoPortal(over: Partial<PortalOrder> = {}): PortalOrder {
         orderId: 'p1',
         productId: 'pr1',
         quantity: 3,
-        precoUnitario: 10.1,
+        precoUnitario: 11,
         product: {
           id: 'pr1',
           proCodigo: '100',
@@ -141,22 +141,35 @@ function comCliente(cliCodigo: number | null): PortalOrder {
 }
 
 describe('B2bService.listarPedidos — preço cotado', () => {
-  it('repassa o preço, a flag e o total do pedido em que o comprador viu preço', async () => {
+  it('repassa o preço sem a margem do comprador, a flag e o total', async () => {
     const { service, prisma } = montar([pedidoPortal()]);
 
     const [pedido] = await service.listarPedidos();
 
     expect(pedido.clienteViuPreco).toBe(true);
     expect(pedido.margem).toBe(10);
-    expect(pedido.items[0].preco_unitario).toBe(10.1);
-    expect(pedido.valorTotal).toBe(30.3);
+    // 11,00 visto com 10% de margem = 10,00 de tabela.
+    expect(pedido.items[0].preco_unitario).toBe(10);
+    expect(pedido.valorTotal).toBe(30);
     expect(prisma.salvarPedido).toHaveBeenCalledWith(
       expect.objectContaining({
         clienteViuPreco: true,
         margem: 10,
-        itens: [expect.objectContaining({ preco_unitario: 10.1 })],
+        itens: [expect.objectContaining({ preco_unitario: 10 })],
       }),
     );
+  });
+
+  it('33,00 visto com 32% de margem sai 25,00 na intranet', async () => {
+    const portal = pedidoPortal({ margem: 32 });
+    portal.items[0].precoUnitario = 33;
+    portal.items[0].quantity = 1;
+    const { service } = montar([portal]);
+
+    const [pedido] = await service.listarPedidos();
+
+    expect(pedido.items[0].preco_unitario).toBe(25);
+    expect(pedido.valorTotal).toBe(25);
   });
 
   it('marca "não viu preço" sem valor quando o comprador não vê preço', async () => {
@@ -177,8 +190,8 @@ describe('B2bService.listarPedidos — preço cotado', () => {
     const [pedido] = await service.listarPedidos();
 
     expect(pedido.clienteViuPreco).toBe(true);
-    expect(pedido.items[0].preco_unitario).toBe(10.1);
-    expect(pedido.valorTotal).toBe(30.3);
+    expect(pedido.items[0].preco_unitario).toBe(10);
+    expect(pedido.valorTotal).toBe(30);
   });
 });
 
@@ -554,7 +567,7 @@ describe('B2bService — assumir e recusar', () => {
     expect(promo.fim.getTime()).toBeGreaterThan(Date.now() + 6 * 86_400_000);
   });
 
-  it('cliente que não viu preço: tabela com a margem do comprador, e a observação avisa', async () => {
+  it('cliente que não viu preço: tabela, sem a margem do comprador, e a observação avisa', async () => {
     const { service, prisma, orcamento } = montar([], [], CARTEIRA);
     prisma.buscarParaAssumir.mockResolvedValue(
       pedido({
@@ -567,11 +580,11 @@ describe('B2bService — assumir e recusar', () => {
     await service.assumir('ORD-1', { rep_codigo: 9 });
 
     const dto = orcamento.criar.mock.calls[0][0];
-    expect(dto.itens).toEqual([{ pro_codigo: 100, quantidade: 2, preco_base: 11 }]);
+    expect(dto.itens).toEqual([{ pro_codigo: 100, quantidade: 2 }]);
     expect(dto.observacao).toContain('Preço não exibido ao cliente');
   });
 
-  it('item em promoção do portal: vai como promoção, com a margem, sem preço base', async () => {
+  it('item em promoção do portal: vai como promoção, sem a margem, sem preço base', async () => {
     const { service, prisma, orcamento } = montar([], [], CARTEIRA);
     const fim = new Date('2099-12-31T00:00:00Z');
     prisma.buscarParaAssumir.mockResolvedValue(
@@ -593,10 +606,10 @@ describe('B2bService — assumir e recusar', () => {
     const [dto, opcoes] = orcamento.criar.mock.calls[0];
     expect(dto.itens).toEqual([
       { pro_codigo: 100, quantidade: 2 },
-      { pro_codigo: 200, quantidade: 1, preco_base: 9.9 },
+      { pro_codigo: 200, quantidade: 1 },
     ]);
     expect([...opcoes.promosPortal.entries()]).toEqual([
-      [100, { preco: 8.8, fim, descricao: 'Promoção do portal B2B: Queima' }],
+      [100, { preco: 8, fim, descricao: 'Promoção do portal B2B: Queima' }],
     ]);
   });
 

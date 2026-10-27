@@ -18,7 +18,7 @@ class PedidoItemResumoDto {
     example: 12.5,
     nullable: true,
     description:
-      'Preço unitário que o comprador viu ao cotar (tabela + margem). `null` quando ele não viu preço.',
+      'Preço unitário que o comprador viu ao cotar, SEM a margem dele (a margem é da loja cliente). `null` quando ele não viu preço.',
   })
   preco_unitario!: number | null;
 }
@@ -54,7 +54,7 @@ class PedidoResumoDto {
       '`true` = o comprador viu preço ao fazer o pedido; `false` = não viu. `null` em pedido antigo, sem a informação.',
   })
   clienteViuPreco!: boolean | null;
-  @ApiProperty({ example: 10, nullable: true, description: 'Margem (%) já embutida nos preços.' })
+  @ApiProperty({ example: 10, nullable: true, description: 'Margem (%) que o comprador via; já tirada dos preços.' })
   margem!: number | null;
   @ApiProperty({
     example: 125.0,
@@ -182,7 +182,7 @@ export class B2bController {
   @ApiOperation({
     summary: 'Assumir o pedido: vira orçamento do atacado em rascunho',
     description:
-      'Só o vendedor responsável ou a gestão (`gestao: true`). Cria o orçamento com o vendedor responsável, o preço que o cliente viu (ou tabela + margem) e a observação do pedido; o portal passa para PROCESSING. Item que não existe mais no ERP fica de fora (`fora`).',
+      'Só o vendedor responsável ou a gestão (`gestao: true`). Cria o orçamento com o vendedor responsável, o preço que o cliente viu sem a margem dele (ou a tabela) e a observação do pedido; o portal passa para PROCESSING. Item que não existe mais no ERP fica de fora (`fora`).',
   })
   @ApiParam({ name: 'id', description: 'id do registro, orderNumber ou pedidoId do portal' })
   @ApiBody({ type: QuemAtendeBodyDto })
