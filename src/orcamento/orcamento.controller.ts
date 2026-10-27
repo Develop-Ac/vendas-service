@@ -204,6 +204,7 @@ export class OrcamentoController {
   @ApiQuery({ name: 'm23', required: false, description: 'Total líquido dos itens MIX 2/3 (e sem faixa) — projeção da comissão' })
   @ApiQuery({ name: 'absorvido', required: false, description: 'Promoção: o que a empresa absorve neste orçamento (metade da falta contra custo × piso nas linhas em promoção)' })
   @ApiQuery({ name: 'ajuste_orc', required: false, description: 'Ajuste da bolsa negativa: R$ que a empresa assume neste orçamento (≥ 0)' })
+  @ApiQuery({ name: 'excedente_orc', required: false, description: 'Teto da bolsa por linha: Σ do que as linhas deste orçamento passam do teto (≥ 0); ignorado com a regra fora de vigência' })
   bolsa(
     @Param('rep', ParseIntPipe) rep: number,
     @Query('total') total?: string,
@@ -217,6 +218,7 @@ export class OrcamentoController {
     @Query('m23') m23?: string,
     @Query('absorvido') absorvido?: string,
     @Query('ajuste_orc') ajusteOrc?: string,
+    @Query('excedente_orc') excedenteOrc?: string,
   ) {
     const t = toNum(total);
     return this.service.bolsa(
@@ -227,6 +229,7 @@ export class OrcamentoController {
             m1a: toNum(m1a), m1b: toNum(m1b), m1c: toNum(m1c), m1d: toNum(m1d), m23: toNum(m23),
             absorvido: toNum(absorvido) ?? 0,
             ajuste: toNum(ajusteOrc) ?? 0,
+            excedente_orc: Math.max(0, toNum(excedenteOrc) || 0),
           }
         : undefined,
     );

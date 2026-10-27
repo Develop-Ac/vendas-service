@@ -30,7 +30,7 @@ describe('comPromosDoPortal', () => {
 });
 
 describe('item em promoção do portal no orçamento', () => {
-  const item = { pro_codigo: 10, quantidade: 2, preco_unit: 80, total: 160, custo_ref: 100 };
+  const item = { pro_codigo: 10, quantidade: 2, preco_unit: 80, total: 160, custo_ref: 100, preco_tabela: 100 };
 
   it('metade do negativo da bolsa é da empresa, como na promoção do Celta', () => {
     const promo = bolsaDoOrcamento([{ ...item, promocao_codigo: PROMOCAO_PORTAL, fora_promocao: false }], [], 1, new Set());
@@ -51,7 +51,7 @@ describe('item em promoção do portal no orçamento', () => {
 });
 
 describe('bolsa do mês: venda em promoção do portal (o BI não a marca)', () => {
-  const linha = { liquido: 160, custo_bolsa: 200, custo_produto: 200, promocao: false, servico: false, ajuste: 0 };
+  const linha = { liquido: 160, custo_bolsa: 200, custo_produto: 200, promocao: false, servico: false, preco_tabela: 100, ajuste: 0 };
 
   it('linha inteira em promoção do portal: metade do negativo, igual à do Celta', () => {
     const celta = valoresLinha({ ...linha, promocao: true }, 1);
@@ -75,7 +75,7 @@ describe('bolsa do mês: venda em promoção do portal (o BI não a marca)', () 
     const nf = {
       empresa: 3, serie: '1', nfs: 10, pro_codigo: 10, cli_codigo: 1, rep_codigo: 9,
       emissao: new Date('2026-10-20T00:00:00'), devolucao: false, quantidade: 2,
-      preco_unit: 80, liquido: 160, custo: 200, promocao: false, custo_produto: 200, servico: false, ajuste: 0,
+      preco_unit: 80, liquido: 160, custo: 200, promocao: false, custo_produto: 200, servico: false, ajuste: 0, preco_tabela: 100,
     };
     const orc = (promo_portal: boolean) => ({
       id: 'O1', numero: 1, cli_codigo: 1, rep_codigo: 9, inicio: new Date('2026-10-19T10:00:00'),

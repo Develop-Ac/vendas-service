@@ -1108,7 +1108,7 @@ export class OrcamentoPrismaRepository {
       where: { id: { in: ids } },
       select: {
         id: true,
-        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, total: true, custo_ref: true, promocao_codigo: true, fora_promocao: true } },
+        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, total: true, custo_ref: true, preco_tabela: true, promocao_codigo: true, fora_promocao: true } },
         ven_bolsa_ajuste: { select: { quantidade: true, assumido_unit: true } },
       },
     });
@@ -1116,7 +1116,7 @@ export class OrcamentoPrismaRepository {
       rows.map((r) => [
         r.id,
         {
-          itens: r.itens.map((i) => ({ ...i, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), total: n(i.total), custo_ref: nn(i.custo_ref) })),
+          itens: r.itens.map((i) => ({ ...i, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), total: n(i.total), custo_ref: nn(i.custo_ref), preco_tabela: n(i.preco_tabela) })),
           ajustes: r.ven_bolsa_ajuste.map((a) => ({ quantidade: n(a.quantidade), assumido_unit: n(a.assumido_unit) })),
         },
       ]),
@@ -1129,7 +1129,7 @@ export class OrcamentoPrismaRepository {
       where: { rep_codigo: rep, status: { in: ['ENVIADO', 'APROVACAO'] } },
       select: {
         id: true, numero: true, cli_nome: true, total: true, desconto_total: true, subtotal: true,
-        itens: { select: { quantidade: true, custo_ref: true, total: true } },
+        itens: { select: { quantidade: true, custo_ref: true, total: true, preco_tabela: true } },
       },
     });
   }

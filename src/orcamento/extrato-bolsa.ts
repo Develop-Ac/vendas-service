@@ -1,4 +1,4 @@
-import { absorcaoPromocao, calcularBolsa, round2 } from './regua';
+import { absorcaoPromocao, calcularBolsa, corteNaData, round2, tetoLinha, type TetoBolsa } from './regua';
 import { JANELA_DIAS_PADRAO, janela, mesmaNf, type LinhaNf, type NfChave } from './ajuste-bolsa';
 
 /* =============================================================================
@@ -114,6 +114,10 @@ export interface LinhaBolsa {
   custo_produto: number;
   promocao: boolean;
   servico: boolean;
+  /** devolução: fica fora do teto da bolsa por linha (o líquido já vem negativo) */
+  devolucao?: boolean;
+  /** preço de tabela oficial do atacado (PRECO2) do produto, que classifica o teto da linha; 0 = desconhecido */
+  preco_tabela: number;
   /** efetivo do ajuste da bolsa negativa atribuído à linha (estorno negativo) */
   ajuste: number;
   /**
@@ -127,26 +131,32 @@ export interface LinhaBolsa {
  * O que a linha põe na bolsa, sem arredondar (quem soma arredonda no fim, como o BI).
  * A metade da promoção usa o custo do PRODUTO e só a venda (na devolução o custo vem negativo)
  * — a mesma conta de `bolsaVendedor`, para a soma das linhas fechar com o card ao centavo.
- * Serviço fica fora da bolsa.
+ * Serviço fica fora da bolsa. `corte`/`pct`: teto da bolsa por linha (tetoLinha) — o corte já
+ * resolvido para a data da linha (corteNaData; 0 = regra fora); o excedente sai do `saldo`.
  */
-export function valoresLinha(l: LinhaBolsa, piso: number) {
-  if (l.servico) return { custo_piso: 0, absorvido: 0, ajuste: 0, saldo: 0 };
+export function valoresLinha(l: LinhaBolsa, piso: number, corte = 0, pct = 0) {
+  if (l.servico) return { custo_piso: 0, absorvido: 0, ajuste: 0, excedente: 0, saldo: 0 };
   const custo_piso = l.custo_bolsa * piso;
   const fator = l.promocao ? 1 : Math.min(1, Math.max(0, l.promo_portal ?? 0));
   const absorvido = fator > 0 && l.custo_produto > 0 && l.custo_produto * piso > l.liquido ? ((l.custo_produto * piso - l.liquido) / 2) * fator : 0;
-  return { custo_piso, absorvido, ajuste: l.ajuste, saldo: l.liquido - custo_piso + absorvido + l.ajuste };
+  const excedente = l.devolucao ? 0 : tetoLinha({ liquido: l.liquido, custo_bolsa: l.custo_bolsa, preco_tabela: l.preco_tabela }, piso, corte, pct).excedente;
+  return { custo_piso, absorvido, ajuste: l.ajuste, excedente, saldo: l.liquido - custo_piso + absorvido + l.ajuste - excedente };
 }
 
-/** Totais do extrato: Σ(líquido − custo × piso) + Σ absorvido + Σ ajuste, serviço só contado. */
-export function conciliar(linhas: LinhaBolsa[], piso: number) {
-  let venda = 0, custo = 0, absorvido = 0, ajuste = 0, servicos = 0;
+/**
+ * Totais do extrato: Σ(líquido − custo × piso) + Σ absorvido + Σ ajuste − Σ excedente do teto,
+ * serviço só contado. O teto vale para a linha emitida a partir de `teto.desde` (`emissao` AAAA-MM-DD).
+ */
+export function conciliar(linhas: Array<LinhaBolsa & { emissao?: string }>, piso: number, teto?: TetoBolsa | null) {
+  let venda = 0, custo = 0, absorvido = 0, ajuste = 0, excedente = 0, servicos = 0;
   for (const l of linhas) {
     if (l.servico) { servicos++; continue; }
-    const v = valoresLinha(l, piso);
+    const v = valoresLinha(l, piso, corteNaData(teto, l.emissao), teto?.pct ?? 0);
     venda += l.liquido;
     custo += v.custo_piso;
     absorvido += v.absorvido;
     ajuste += v.ajuste;
+    excedente += v.excedente;
   }
   return {
     venda_liquida: round2(venda),
@@ -154,10 +164,14 @@ export function conciliar(linhas: LinhaBolsa[], piso: number) {
     saldo_linhas: round2(venda - custo),
     absorvido: round2(absorvido),
     ajuste: round2(ajuste),
-    saldo: round2(venda - custo + absorvido + ajuste),
+    excedente: round2(excedente),
+    saldo: round2(venda - custo + absorvido + ajuste - excedente),
     servicos_fora: servicos,
   };
 }
+
+/** Dia (AAAA-MM-DD) de uma data montada como meia-noite local (emissão das linhas de NF). */
+const diaLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 /**
  * Põe o efetivo de cada ajuste da bolsa negativa (por NF + produto, como `casarAjustes` devolve)
@@ -172,12 +186,14 @@ export function atribuirAjustes(linhas: Array<NfChave & { pro_codigo: number; aj
 
 /**
  * Bolsa gerada nas NFs de cada orçamento: Σ do saldo das unidades casadas com ele (a fração
- * casada da linha), em qualquer mês. Orçamento sem unidade casada não entra no mapa.
+ * casada da linha), em qualquer mês, com o teto por linha na NF emitida a partir de `teto.desde`.
+ * Orçamento sem unidade casada não entra no mapa.
  */
 export function bolsaNfPorOrcamento(
   porOrcamento: Map<string, { linha: number; quantidade: number; promo_portal?: boolean }[]>,
-  linhas: Array<LinhaNf & { custo_produto: number; servico: boolean; ajuste: number }>,
+  linhas: Array<LinhaNf & { custo_produto: number; servico: boolean; ajuste: number; preco_tabela: number }>,
   piso: number,
+  teto?: TetoBolsa | null,
 ) {
   const saida = new Map<string, number>();
   for (const [id, casadas] of porOrcamento) {
@@ -187,7 +203,12 @@ export function bolsaNfPorOrcamento(
       if (!(l.quantidade > 0)) continue;
       const s = l.devolucao ? -1 : 1;
       // a parte deste orçamento em promoção do portal B2B leva a metade da promoção (só na venda)
-      const v = valoresLinha({ liquido: s * l.liquido, custo_bolsa: s * l.custo, custo_produto: s * l.custo_produto, promocao: l.promocao, servico: l.servico, ajuste: l.ajuste, promo_portal: c.promo_portal ? 1 : 0 }, piso);
+      const v = valoresLinha(
+        { liquido: s * l.liquido, custo_bolsa: s * l.custo, custo_produto: s * l.custo_produto, promocao: l.promocao, servico: l.servico, devolucao: l.devolucao, preco_tabela: l.preco_tabela, ajuste: l.ajuste, promo_portal: c.promo_portal ? 1 : 0 },
+        piso,
+        corteNaData(teto, diaLocal(l.emissao)),
+        teto?.pct ?? 0,
+      );
       soma += (c.quantidade / l.quantidade) * v.saldo;
     }
     saida.set(id, round2(soma));
@@ -198,13 +219,16 @@ export function bolsaNfPorOrcamento(
 /**
  * Bolsa do orçamento a partir dos itens gravados: a mesma conta da projeção na tela
  * (`calcularBolsa().orcamento`) — receita sem serviço, custo da bolsa × piso, item sem custo
- * neutro, metade da promoção absorvida, ajuste da bolsa negativa que a empresa assume.
+ * neutro, metade da promoção absorvida, ajuste da bolsa negativa que a empresa assume, menos o
+ * excedente do teto por linha (`excedenteDoOrcamento`; corte 0 = regra fora).
  */
 export function bolsaDoOrcamento(
-  itens: Array<{ pro_codigo: number; quantidade: number; preco_unit: number; total: number; custo_ref: number | null; promocao_codigo: number | null; fora_promocao: boolean }>,
+  itens: Array<{ pro_codigo: number; quantidade: number; preco_unit: number; total: number; custo_ref: number | null; preco_tabela: number; promocao_codigo: number | null; fora_promocao: boolean }>,
   ajustes: Array<{ quantidade: number; assumido_unit: number }>,
   piso: number,
   servicos: Set<number>,
+  corte = 0,
+  pct = 0,
 ) {
   let receita = 0, custo = 0, semCusto = 0, absorvido = 0;
   for (const i of itens) {
@@ -218,6 +242,20 @@ export function bolsaDoOrcamento(
     receita_mtd: 0, custo_mtd: 0, desconto_mtd: 0,
     receita_orc: receita, custo_orc: custo, sem_custo_orc: semCusto, absorvido_orc: absorvido,
     ajuste_orc: ajustes.reduce((s, a) => s + a.assumido_unit * a.quantidade, 0),
+    excedente_orc: excedenteDoOrcamento(itens.filter((i) => !servicos.has(i.pro_codigo)), piso, corte, pct),
     piso,
   }).orcamento;
+}
+
+/**
+ * Σ do excedente do teto por linha nos itens de um orçamento (líquido = total da linha, custo da
+ * bolsa × quantidade). Item sem custo já entra neutro na bolsa do orçamento (vendido no piso),
+ * por isso fica fora do teto. Quem chama tira o serviço.
+ */
+export function excedenteDoOrcamento(itens: Array<{ quantidade: number; total: number; custo_ref: number | null; preco_tabela: number }>, piso: number, corte: number, pct: number) {
+  if (!(corte > 0)) return 0;
+  return itens.reduce(
+    (s, i) => (i.custo_ref != null && i.custo_ref > 0 ? s + tetoLinha({ liquido: i.total, custo_bolsa: i.custo_ref * i.quantidade, preco_tabela: i.preco_tabela }, piso, corte, pct).excedente : s),
+    0,
+  );
 }

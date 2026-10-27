@@ -3,6 +3,8 @@ import {
   alcadaDoItem,
   avaliarItem,
   calcularBolsa,
+  corteNaData,
+  tetoLinha,
   parseDegrausBolsa,
   pisoPorDre,
   pisoPorVolume,
@@ -315,5 +317,67 @@ describe('degrauMix1', () => {
     expect(degrauMix1(0.22)).toMatchObject({ degrau: 1, multiplicador: 1.25, proximo_minimo: 0.26 });
     expect(degrauMix1(0.27)).toMatchObject({ degrau: 2, multiplicador: 1.5 });
     expect(degrauMix1(0.31)).toMatchObject({ degrau: 3, multiplicador: 2, proximo_minimo: null, falta_pp: 0 });
+  });
+});
+
+describe('tetoLinha (teto da bolsa por item)', () => {
+  const piso = 1.5, corte = 100, pct = 0.4;
+
+  it('tabela ≤ corte: teto = pct × líquido; o que passa é excedente', () => {
+    // custo 30, vendido a 90 (markup 3): saldo 90 − 45 = 45; teto 36 → excedente 9
+    const t = tetoLinha({ liquido: 90, custo_bolsa: 30, preco_tabela: 95 }, piso, corte, pct);
+    expect(t.teto).toBeCloseTo(36, 6);
+    expect(t.excedente).toBeCloseTo(9, 6);
+  });
+
+  it('tabela > corte: teto = custo da bolsa da linha', () => {
+    // 2 un. de custo 50 a 150: líquido 300, custo da linha 100, saldo 150, teto 100 → excedente 50
+    const t = tetoLinha({ liquido: 300, custo_bolsa: 100, preco_tabela: 160 }, piso, corte, pct);
+    expect(t.teto).toBe(100);
+    expect(t.excedente).toBeCloseTo(50, 6);
+  });
+
+  it('classifica pela tabela, não pelo praticado: tabela 100 vendida a 130 segue no teto de 40%', () => {
+    const t = tetoLinha({ liquido: 130, custo_bolsa: 40, preco_tabela: 100 }, piso, corte, pct);
+    expect(t.teto).toBeCloseTo(52, 6);
+    expect(t.excedente).toBeCloseTo(130 - 60 - 52, 6);
+  });
+
+  it('custo ≤ 0: teto zero, a linha inteira é excedente', () => {
+    expect(tetoLinha({ liquido: 80, custo_bolsa: 0, preco_tabela: 50 }, piso, corte, pct)).toEqual({ teto: 0, excedente: 80 });
+  });
+
+  it('linha abaixo do teto ou negativa não muda', () => {
+    expect(tetoLinha({ liquido: 60, custo_bolsa: 30, preco_tabela: 70 }, piso, corte, pct).excedente).toBe(0);
+    expect(tetoLinha({ liquido: -90, custo_bolsa: -30, preco_tabela: 95 }, piso, corte, pct).excedente).toBe(0);
+  });
+
+  it('corte 0 desliga a regra', () => {
+    expect(tetoLinha({ liquido: 90, custo_bolsa: 30, preco_tabela: 95 }, piso, 0, pct).excedente).toBe(0);
+    expect(tetoLinha({ liquido: 80, custo_bolsa: 0, preco_tabela: 50 }, piso, 0, pct).excedente).toBe(0);
+  });
+
+  it('vigência: linha antes de `desde` não gera excedente; sem data válida a regra fica desligada', () => {
+    const teto = { corte, pct, desde: '2026-10-28' };
+    expect(corteNaData(teto, '2026-10-27')).toBe(0);
+    expect(corteNaData(teto, '2026-10-28')).toBe(100);
+    expect(corteNaData({ ...teto, desde: null }, '2026-10-28')).toBe(0);
+    const linha = { liquido: 90, custo_bolsa: 30, preco_tabela: 95 };
+    expect(tetoLinha(linha, piso, corteNaData(teto, '2026-10-27'), pct).excedente).toBe(0);
+    expect(tetoLinha(linha, piso, corteNaData(teto, '2026-10-28'), pct).excedente).toBeCloseTo(9, 6);
+  });
+
+  it('calcularBolsa tira o excedente do saldo, do orçamento e da linha do prêmio', () => {
+    const base = { receita_mtd: 1000, custo_mtd: 500, desconto_mtd: 0, receita_orc: 300, custo_orc: 100, piso: 1.5, linha: 1.5, premio_pct: 0.25 };
+    const sem = calcularBolsa(base);
+    const com = calcularBolsa({ ...base, excedente_mtd: 40, excedente_orc: 15, teto_corte: 100, teto_pct: 0.4, teto_desde: '2026-10-28' });
+    expect(com.saldo).toBeCloseTo(sem.saldo - 40, 6);
+    expect(com.saldo_apos).toBeCloseTo(sem.saldo_apos - 55, 6);
+    expect(com.orcamento).toBeCloseTo(sem.orcamento - 15, 6);
+    expect(com.acima_linha).toBeCloseTo(sem.acima_linha - 40, 6);
+    expect(com.acima_linha_apos).toBeCloseTo(sem.acima_linha_apos - 55, 6);
+    expect(com.premio_estimado).toBeCloseTo(0.25 * (sem.acima_linha - 40), 6);
+    expect(com).toMatchObject({ excedente_mtd: 40, excedente_orc: 15, teto_corte: 100, teto_pct: 0.4, teto_desde: '2026-10-28' });
+    expect(sem).toMatchObject({ excedente_mtd: 0, excedente_orc: 0, teto_corte: 0, teto_pct: 0, teto_desde: null });
   });
 });

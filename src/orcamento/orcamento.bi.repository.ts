@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { MssqlService } from '../common/mssql/mssql.service';
-import { MesDre } from './regua';
+import { MesDre, TetoBolsa } from './regua';
 import { CelulaComissao, ConfigComissao } from './comissao';
 
 /** Lote de compra de oportunidade: o custo que a bolsa usa para o produto nas vendas de `vigente_de` até antes de `encerrado_em`. */
@@ -37,6 +37,27 @@ function custoBolsaSql(lotes: OportunidadeBolsa[]) {
   };
 }
 
+/**
+ * Teto da bolsa por linha (`tetoLinha` em regua.ts, a mesma conta em SQL): excedente =
+ * líquido − custo × @piso − teto, quando positivo, só em VENDA (OPF_CODIGO <> 2) com líquido > 0
+ * emitida a partir de @teto_desde (venda anterior à vigência não muda). Teto pela tabela oficial
+ * do atacado (PRECO2): ≤ @teto_corte → @teto_pct × líquido; acima → custo da bolsa da linha;
+ * custo ≤ 0 → zero. OUTER APPLY TOP 1 para nunca duplicar a linha de venda na soma. Teto
+ * desligado (corte 0 ou sem data) → coluna 0 e nenhuma junção a mais: a consulta fica a de antes.
+ * `custo` = `custoBolsaSql().custo` (lote de oportunidade quando houver).
+ */
+function excedenteSql(custo: string, teto?: TetoBolsa | null) {
+  if (!teto || !(teto.corte > 0) || !teto.desde) return { apply: '', preco: '0', excedente: '0', params: {} };
+  const limite = `CASE WHEN (${custo}) <= 0 THEN 0 WHEN COALESCE(pt.preco2, 0) <= @teto_corte THEN @teto_pct * v.liquido_produto ELSE (${custo}) END`;
+  const sobra = `v.liquido_produto - (${custo}) * @piso - ${limite}`;
+  return {
+    apply: 'OUTER APPLY (SELECT TOP 1 sp.PRECO2 AS preco2 FROM dbo.Stage_Produtos sp WHERE sp.EMPRESA = 3 AND sp.PRO_CODIGO = v.PRO_CODIGO) pt',
+    preco: 'COALESCE(pt.preco2, 0)',
+    excedente: `CASE WHEN v.OPF_CODIGO <> 2 AND v.liquido_produto > 0 AND v.dt_emissao_convertida >= CAST(@teto_desde AS date) AND ${sobra} > 0 THEN ${sobra} ELSE 0 END`,
+    params: { teto_corte: teto.corte, teto_pct: teto.pct, teto_desde: teto.desde },
+  };
+}
+
 /* =============================================================================
    ORÇAMENTO — leitura no BI (SQL Server, somente leitura).
    -----------------------------------------------------------------------------
@@ -55,6 +76,8 @@ export interface BolsaVendedorRow {
   mix1_liquido: number;
   /** promoção: metade da falta contra custo × piso, absorvida pela empresa */
   absorvido: number;
+  /** teto da bolsa por linha: o que as linhas passaram do teto (sai da bolsa) */
+  excedente: number;
 }
 
 export interface BolsaClienteRow {
@@ -63,6 +86,7 @@ export interface BolsaClienteRow {
   venda_liquida: number;
   desconto: number;
   custo: number;
+  excedente: number;
 }
 
 export interface ResumoClienteBi {
@@ -148,10 +172,11 @@ export class OrcamentoBiRepository {
    * produto de serviço (subtipo 09 no ERP), que ficam fora da bolsa — o Stage_Produtos do BI
    * não traz o subtipo real, por isso a lista vem do ERP.
    */
-  /** `rep` null = o canal ATACADO inteiro (todos os vendedores), para a bolsa do canal. */
-  async bolsaVendedor(rep: number | null, ano: number, mes: number, piso = 0, servicos: number[] = [], lotes: OportunidadeBolsa[] = []): Promise<BolsaVendedorRow> {
+  /** `rep` null = o canal ATACADO inteiro (todos os vendedores), para a bolsa do canal. `teto`: excedente do teto por linha (excedenteSql). */
+  async bolsaVendedor(rep: number | null, ano: number, mes: number, piso = 0, servicos: number[] = [], lotes: OportunidadeBolsa[] = [], teto?: TetoBolsa | null): Promise<BolsaVendedorRow> {
     const semServico = servicos.length ? `AND v.PRO_CODIGO NOT IN (${servicos.map((c) => Math.trunc(c)).join(',')})` : '';
     const ob = custoBolsaSql(lotes);
+    const ex = excedenteSql(ob.custo, teto);
     const rows = await this.mssql.query<BolsaVendedorRow>(
       `
       SELECT COUNT(DISTINCT CONCAT(v.EMPRESA,'-',v.SERIE,'-',v.NFS)) AS notas,
@@ -160,9 +185,11 @@ export class OrcamentoBiRepository {
              COALESCE(SUM(${ob.custo}), 0)                       AS custo,
              COALESCE(SUM(CASE WHEN v.MIX_CUSTO = 1 THEN v.liquido_produto END), 0) AS mix1_liquido,
              COALESCE(SUM(CASE WHEN v.PROMOCAO = 'S' AND v.custo_produto > 0 AND v.custo_produto * @piso > v.liquido_produto
-                                THEN (v.custo_produto * @piso - v.liquido_produto) / 2 END), 0) AS absorvido
+                                THEN (v.custo_produto * @piso - v.liquido_produto) / 2 END), 0) AS absorvido,
+             COALESCE(SUM(${ex.excedente}), 0)                   AS excedente
       FROM dbo.vw_analise_vendas v
       ${ob.join}
+      ${ex.apply}
       WHERE v.mes_comissional = @mes
         AND v.ano_comissional = @ano
         AND v.local_venda = 'ATACADO'
@@ -170,7 +197,7 @@ export class OrcamentoBiRepository {
         ${rep == null ? '' : 'AND v.vendedor_venda = @rep'}
         ${semServico}
       `,
-      { rep, mes, ano, piso },
+      { rep, mes, ano, piso, ...ex.params },
     );
     const r = rows[0] ?? { notas: 0, venda_liquida: 0, desconto: 0, custo: 0, mix1_liquido: 0 };
     return {
@@ -180,6 +207,7 @@ export class OrcamentoBiRepository {
       custo: Number(r.custo ?? 0),
       mix1_liquido: Number(r.mix1_liquido ?? 0),
       absorvido: Number(r.absorvido ?? 0),
+      excedente: Number(r.excedente ?? 0),
     };
   }
 
@@ -327,17 +355,20 @@ export class OrcamentoBiRepository {
    * A mesma venda do mês, por cliente — para o vendedor ver quem "gerou" a bolsa
    * (o saldo é dele, não do cliente; o rateio é só informação).
    */
-  async bolsaPorCliente(rep: number, ano: number, mes: number, lotes: OportunidadeBolsa[] = []): Promise<BolsaClienteRow[]> {
+  async bolsaPorCliente(rep: number, ano: number, mes: number, lotes: OportunidadeBolsa[] = [], piso = 0, teto?: TetoBolsa | null): Promise<BolsaClienteRow[]> {
     const ob = custoBolsaSql(lotes);
+    const ex = excedenteSql(ob.custo, teto);
     const rows = await this.mssql.query<BolsaClienteRow>(
       `
       SELECT v.CLI_CODIGO                                   AS cli_codigo,
              MAX(v.CLI_NOME)                                AS cli_nome,
              COALESCE(SUM(v.liquido_produto), 0)            AS venda_liquida,
              COALESCE(-SUM(v.total_desconto), 0)            AS desconto,
-             COALESCE(SUM(${ob.custo}), 0)              AS custo
+             COALESCE(SUM(${ob.custo}), 0)              AS custo,
+             COALESCE(SUM(${ex.excedente}), 0)          AS excedente
       FROM dbo.vw_analise_vendas v
       ${ob.join}
+      ${ex.apply}
       WHERE v.vendedor_venda = @rep
         AND v.mes_comissional = @mes
         AND v.ano_comissional = @ano
@@ -345,7 +376,7 @@ export class OrcamentoBiRepository {
         AND v.DT_CANCELAMENTO IS NULL
       GROUP BY v.CLI_CODIGO
       `,
-      { rep, mes, ano },
+      { rep, mes, ano, piso, ...ex.params },
     );
     return rows.map((r) => ({
       cli_codigo: Number(r.cli_codigo),
@@ -353,6 +384,7 @@ export class OrcamentoBiRepository {
       venda_liquida: Number(r.venda_liquida ?? 0),
       desconto: Number(r.desconto ?? 0),
       custo: Number(r.custo ?? 0),
+      excedente: Number(r.excedente ?? 0),
     }));
   }
 
@@ -367,17 +399,22 @@ export class OrcamentoBiRepository {
     de: { ano: number; mes: number },
     ate: { ano: number; mes: number },
     lotes: OportunidadeBolsa[] = [],
-  ): Promise<{ ano: number; mes: number; venda_liquida: number; desconto: number; custo: number }[]> {
+    piso = 0,
+    teto?: TetoBolsa | null,
+  ): Promise<{ ano: number; mes: number; venda_liquida: number; desconto: number; custo: number; excedente: number }[]> {
     const ob = custoBolsaSql(lotes);
-    const rows = await this.mssql.query<{ ano: number; mes: number; venda_liquida: number; desconto: number; custo: number }>(
+    const ex = excedenteSql(ob.custo, teto);
+    const rows = await this.mssql.query<{ ano: number; mes: number; venda_liquida: number; desconto: number; custo: number; excedente: number }>(
       `
       SELECT v.ano_comissional                    AS ano,
              v.mes_comissional                    AS mes,
              COALESCE(SUM(v.liquido_produto), 0)  AS venda_liquida,
              COALESCE(-SUM(v.total_desconto), 0)  AS desconto,
-             COALESCE(SUM(${ob.custo}), 0)    AS custo
+             COALESCE(SUM(${ob.custo}), 0)    AS custo,
+             COALESCE(SUM(${ex.excedente}), 0) AS excedente
       FROM dbo.vw_analise_vendas v
       ${ob.join}
+      ${ex.apply}
       WHERE v.vendedor_venda = @rep
         AND v.CLI_CODIGO = @cli
         AND v.ano_comissional * 100 + v.mes_comissional BETWEEN @de AND @ate
@@ -385,7 +422,7 @@ export class OrcamentoBiRepository {
         AND v.DT_CANCELAMENTO IS NULL
       GROUP BY v.ano_comissional, v.mes_comissional
       `,
-      { rep, cli, de: de.ano * 100 + de.mes, ate: ate.ano * 100 + ate.mes },
+      { rep, cli, de: de.ano * 100 + de.mes, ate: ate.ano * 100 + ate.mes, piso, ...ex.params },
     );
     return rows.map((r) => ({
       ano: Number(r.ano),
@@ -393,6 +430,7 @@ export class OrcamentoBiRepository {
       venda_liquida: Number(r.venda_liquida ?? 0),
       desconto: Number(r.desconto ?? 0),
       custo: Number(r.custo ?? 0),
+      excedente: Number(r.excedente ?? 0),
     }));
   }
 
@@ -402,10 +440,12 @@ export class OrcamentoBiRepository {
    * positivos (a devolução vem marcada); o custo é o da bolsa (lote de oportunidade na data).
    * `emissao` é a data local (YYYY-MM-DD), sem hora.
    */
-  async linhasNfAjuste(pares: { cli_codigo: number; pro_codigo: number }[], desde: string, lotes: OportunidadeBolsa[] = []) {
+  /** `teto` ligado: traz também o PRECO2 da linha (`preco_tabela`, 0 quando desconhecido) para o teto por linha. */
+  async linhasNfAjuste(pares: { cli_codigo: number; pro_codigo: number }[], desde: string, lotes: OportunidadeBolsa[] = [], teto?: TetoBolsa | null) {
     const values = [...new Set(pares.filter((p) => Number.isFinite(p.cli_codigo) && Number.isFinite(p.pro_codigo)).map((p) => `(${Math.trunc(p.cli_codigo)}, ${Math.trunc(p.pro_codigo)})`))].join(', ');
     if (!values || !/^\d{8}$/.test(desde)) return [];
     const ob = custoBolsaSql(lotes);
+    const ex = excedenteSql(ob.custo, teto);
     const rows = await this.mssql.query<any>(
       `
       SELECT v.EMPRESA AS empresa, v.SERIE AS serie, v.NFS AS nfs, v.PRO_CODIGO AS pro_codigo, v.CLI_CODIGO AS cli_codigo,
@@ -413,10 +453,11 @@ export class OrcamentoBiRepository {
              CASE WHEN v.OPF_CODIGO = 2 THEN 1 ELSE 0 END AS devolucao,
              ABS(v.QUANTIDADE) AS quantidade, ABS(v.liquido_produto) AS liquido, ABS(${ob.custo}) AS custo,
              CASE WHEN v.PROMOCAO = 'S' THEN 1 ELSE 0 END AS promocao,
-             v.ITEM AS item, ABS(v.custo_produto) AS custo_produto
+             v.ITEM AS item, ABS(v.custo_produto) AS custo_produto, ${ex.preco} AS preco_tabela
       FROM (VALUES ${values}) p (cli, pro)
       JOIN dbo.vw_analise_vendas v ON v.CLI_CODIGO = p.cli AND v.PRO_CODIGO = p.pro
       ${ob.join}
+      ${ex.apply}
       WHERE v.dt_emissao_convertida >= CAST(@desde AS date)
         AND v.EMPRESA = 3
         AND v.local_venda = 'ATACADO'
@@ -444,6 +485,7 @@ export class OrcamentoBiRepository {
         // item da NF: liga a linha à do extrato; custo do produto: a metade da promoção usa ele, não o do lote
         item: Number(r.item),
         custo_produto: Number(r.custo_produto ?? 0),
+        preco_tabela: Number(r.preco_tabela ?? 0),
       };
     });
   }
@@ -454,8 +496,9 @@ export class OrcamentoBiRepository {
    * marcado (`servico`) para a tela contar o que ficou fora. Valores com sinal (devolução negativa,
    * quantidade inclusive), para a soma das linhas fechar com o card.
    */
-  async linhasExtrato(rep: number, ano: number, mes: number, lotes: OportunidadeBolsa[] = [], servicos: number[] = []) {
+  async linhasExtrato(rep: number, ano: number, mes: number, lotes: OportunidadeBolsa[] = [], servicos: number[] = [], teto?: TetoBolsa | null) {
     const ob = custoBolsaSql(lotes);
+    const ex = excedenteSql(ob.custo, teto);
     const servico = servicos.length ? `CASE WHEN v.PRO_CODIGO IN (${servicos.map((c) => Math.trunc(c)).join(',')}) THEN 1 ELSE 0 END` : '0';
     const rows = await this.mssql.query<any>(
       `
@@ -465,9 +508,11 @@ export class OrcamentoBiRepository {
              v.CLI_CODIGO AS cli_codigo, v.CLI_NOME AS cli_nome, v.PRO_CODIGO AS pro_codigo, v.PRO_DESCRICAO AS pro_descricao,
              CASE WHEN v.OPF_CODIGO = 2 THEN -ABS(v.QUANTIDADE) ELSE v.QUANTIDADE END AS quantidade,
              v.UNITARIO AS unitario, v.liquido_produto AS liquido, ${ob.custo} AS custo_bolsa, ${ob.casou} AS custo_oportunidade,
-             v.custo_produto AS custo_produto, CASE WHEN v.PROMOCAO = 'S' THEN 1 ELSE 0 END AS promocao, ${servico} AS servico
+             v.custo_produto AS custo_produto, CASE WHEN v.PROMOCAO = 'S' THEN 1 ELSE 0 END AS promocao, ${servico} AS servico,
+             ${ex.preco} AS preco_tabela
       FROM dbo.vw_analise_vendas v
       ${ob.join}
+      ${ex.apply}
       WHERE v.mes_comissional = @mes
         AND v.ano_comissional = @ano
         AND v.local_venda = 'ATACADO'
@@ -499,6 +544,7 @@ export class OrcamentoBiRepository {
         custo_produto: Number(r.custo_produto ?? 0),
         promocao: Number(r.promocao) === 1,
         servico: Number(r.servico) === 1,
+        preco_tabela: Number(r.preco_tabela ?? 0),
       };
     });
   }

@@ -25,6 +25,8 @@ import {
   absorcaoPromocao, colunaTabela, ehTabelaAtacado, precoDaTabela,
   RegraFaixa,
   round2,
+  corteNaData,
+  type TetoBolsa,
 } from './regua';
 import { AjusteBolsaDto, AlterarOportunidadeDto, DecisaoSaldoDto, DesfechoOrcamentoDto, ExcecaoReguaDto, ItemOrcamentoDto, RegistrarOportunidadeDto, SalvarOrcamentoDto, TributacaoDto, VendaPerdidaPesquisaDto } from './dto/orcamento.dto';
 import { custoParaBolsa, PCT_VENDEDOR_PADRAO } from './oportunidade';
@@ -35,7 +37,7 @@ import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, justificativa
 import { assinarComprovante, liberadorDoBloqueio } from './comprovante';
 import { descBaseAcimaDoMaximo, descSobre } from './preco-base';
 import { casarAjustes, validarAjuste, type AjusteParaCasar, type NfChave } from './ajuste-bolsa';
-import { atribuirAjustes, bolsaDoOrcamento, bolsaNfPorOrcamento, casarOrcamentos, conciliar, valoresLinha, type OrcParaCasar } from './extrato-bolsa';
+import { atribuirAjustes, bolsaDoOrcamento, bolsaNfPorOrcamento, casarOrcamentos, conciliar, excedenteDoOrcamento, valoresLinha, type OrcParaCasar } from './extrato-bolsa';
 
 /**
  * As duas permissões (sis_permissoes.tela, com editar ou criar) que o Celta exige de quem libera
@@ -184,12 +186,22 @@ export class OrcamentoService {
 
   /* ---------------------------------------------------------- parâmetros */
 
+  private avisouTeto = false;
+
   /** Sai inteiro na resposta de GET /orcamento/regua (tela): nada secreto aqui — chaves e senhas se leem do ambiente onde são usadas. */
   parametros() {
     const num = (k: string, d: number) => {
       const v = Number(process.env[k]);
       return Number.isFinite(v) && v > 0 ? v : d;
     };
+    // Teto da bolsa por linha: só vale para venda emitida a partir de ORCAMENTO_TETO_DESDE. Corte
+    // ligado sem data válida fica DESLIGADO — aplicar o teto sem vigência mudaria a bolsa de venda já feita.
+    const tetoCorte = num('ORCAMENTO_TETO_CORTE', 0);
+    const tetoDesde = diaValido(process.env.ORCAMENTO_TETO_DESDE);
+    if (tetoCorte > 0 && !tetoDesde && !this.avisouTeto) {
+      this.avisouTeto = true;
+      this.logger.warn(`ORCAMENTO_TETO_CORTE=${tetoCorte} sem ORCAMENTO_TETO_DESDE válida (AAAA-MM-DD): teto da bolsa por linha DESLIGADO.`);
+    }
     return {
       // Bolsa. Modo 'dre' (padrão): o piso sai da DRE do canal (janela de meses fechados) — custo,
       // despesas fixas e variáveis REAIS, meta de 4% — e a linha dos 4% é o próprio piso. Modo
@@ -200,6 +212,10 @@ export class OrcamentoService {
       meta_resultado: num('ORCAMENTO_META_RESULTADO', 0.04),
       bolsa_degraus: parseDegrausBolsa(process.env.ORCAMENTO_BOLSA_DEGRAUS),
       bolsa_piso: num('ORCAMENTO_BOLSA_PISO', BOLSA_PISO_PADRAO),
+      // teto da bolsa por linha (tetoLinha): tabela ≤ corte → pct × líquido; acima → custo da linha. Corte 0 = desligado.
+      teto_corte: tetoDesde ? tetoCorte : 0,
+      teto_pct: num('ORCAMENTO_TETO_PCT', 0.4),
+      teto_desde: tetoDesde,
       // 0 (padrão) = a linha do prêmio é o próprio piso: prêmio sobre TODO o saldo retido.
       linha_4pct: num('ORCAMENTO_LINHA_4PCT', 0),
       premio_pct: num('ORCAMENTO_PREMIO_PCT', PREMIO_PADRAO),
@@ -443,6 +459,17 @@ export class OrcamentoService {
   /* --------------------------------------------------------------- bolsa */
 
   /**
+   * Teto da bolsa por linha em vigor. `teto` vai às leituras por linha de NF, que filtram pela
+   * emissão (≥ desde). `ativo` = hoje (Cuiabá) já está na vigência: só então o teto vale para o que
+   * não tem NF — orçamento em edição, enviados em aberto e bolsa gravada no fechamento.
+   */
+  private tetoVigente() {
+    const p = this.parametros();
+    const teto: TetoBolsa = { corte: p.teto_corte, pct: p.teto_pct, desde: p.teto_desde };
+    return { teto, ativo: corteNaData(teto, diaCuiaba(new Date())) > 0 };
+  }
+
+  /**
    * A bolsa de desconto do vendedor no mês comissional: o que a venda gerou
    * acima do piso (receita − custo × piso), o que já foi gasto em desconto, o
    * que ainda cabe — e, com o orçamento em edição, como fica depois. Também o
@@ -456,17 +483,21 @@ export class OrcamentoService {
       absorvido?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>;
       /** ajuste da bolsa negativa: R$ que a empresa assume neste orçamento (≥ 0) */
       ajuste?: number;
+      /** teto da bolsa por linha: o excedente deste orçamento já somado pela tela, ou os itens para somar aqui com o piso */
+      excedente_orc?: number;
+      itens_teto?: Array<{ quantidade: number; total: number; custo_ref: number | null; preco_tabela: number }>;
     },
   ) {
     const p = this.parametros();
+    const { teto, ativo } = this.tetoVigente();
     const periodo = mesComissional();
     // o piso entra na leitura do mês (metade da promoção) — por isso vem antes; serviços ficam fora da bolsa
     const [{ piso, linha, pisoDre, degrau, vol }, servicos] = await Promise.all([this.pisoVigente(periodo), this.servicosDoErp()]);
     // compra de oportunidade: lotes que cobrem vendas do mês (vigentes ou encerrados há pouco)
     const lotes = await this.oportunidadesParaBolsa(2);
     const [[v, ajustes], clientes, celulas, cfgComissao, canalMtd] = await Promise.all([
-      this.mesDaBolsa(rep, periodo, piso, servicos, lotes, 2),
-      this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes).catch((e) => {
+      this.mesDaBolsa(rep, periodo, piso, servicos, lotes, 2, teto),
+      this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes, piso, teto).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
         return [];
       }),
@@ -478,7 +509,7 @@ export class OrcamentoService {
         this.logger.warn(`Parâmetros da comissão indisponíveis: ${(e as Error).message}`);
         return null;
       }),
-      this.canalMtd(periodo, piso, servicos, lotes).catch((e) => {
+      this.canalMtd(periodo, piso, servicos, lotes, teto).catch((e) => {
         this.logger.warn(`Bolsa do canal indisponível: ${(e as Error).message}`);
         return null;
       }),
@@ -488,11 +519,13 @@ export class OrcamentoService {
     // Bolsa do CANAL atacado (todos os vendedores) no mês. Com este orçamento conta só o desconto
     // em R$ que ele dá: preço de tabela abaixo do piso é preço da empresa, não entra na regra.
     const canalSaldo = canalMtd
-      ? calcularBolsa({ receita_mtd: canalMtd.venda_liquida, custo_mtd: canalMtd.custo, desconto_mtd: canalMtd.desconto, absorvido_mtd: canalMtd.absorvido, piso, linha }).saldo
+      ? calcularBolsa({ receita_mtd: canalMtd.venda_liquida, custo_mtd: canalMtd.custo, desconto_mtd: canalMtd.desconto, absorvido_mtd: canalMtd.absorvido, excedente_mtd: canalMtd.excedente, piso, linha }).saldo
       : null;
     const canal = canalSaldo == null ? null : { saldo: canalSaldo, saldo_apos: round2(canalSaldo - Math.max(0, orc?.desconto ?? 0)) };
     // promoção: metade do que o item tira da bolsa é da empresa — no mês vem do BI (flag PROMOCAO da venda); aqui, o orçamento em edição
     const absorvidoOrc = orc?.absorvido ?? (orc?.promos ? orc.promos.reduce((s, x) => s + absorcaoPromocao(x.preco, x.custo, piso, x.qtd), 0) : 0);
+    // teto por linha do orçamento em edição (sempre venda nova): só com a regra já em vigor hoje
+    const excedenteOrc = !ativo ? 0 : (orc?.excedente_orc ?? (orc?.itens_teto ? excedenteDoOrcamento(orc.itens_teto, piso, teto.corte, teto.pct) : 0));
     // Comissão do mês como está e como fica com o orçamento (mesma regra do fechamento;
     // sem abatimentos manuais e média de férias — é estimativa para decidir na hora).
     const comissao = celulas && cfgComissao ? comissaoComOrcamento(celulas, celulasDoOrcamento(orc ?? {}), cfgComissao) : null;
@@ -508,19 +541,26 @@ export class OrcamentoService {
       absorvido_orc: absorvidoOrc,
       ajuste_mtd: ajustes.reduce((s, l) => s + l.efetivo, 0),
       ajuste_orc: orc?.ajuste ?? 0,
+      excedente_mtd: v.excedente,
+      excedente_orc: excedenteOrc,
+      // regra fora de vigência hoje sai zerada: a tela entende 0 como desligada e não aplica nada
+      teto_corte: ativo ? teto.corte : 0,
+      teto_pct: ativo ? teto.pct : 0,
+      teto_desde: teto.desde,
       piso,
       linha,
       premio_pct: p.premio_pct,
     });
     const part = v.venda_liquida > 0 ? v.mix1_liquido / v.venda_liquida : 0;
     const abertos = await this.db.abertosDoVendedor(rep);
-    // Se todos os enviados fecharem, é isto que entra na bolsa (item sem custo é neutro).
+    // Se todos os enviados fecharem, é isto que entra na bolsa (item sem custo é neutro; teto por linha em vigor).
     let saldoAbertos = 0;
     for (const o of abertos) {
-      for (const i of o.itens ?? []) {
-        const total = Number(i.total), custo = i.custo_ref != null ? Number(i.custo_ref) : null;
-        saldoAbertos += custo != null && custo > 0 ? total - custo * Number(i.quantidade) * piso : 0;
-      }
+      const itens = (o.itens ?? []).map((i) => ({
+        quantidade: Number(i.quantidade), total: Number(i.total), custo_ref: i.custo_ref != null ? Number(i.custo_ref) : null, preco_tabela: Number(i.preco_tabela),
+      }));
+      for (const i of itens) saldoAbertos += i.custo_ref != null && i.custo_ref > 0 ? i.total - i.custo_ref * i.quantidade * piso : 0;
+      if (ativo) saldoAbertos -= excedenteDoOrcamento(itens, piso, teto.corte, teto.pct);
     }
     const porCliente = clientes
       .map((c) => ({
@@ -528,7 +568,7 @@ export class OrcamentoService {
         cli_nome: c.cli_nome,
         venda_liquida: round2(c.venda_liquida),
         desconto: round2(c.desconto),
-        saldo: round2(c.venda_liquida - c.custo * piso + (ajustePorCliente.get(c.cli_codigo) ?? 0)),
+        saldo: round2(c.venda_liquida - c.custo * piso + (ajustePorCliente.get(c.cli_codigo) ?? 0) - c.excedente),
       }))
       .sort((a, b) => b.saldo - a.saldo);
     return {
@@ -569,12 +609,12 @@ export class OrcamentoService {
    * da promoção) e o efetivo dos ajustes da bolsa negativa com NF no mês (orçamentos importados
    * nos últimos `mesesAjuste` meses). O extrato usa a mesma leitura para conferir com o card.
    */
-  private mesDaBolsa(rep: number, periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], mesesAjuste: number) {
+  private mesDaBolsa(rep: number, periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], mesesAjuste: number, teto: TetoBolsa) {
     return Promise.all([
       // O BI só conhece a promoção do Celta: a do portal B2B (venda normal no
-      // Celta) entra pela NF casada com o orçamento.
+      // Celta) entra pela NF casada com o orçamento. O excedente do teto por linha vem do BI.
       Promise.all([
-        this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes),
+        this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes, teto),
         this.absorvidoPromoPortalNoMes(rep, periodo, piso, servicos),
       ]).then(([v, portal]) => ({ ...v, absorvido: v.absorvido + portal })),
       this.efetivoAjustes(rep, mesesAjuste, piso).then((ls) => ls.filter((l) => mesmoMes(l.emissao, periodo))),
@@ -598,7 +638,7 @@ export class OrcamentoService {
       if (l.devolucao || l.promocao || fora.has(l.pro_codigo) || !mesmoMes(l.emissao, periodo)) return;
       const promo_portal = fracaoPromoPortal(l.quantidade, c.porLinha.get(i) ?? []);
       if (!promo_portal) return;
-      total += valoresLinha({ liquido: l.liquido, custo_bolsa: 0, custo_produto: l.custo_produto, promocao: false, servico: false, ajuste: 0, promo_portal }, piso).absorvido;
+      total += valoresLinha({ liquido: l.liquido, custo_bolsa: 0, custo_produto: l.custo_produto, promocao: false, servico: false, preco_tabela: 0, ajuste: 0, promo_portal }, piso).absorvido;
     });
     return total;
   }
@@ -614,10 +654,10 @@ export class OrcamentoService {
   private canalCache: { chave: string; em: number; v: Awaited<ReturnType<OrcamentoBiRepository['bolsaVendedor']>> } | null = null;
 
   /** Venda do canal atacado no mês (mesma leitura da bolsa do vendedor, sem filtro de vendedor), com cache de 1 minuto. */
-  private async canalMtd(periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5]) {
-    const chave = `${periodo.ano}-${periodo.mes}-${piso}`;
+  private async canalMtd(periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], teto: TetoBolsa) {
+    const chave = `${periodo.ano}-${periodo.mes}-${piso}-${teto.corte}-${teto.pct}-${teto.desde}`;
     if (this.canalCache?.chave === chave && Date.now() - this.canalCache.em < 60_000) return this.canalCache.v;
-    const v = await this.bi.bolsaVendedor(null, periodo.ano, periodo.mes, piso, servicos, lotes);
+    const v = await this.bi.bolsaVendedor(null, periodo.ano, periodo.mes, piso, servicos, lotes, teto);
     this.canalCache = { chave, em: Date.now(), v };
     return v;
   }
@@ -659,10 +699,9 @@ export class OrcamentoService {
     const meses = Math.min(12, Math.max(1, Math.trunc(n) || 6));
     const periodo = mesComissional();
     const chaves = mesesAnteriores(periodo.ano, periodo.mes, meses);
-    const [rows, { piso }] = await Promise.all([
-      this.oportunidadesParaBolsa(meses + 1).then((lotes) => this.bi.bolsaClienteMensal(rep, cli, chaves[chaves.length - 1], chaves[0], lotes)),
-      this.pisoVigente(periodo),
-    ]);
+    // o piso entra no excedente do teto por linha (BI) — por isso vem antes da leitura
+    const [{ piso }, lotes] = await Promise.all([this.pisoVigente(periodo), this.oportunidadesParaBolsa(meses + 1)]);
+    const rows = await this.bi.bolsaClienteMensal(rep, cli, chaves[chaves.length - 1], chaves[0], lotes, piso, this.tetoVigente().teto);
     const ajustes = (await this.efetivoAjustes(rep, meses + 2, piso)).filter((l) => l.cli_codigo === cli);
     const linhas = chaves.map(({ ano, mes }) => {
       const r = rows.find((x) => x.ano === ano && x.mes === mes);
@@ -673,7 +712,7 @@ export class OrcamentoService {
         mes,
         venda_liquida: round2(venda),
         desconto: round2(r?.desconto ?? 0),
-        saldo: round2(venda - custo * piso + ajuste),
+        saldo: round2(venda - custo * piso + ajuste - (r?.excedente ?? 0)),
       };
     });
     return {
@@ -1305,13 +1344,14 @@ export class OrcamentoService {
    * (`bolsa_nf`, null = nenhuma NF casada, fora do horizonte ou BI indisponível). Falha aqui
    * nunca derruba a lista: os campos saem nulos.
    */
-  private async comBolsa<T extends { id: string; status: string; rep_codigo: number | null; piso_bolsa: number | null; bolsa_orcamento: number | null }>(rows: T[]) {
+  private async comBolsa<T extends { id: string; status: string; rep_codigo: number | null; piso_bolsa: number | null; bolsa_orcamento: number | null; desfecho_em?: Date | null }>(rows: T[]) {
     const vazio = (o: T) => ({ ...o, bolsa_aprox: false, bolsa_nf: null as number | null });
     const fechados = rows.filter((o) => o.status === 'FECHADO');
     if (!fechados.length) return rows.map(vazio);
     try {
       const [{ piso }, codigos] = await Promise.all([this.pisoVigente(mesComissional()), this.servicosDoErp()]);
       const servicos = new Set(codigos);
+      const { teto } = this.tetoVigente();
       const semValor = fechados.filter((o) => o.bolsa_orcamento == null).map((o) => o.id);
       const reps = [...new Set(fechados.map((o) => o.rep_codigo).filter((r): r is number => r != null))];
       const [itens, porRep] = await Promise.all([
@@ -1325,7 +1365,8 @@ export class OrcamentoService {
       return rows.map((o) => {
         if (o.status !== 'FECHADO') return vazio(o);
         const x = o.bolsa_orcamento == null ? itens.get(o.id) : undefined;
-        const aprox = x ? bolsaDoOrcamento(x.itens, x.ajustes, piso, servicos) : null;
+        // teto por linha só no orçamento fechado a partir da vigência
+        const aprox = x ? bolsaDoOrcamento(x.itens, x.ajustes, piso, servicos, corteNaData(teto, o.desfecho_em ? diaCuiaba(new Date(o.desfecho_em)) : null), teto.pct) : null;
         return {
           ...o,
           bolsa_orcamento: o.bolsa_orcamento ?? aprox,
@@ -1372,6 +1413,8 @@ export class OrcamentoService {
     let subtotal = 0, subtotalCliente = 0, total = 0, custoOrc = 0, semCusto = 0, servicos = 0;
     // linhas em promoção (preço fechado da campanha): a bolsa absorve só metade da falta contra o piso
     const promos: Array<{ preco: number; custo: number | null; qtd: number }> = [];
+    // mercadoria do orçamento para o teto da bolsa por linha (o piso só se conhece na bolsa)
+    const itensTeto: Array<{ quantidade: number; total: number; custo_ref: number | null; preco_tabela: number }> = [];
 
     itens.forEach((i, idx) => {
       const p = porCodigo.get(i.pro_codigo);
@@ -1439,6 +1482,8 @@ export class OrcamentoService {
       else if (custoBolsa != null && custoBolsa > 0) custoOrc += custoBolsa * qtd;
       else semCusto += linhaTotal;
       if (!fora && p.promocao) promos.push({ preco, custo: custoBolsa, qtd });
+      // mesma tabela gravada no item (preco_tabela), para a bolsa do fechamento dar a mesma conta
+      if (!p.servico) itensTeto.push({ quantidade: qtd, total: linhaTotal, custo_ref: custoBolsa, preco_tabela: tabela > 0 ? tabela : preco });
       // linha com acréscimo entra no subtotal pelo próprio preço: o acréscimo não abate o desconto das outras
       subtotal += round2(Math.max(tabela, preco) * qtd);
       // o que o cliente vê: a base quando ela existe (o desconto sobre ela aparece como desconto)
@@ -1507,6 +1552,7 @@ export class OrcamentoService {
       sem_custo: round2(semCusto),
       servicos: round2(servicos),
       promos,
+      itens_teto: itensTeto,
       produtos,
       tributacao: trib.resumo,
       icms_st: trib.icms_st,
@@ -1584,11 +1630,11 @@ export class OrcamentoService {
    * Fotografia da bolsa ao salvar: % de desconto do mês antes/depois (colunas
    * bolsa_pct_*) e o saldo depois deste orçamento — quem decide a alçada.
    */
-  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>; ajuste?: number }) {
+  private async bolsaSnapshot(rep: number, m: { subtotal: number; total: number; desconto_total: number; custo: number; sem_custo: number; servicos?: number; promos?: Array<{ preco: number; custo: number | null; qtd: number }>; ajuste?: number; itens_teto?: Array<{ quantidade: number; total: number; custo_ref: number | null; preco_tabela: number }> }) {
     try {
       // `ajuste` = o que a empresa assume pelo ajuste da bolsa negativa já gravado: entra na compensação
       // do orçamento, como na tela — sem ele a alçada recalculada derrubaria uma aprovação dada pelo ajuste
-      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos, ajuste: m.ajuste });
+      const b = await this.bolsa(rep, { receita: m.total - (m.servicos ?? 0), desconto: m.desconto_total, custo: m.custo, sem_custo: m.sem_custo, promos: m.promos, ajuste: m.ajuste, itens_teto: m.itens_teto });
       const brutoDepois = b.bolsa.bruto_mtd + m.subtotal;
       return {
         antes: b.bolsa.pct_desconto,
@@ -2099,7 +2145,8 @@ export class OrcamentoService {
         this.logger.warn(`NF dos orçamentos do Celta indisponível (casa pela janela): ${(e as Error).message}`);
         return new Map<number, { nf: number | null; condicionais_nfs: number[] }>();
       }),
-      this.oportunidadesParaBolsa(meses).then((lotes) => this.bi.linhasNfAjuste(pares, desde, lotes)),
+      // com o teto ligado vem também o PRECO2 da linha (bolsa nas NFs do orçamento)
+      this.oportunidadesParaBolsa(meses).then((lotes) => this.bi.linhasNfAjuste(pares, desde, lotes, this.tetoVigente().teto)),
     ]);
     const nfs = linhas.map((l) => ({ ...l, emissao: new Date(`${l.emissao}T00:00:00`) }));
     // a série vem da própria linha do BI (NFS é única por empresa); NF fora das linhas não casa
@@ -2194,7 +2241,7 @@ export class OrcamentoService {
     const [c, ajustes] = await Promise.all([this.casamentoDoRep(rep), this.efetivoAjustes(rep, CASAMENTO_MESES, piso)]);
     const linhas = c.linhas.map((l) => ({ ...l, servico: servicos.has(l.pro_codigo), ajuste: 0 }));
     atribuirAjustes(linhas, ajustes);
-    return bolsaNfPorOrcamento(c.porOrcamento, linhas, piso);
+    return bolsaNfPorOrcamento(c.porOrcamento, linhas, piso, this.tetoVigente().teto);
   }
 
   /**
@@ -2210,11 +2257,12 @@ export class OrcamentoService {
     if (k < 0) throw new BadRequestException(`ano/mes: escolha um dos últimos 6 meses comissionais (${meses.map((m) => `${m.mes}/${m.ano}`).join(', ')}).`);
     const periodo = meses[k];
     const [{ piso, linha }, servicos] = await Promise.all([this.pisoVigente(atual), this.servicosDoErp()]);
+    const { teto } = this.tetoVigente();
     // lotes e ajustes que alcançam o mês escolhido (no mês atual, os mesmos do card)
     const lotes = await this.oportunidadesParaBolsa(k + 2);
     const [rows, [v, ajustes], cas] = await Promise.all([
-      this.bi.linhasExtrato(rep, periodo.ano, periodo.mes, lotes, servicos),
-      this.mesDaBolsa(rep, periodo, piso, servicos, lotes, k + 2),
+      this.bi.linhasExtrato(rep, periodo.ano, periodo.mes, lotes, servicos, teto),
+      this.mesDaBolsa(rep, periodo, piso, servicos, lotes, k + 2, teto),
       this.casamentoDoRep(rep).catch((e) => {
         this.logger.warn(`Casamento orçamento × NF indisponível (rep ${rep}): ${(e as Error).message}`);
         return null;
@@ -2243,7 +2291,8 @@ export class OrcamentoService {
       .sort((a, b) => a.nfs - b.nfs || a.item - b.item)
       .map((r) => ({ ...r, ajuste: 0, promo_portal: r.devolucao ? 0 : fracaoPromoPortal(Math.abs(r.quantidade), casadasDe(r)) }));
     atribuirAjustes(linhas, ajustes);
-    const itens = linhas.map((r) => ({ r, v: valoresLinha(r, piso), casadas: casadasDe(r) }));
+    // teto por linha na NF emitida a partir da vigência (a mesma conta do BI no card)
+    const itens = linhas.map((r) => ({ r, v: valoresLinha(r, piso, corteNaData(teto, r.emissao), teto.pct), casadas: casadasDe(r) }));
     const notas = new Map<string, typeof itens>();
     for (const x of itens) {
       const chave = `${x.r.empresa}|${x.r.serie}|${x.r.nfs}`;
@@ -2274,8 +2323,8 @@ export class OrcamentoService {
         };
       })
       .sort((a, b) => b.emissao.localeCompare(a.emissao) || b.nfs - a.nfs);
-    const totais = conciliar(linhas, piso);
-    const card = calcularBolsa({ receita_mtd: v.venda_liquida, custo_mtd: v.custo, desconto_mtd: v.desconto, absorvido_mtd: v.absorvido, ajuste_mtd: ajustes.reduce((s, l) => s + l.efetivo, 0), piso, linha }).saldo;
+    const totais = conciliar(linhas, piso, teto);
+    const card = calcularBolsa({ receita_mtd: v.venda_liquida, custo_mtd: v.custo, desconto_mtd: v.desconto, absorvido_mtd: v.absorvido, ajuste_mtd: ajustes.reduce((s, l) => s + l.efetivo, 0), excedente_mtd: v.excedente, piso, linha }).saldo;
     return { periodo, piso, rep_codigo: rep, nfs, totais: { ...totais, card_saldo: card, diferenca: round2(totais.saldo - card) } };
   }
 
@@ -2360,7 +2409,9 @@ export class OrcamentoService {
   private async bolsaNoFechamento(o: Awaited<ReturnType<OrcamentoService['obter']>>) {
     try {
       const [{ piso }, servicos] = await Promise.all([this.pisoVigente(mesComissional()), this.servicosDoErp()]);
-      return { piso_bolsa: piso, bolsa_orcamento: bolsaDoOrcamento(o.itens ?? [], o.ajustes_bolsa ?? [], piso, new Set(servicos)) };
+      // fecha hoje: o teto por linha entra só com a regra já em vigor
+      const { teto, ativo } = this.tetoVigente();
+      return { piso_bolsa: piso, bolsa_orcamento: bolsaDoOrcamento(o.itens ?? [], o.ajustes_bolsa ?? [], piso, new Set(servicos), ativo ? teto.corte : 0, teto.pct) };
     } catch (e) {
       this.logger.warn(`Bolsa do orçamento ${o.numero} não gravada no fechamento: ${(e as Error).message}`);
       return {};
@@ -2665,6 +2716,16 @@ export class OrcamentoService {
 
 /** Desconto em fração (4 casas) de `desconto` sobre `subtotal`. */
 const pctDe = (desconto: number, subtotal: number) => (subtotal > 0 ? Math.round((desconto / subtotal) * 10000) / 10000 : 0);
+
+/** Dia (AAAA-MM-DD) em America/Cuiaba, UTC−4 fixo — o dia de negócio do ERP. */
+const diaCuiaba = (d: Date) => new Date(d.getTime() - 4 * 3_600_000).toISOString().slice(0, 10);
+
+/** AAAA-MM-DD de calendário válido, senão null. */
+function diaValido(v: string | undefined): string | null {
+  const s = String(v ?? '').replace(/#.*$/, '').replace(/["']/g, '').trim();
+  const t = /^\d{4}-\d{2}-\d{2}$/.test(s) ? Date.parse(`${s}T00:00:00Z`) : NaN;
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === s ? s : null;
+}
 
 /** Data (meia-noite local) cai no mês comissional (ano, mes). */
 const mesmoMes = (d: Date, m: { ano: number; mes: number }) => {

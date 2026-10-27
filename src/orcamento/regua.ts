@@ -9,6 +9,7 @@
      classe × faixa      -> markup + desconto máximo  regraDe()
      item                -> preço mínimo, alçada      avaliarItem()
      mês do vendedor     -> bolsa de desconto         calcularBolsa()  (receita − custo × piso)
+     linha de venda      -> teto da bolsa da linha    tetoLinha()
      participação MIX1   -> degrau da comissão        degrauMix1()
 
    As faixas são as MESMAS do ETL do BI (FAIXA_MIX em Stage_Produtos/Stage_Vendas),
@@ -583,6 +584,13 @@ export interface BolsaEntrada {
   /** Ajuste da bolsa negativa: o que a empresa assume — no mês (casado com a NF) e no orçamento em edição. */
   ajuste_mtd?: number;
   ajuste_orc?: number;
+  /** Teto da bolsa por linha (tetoLinha): o que passou do teto — no mês (NFs) e no orçamento em edição. */
+  excedente_mtd?: number;
+  excedente_orc?: number;
+  /** Parâmetros do teto em vigor, só devolvidos (corte 0 = regra desligada). */
+  teto_corte?: number;
+  teto_pct?: number;
+  teto_desde?: string | null;
   piso?: number;
   linha?: number;
   premio_pct?: number;
@@ -598,6 +606,33 @@ export interface BolsaEntrada {
 export function absorcaoPromocao(preco: number, custo: number | null | undefined, piso: number, qtd = 1): number {
   if (!custo || custo <= 0 || !(piso > 0)) return 0;
   return round2((Math.max(0, custo * piso - preco) * qtd) / 2);
+}
+
+/** Teto da bolsa por linha: corte (R$, 0 = desligado), fração do líquido e o 1º dia (AAAA-MM-DD) em que vale. */
+export interface TetoBolsa {
+  corte: number;
+  pct: number;
+  desde: string | null;
+}
+
+/** Corte do teto para uma linha do dia `dia` (AAAA-MM-DD): o corte em vigor a partir de `desde`, 0 antes (venda já feita não muda). */
+export function corteNaData(t: TetoBolsa | null | undefined, dia: string | null | undefined): number {
+  return t && t.corte > 0 && t.desde && dia && dia.slice(0, 10) >= t.desde ? t.corte : 0;
+}
+
+/**
+ * TETO DA BOLSA POR LINHA. Cada linha de venda só põe na bolsa até um teto; o que passa é o
+ * excedente, que sai da bolsa. A classificação é pelo preço de TABELA (nunca pelo praticado:
+ * subir o preço não troca a regra do item): tabela ≤ corte → teto = pct × líquido praticado;
+ * tabela > corte → teto = custo da bolsa da linha. Custo ≤ 0 → teto zero.
+ * `custo_bolsa` é o da linha inteira (unitário × quantidade). Só vale para o lado positivo:
+ * linha com líquido ≤ 0 (devolução) ou abaixo do teto não muda; corte 0 desliga a regra.
+ * A mesma conta está no SQL de orcamento.bi.repository.ts (excedenteSql) — mudar nos dois.
+ */
+export function tetoLinha(l: { liquido: number; custo_bolsa: number; preco_tabela: number }, piso: number, corte: number, pct: number) {
+  const teto = l.custo_bolsa <= 0 ? 0 : l.preco_tabela <= corte ? pct * l.liquido : l.custo_bolsa;
+  if (!(corte > 0) || !(l.liquido > 0)) return { teto, excedente: 0 };
+  return { teto, excedente: Math.max(0, l.liquido - l.custo_bolsa * piso - teto) };
 }
 
 export interface Bolsa {
@@ -624,6 +659,13 @@ export interface Bolsa {
   /** ajuste da bolsa negativa: efetivo do mês (NFs casadas) e o assumido no orçamento em edição */
   ajuste_mtd: number;
   ajuste_orc: number;
+  /** o que passou do teto da bolsa por linha: no mês (NFs) e neste orçamento — já tirado do saldo */
+  excedente_mtd: number;
+  excedente_orc: number;
+  /** parâmetros do teto em vigor (corte 0 = regra desligada); `teto_desde` = 1º dia em que vale */
+  teto_corte: number;
+  teto_pct: number;
+  teto_desde: string | null;
   /** Lucro acima da linha dos 4%: receita − custo × linha (negativo = abaixo da linha). */
   acima_linha: number;
   acima_linha_apos: number;
@@ -655,10 +697,13 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
   // ajuste da bolsa negativa: termo à parte, como a promoção (não mexe na linha do prêmio)
   const ajMtd = e.ajuste_mtd ?? 0;
   const ajOrc = Math.max(0, e.ajuste_orc ?? 0);
-  const saldo = receita - custo * piso + absMtd + ajMtd;
-  const saldoApos = saldo + (recOrc - custoOrc * piso) + absOrc + ajOrc;
-  const acima = receita - custo * linha;
-  const acimaApos = acima + (recOrc - custoOrc * linha);
+  // teto por linha: o excedente sai da bolsa E da linha do prêmio (o prêmio não vê o que passou do teto)
+  const excMtd = Math.max(0, e.excedente_mtd ?? 0);
+  const excOrc = Math.max(0, e.excedente_orc ?? 0);
+  const saldo = receita - custo * piso + absMtd + ajMtd - excMtd;
+  const saldoApos = saldo + (recOrc - custoOrc * piso) + absOrc + ajOrc - excOrc;
+  const acima = receita - custo * linha - excMtd;
+  const acimaApos = acima + (recOrc - custoOrc * linha) - excOrc;
   return {
     piso,
     linha,
@@ -672,11 +717,16 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
     gerada: round2(receita + desc - custo * piso),
     saldo: round2(saldo),
     saldo_apos: round2(saldoApos),
-    orcamento: round2(recOrc - custoOrc * piso + absOrc + ajOrc),
+    orcamento: round2(recOrc - custoOrc * piso + absOrc + ajOrc - excOrc),
     absorvido_mtd: round2(absMtd),
     absorvido_orc: round2(absOrc),
     ajuste_mtd: round2(ajMtd),
     ajuste_orc: round2(ajOrc),
+    excedente_mtd: round2(excMtd),
+    excedente_orc: round2(excOrc),
+    teto_corte: e.teto_corte ?? 0,
+    teto_pct: e.teto_pct ?? 0,
+    teto_desde: e.teto_desde ?? null,
     acima_linha: round2(acima),
     acima_linha_apos: round2(acimaApos),
     premio_estimado: round2(premio * Math.max(0, acima)),
