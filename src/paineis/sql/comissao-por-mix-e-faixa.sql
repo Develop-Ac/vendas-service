@@ -26,7 +26,7 @@ SELECT v.mix_custo, v.faixa_mix, SUM(v.liquido_produto)
 FROM dbo.f_analise_vendas v
 JOIN CalendarioFiltrado c
   ON v.dt_emissao_convertida = c.data_date
-WHERE v.dt_emissao_convertida >= CAST(@de AS date)
+WHERE {{canal:v.local_venda_1}} AND v.dt_emissao_convertida >= CAST(@de AS date)
   AND v.dt_emissao_convertida < DATEADD(day, 1, CAST(@ate AS date))
   AND v.mix_custo IS NOT NULL
   AND v.faixa_mix IS NOT NULL

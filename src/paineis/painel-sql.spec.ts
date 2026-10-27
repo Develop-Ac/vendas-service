@@ -1,6 +1,6 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { MARCADOR_VENDEDOR, montarConsulta, sqlsManuais } from './painel-sql';
+import { MARCADOR_CANAL, MARCADOR_VENDEDOR, listaCanais, montarConsulta, sqlsManuais } from './painel-sql';
 import { CacheTtl } from './cache-ttl';
 
 const DIR = __dirname;
@@ -45,7 +45,7 @@ describe('catálogo dos painéis', () => {
 
   it('SQL sem sobra de parâmetro do Metabase', () => {
     for (const f of sqls) {
-      const sobra = lerSql(f).replace(MARCADOR_VENDEDOR, '');
+      const sobra = lerSql(f).replace(MARCADOR_VENDEDOR, '').replace(MARCADOR_CANAL, '');
       expect({ f, tag: /\{\{|\[\[/.test(sobra) }).toEqual({ f, tag: false });
     }
   });
@@ -91,6 +91,30 @@ describe('montarConsulta', () => {
     const r = montarConsulta(sql, { ...periodo, vendedores: [] });
     expect(r.texto).toBe('SELECT 1 FROM dbo.t WHERE (1 = 1) AND x = 1');
     expect(r.params).toEqual(periodo);
+  });
+
+  const sqlCanal = 'SELECT 1 FROM dbo.v v WHERE {{canal:v.local_venda_1}} AND {{vendedor:v.nome}}';
+
+  it('canais viram @c0..@cN; sem canais = 1 = 1', () => {
+    const r = montarConsulta(sqlCanal, { ...periodo, vendedores: ['ANA'], canais: ['ATACADO', 'BALCÃO'] });
+    expect(r.texto).toBe('SELECT 1 FROM dbo.v v WHERE (v.local_venda_1 IN (@c0, @c1)) AND (v.nome IN (@v0))');
+    expect(r.params).toEqual({ ...periodo, v0: 'ANA', c0: 'ATACADO', c1: 'BALCÃO' });
+    expect(montarConsulta(sqlCanal, { ...periodo, vendedores: [] }).texto).toBe(
+      'SELECT 1 FROM dbo.v v WHERE (1 = 1) AND (1 = 1)',
+    );
+  });
+
+  it('listaCanais traduz a chave da tela para o valor do BI e ignora desconhecidos', () => {
+    expect(listaCanais('varejo-servico,atacado,xpto,atacado')).toEqual(['ATACADO', 'VAREJO-SERVIÇO']);
+    expect(listaCanais(['Varejo', 'atacado'])).toEqual(['ATACADO', 'BALCÃO']);
+    expect(listaCanais(undefined)).toEqual([]);
+  });
+
+  it('todo SQL que lê vendas (f_analise_vendas / vw_analise_vendas) tem o marcador de canal', () => {
+    // Guarda contra reextração do Metabase, que não conhece o marcador.
+    const leVendas = /^\s*FROM\s+dbo\.(f_analise_vendas|vw_analise_vendas)\b/im;
+    const semMarcador = sqls.filter((f) => leVendas.test(lerSql(f)) && !new RegExp(MARCADOR_CANAL.source).test(lerSql(f)));
+    expect(semMarcador).toEqual([]);
   });
 });
 

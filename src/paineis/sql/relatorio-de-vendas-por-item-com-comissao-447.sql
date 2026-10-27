@@ -23,7 +23,7 @@ BaseVendas AS (
   FROM dbo.f_analise_vendas v
   JOIN CalendarioFiltrado c
     ON v.dt_emissao_convertida = c.data_date
-  WHERE v.mix_custo IS NOT NULL
+  WHERE {{canal:v.local_venda_1}} AND v.mix_custo IS NOT NULL
     AND v.faixa_mix IS NOT NULL
     AND (UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI
            IN (SELECT vendedor_norm FROM VendedoresFiltrados))

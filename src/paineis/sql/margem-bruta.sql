@@ -21,7 +21,7 @@ VendasAgg AS (  -- receita e custo do(s) mês(es) comissional(is)
     ON CAST(v.dt_emissao AS date) = c.data_date   -- troque para v.emissao se for o seu caso
   JOIN PeriodosSelecionados p
     ON p.mes_comissional = c.mes_comissional AND p.ano_comissional = c.ano_comissional
-  WHERE (UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI IN (SELECT vendedor_norm FROM VendSel))
+  WHERE {{canal:v.local_venda_1}} AND (UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI IN (SELECT vendedor_norm FROM VendSel))
 )
 SELECT
 	receita_liquida,

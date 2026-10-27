@@ -1708,13 +1708,7 @@ export class CarteirizacaoService {
    * selecionado). Mesma lógica de painelCarteiraSupervisao, mas com todos os reps.
    */
   async painelCarteiraGerencia(vendedorNome: string | undefined, dataInicio: string, dataFim: string) {
-    let reps: number[];
-    if (vendedorNome) {
-      const rep = await this.sql.repPorNome(vendedorNome.toUpperCase());
-      reps = rep ? [rep] : [];
-    } else {
-      reps = await this.sql.vendedoresEmpresaReps();
-    }
+    const reps = (await this.repsPorNomes(vendedorNome)) ?? (await this.sql.vendedoresEmpresaReps());
     const [clientesCarteira, clientesComVenda] = await Promise.all([
       this.overlay.contarCarteiraReps(reps),
       this.sql.clientesComVendaReps(reps, dataInicio, dataFim),
@@ -1731,13 +1725,7 @@ export class CarteirizacaoService {
    * vendedor selecionado). Mesma lógica do painel do vendedor, mas agregando reps.
    */
   async painelCarteiraSupervisao(vendedorNome: string | undefined, dataInicio: string, dataFim: string) {
-    let reps: number[];
-    if (vendedorNome) {
-      const rep = await this.sql.repPorNome(vendedorNome.toUpperCase());
-      reps = rep ? [rep] : [];
-    } else {
-      reps = await this.sql.equipeAtacadoReps(dataInicio);
-    }
+    const reps = (await this.repsPorNomes(vendedorNome)) ?? (await this.sql.equipeAtacadoReps(dataInicio));
     const [clientesCarteira, clientesComVenda] = await Promise.all([
       this.overlay.contarCarteiraReps(reps),
       this.sql.clientesComVendaReps(reps, dataInicio, dataFim),
@@ -1748,6 +1736,17 @@ export class CarteirizacaoService {
       // positivação = % de clientes com venda sobre a carteira
       positivacao: clientesCarteira > 0 ? (clientesComVenda / clientesCarteira) * 100 : 0,
     };
+  }
+
+  /**
+   * `vendedor` do filtro do painel: 1 nome ou vários separados por vírgula → rep_codigos
+   * (nome sem venda cai fora). null = filtro vazio, o chamador usa o universo dele.
+   */
+  private async repsPorNomes(nomes: string | undefined): Promise<number[] | null> {
+    const lista = (nomes ?? '').split(',').map((n) => n.trim().toUpperCase()).filter(Boolean);
+    if (!lista.length) return null;
+    const reps = await Promise.all(lista.map((n) => this.sql.repPorNome(n)));
+    return [...new Set(reps.filter((r): r is number => r != null))];
   }
 
   async setMetaVendedor(

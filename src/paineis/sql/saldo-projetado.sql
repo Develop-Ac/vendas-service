@@ -67,7 +67,7 @@ VendasAcum AS (
     ON CAST(v.dt_emissao AS date) = cal.data_date
   JOIN Cortes c
     ON c.mes = cal.mes_comissional AND c.ano = cal.ano_comissional
-  WHERE cal.data_date <= c.data_corte
+  WHERE {{canal:v.local_venda_1}} AND cal.data_date <= c.data_corte
     AND (UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI
                IN (SELECT vendedor_norm FROM VendedoresFiltro))
   GROUP BY c.mes, c.ano,

@@ -367,6 +367,59 @@ export const LINHA_4PCT_PADRAO = 1.586;
 export const PREMIO_PADRAO = 0.25;
 
 /**
+ * PRÊMIO POR ATINGIMENTO DA META. A taxa do prêmio (fração do lucro acima da linha) depende de
+ * quanto o vendedor já atingiu da meta no mês comissional: atingimento = venda líquida ÷ meta.
+ * `minimo` é o atingimento mínimo do degrau, em fração (1 = 100%); vale o maior degrau alcançado.
+ */
+export interface DegrauPremio {
+  minimo: number;
+  pct: number;
+}
+export const DEGRAUS_PREMIO_PADRAO = '0:0.05,1:0.15,1.10:0.25';
+
+/**
+ * RESERVA DO SALDO. Uma fração do saldo da bolsa (saldo inicial + gerado, com absorvido e ajuste;
+ * limitada a um teto em R$) fica de reserva: vira saldo inicial do mês seguinte e não é premiada.
+ * Prêmio = taxa × max(0, lucro acima da linha − reserva); saldo ≤ 0 → reserva 0 no card.
+ */
+export const RESERVA_PCT_PADRAO = 0.3;
+export const RESERVA_TETO_PADRAO = 3000;
+
+/** Reserva sobre o saldo retido: min(pct × saldo, teto), só com saldo positivo. */
+export function reservaDoSaldo(saldoRetido: number, pct: number, teto: number): number {
+  return Math.min(Math.max(0, pct) * Math.max(0, saldoRetido), Math.max(0, teto));
+}
+
+/**
+ * Reserva no FECHAMENTO do mês, sobre o saldo final (saldo inicial + gerado): positivo → min(pct ×
+ * saldo, teto); negativo → pct × saldo, sem teto (30% do negativo passa para o mês seguinte).
+ */
+export function reservaDoFechamento(saldoFinal: number, pct: number, teto: number): number {
+  const p = Math.max(0, pct);
+  return saldoFinal > 0 ? Math.min(p * saldoFinal, Math.max(0, teto)) : p * saldoFinal;
+}
+
+/** Taxa do prêmio: pct do maior degrau com mínimo ≤ atingimento; sem meta (null) → o degrau mais baixo. */
+export function taxaPremio(degraus: DegrauPremio[], atingimento: number | null): number {
+  let pct = degraus[0]?.pct ?? 0;
+  if (atingimento == null) return pct;
+  // folga de arredondamento: 1,10 calculado como 0,0110/0,01 não pode cair no degrau de baixo
+  for (const d of degraus) if (d.minimo <= atingimento + 1e-9) pct = d.pct;
+  return pct;
+}
+
+/** "0:0.05,1:0.15,1.10:0.25" → degraus ordenados por mínimo; entrada inválida é ignorada; nada válido → null (taxa fixa). */
+export function parseDegrausPremio(texto?: string | null): DegrauPremio[] | null {
+  if (!texto) return null;
+  const out: DegrauPremio[] = [];
+  for (const par of texto.split(',')) {
+    const [m, p] = par.split(':').map((x) => Number(String(x).trim()));
+    if (Number.isFinite(m) && m >= 0 && Number.isFinite(p) && p >= 0 && p <= 1) out.push({ minimo: m, pct: p });
+  }
+  return out.length ? out.sort((a, b) => a.minimo - b.minimo) : null;
+}
+
+/**
  * Piso por DEGRAU de volume do canal (escada da meta): as despesas fixas são as
  * mesmas em qualquer volume, então o markup que garante 4% cai conforme o canal
  * vende mais. `volume_min` = receita líquida média por mês do canal (últimos 3
@@ -593,7 +646,17 @@ export interface BolsaEntrada {
   teto_desde?: string | null;
   piso?: number;
   linha?: number;
+  /** Taxa fixa do prêmio: só vale sem `premio_degraus`. */
   premio_pct?: number;
+  /** Meta do vendedor no mês comissional (R$); null/0 = sem meta → degrau mais baixo. */
+  meta?: number | null;
+  /** Escada do prêmio por atingimento da meta; null = taxa fixa `premio_pct`. */
+  premio_degraus?: DegrauPremio[] | null;
+  /** Reserva do saldo retido para o mês seguinte: fração (padrão 0,30) e teto em R$ (padrão 3.000). */
+  reserva_pct?: number;
+  reserva_teto?: number;
+  /** Saldo inicial do mês (ven_bolsa_mes): a reserva do fechamento anterior; pode ser negativo. */
+  saldo_inicial?: number;
 }
 
 /**
@@ -638,7 +701,15 @@ export function tetoLinha(l: { liquido: number; custo_bolsa: number; preco_tabel
 export interface Bolsa {
   piso: number;
   linha: number;
+  /** taxa do prêmio hoje e depois deste orçamento (pela escada da meta, ou a fixa sem escada) */
   premio_pct: number;
+  premio_pct_apos: number;
+  /** escada do prêmio em vigor (null = taxa fixa) */
+  premio_degraus: DegrauPremio[] | null;
+  /** meta do mês e o atingimento (venda líquida ÷ meta, fração) hoje e com este orçamento; null = sem meta */
+  meta: number | null;
+  atingimento: number | null;
+  atingimento_apos: number | null;
   bruto_mtd: number;
   receita_mtd: number;
   custo_mtd: number;
@@ -648,7 +719,12 @@ export interface Bolsa {
   markup_mtd: number | null;
   /** O que a venda do mês gerou a preço cheio: bruto − custo × piso. */
   gerada: number;
-  /** O que sobra depois do desconto dado: receita − custo × piso. É o que ainda cabe. */
+  /** Saldo inicial do mês: a reserva do fechamento do mês anterior (0 sem fechamento). */
+  saldo_inicial: number;
+  /** O que o mês gerou, sem o saldo inicial: receita − custo × piso + absorvido + ajuste − excedente. */
+  gerado: number;
+  gerado_apos: number;
+  /** O que ainda cabe: saldo inicial + gerado. */
   saldo: number;
   saldo_apos: number;
   /** Só ESTE orçamento contra custo × piso (sem custo = neutro, promoção com a metade da empresa): ≥ 0 é orçamento que se compensa sozinho. */
@@ -669,6 +745,14 @@ export interface Bolsa {
   /** Lucro acima da linha dos 4%: receita − custo × linha (negativo = abaixo da linha). */
   acima_linha: number;
   acima_linha_apos: number;
+  /** reserva para o mês seguinte sobre o saldo (saldo inicial + gerado; não premiada) e a base do prêmio (lucro acima da linha − reserva, ≥ 0), hoje e com o orçamento */
+  reserva: number;
+  reserva_apos: number;
+  premio_base: number;
+  premio_base_apos: number;
+  /** parâmetros da reserva em vigor */
+  reserva_pct: number;
+  reserva_teto: number;
   premio_estimado: number;
   premio_estimado_apos: number;
   semaforo_atual: Semaforo;
@@ -684,7 +768,7 @@ export function semaforoBolsa(saldo: number, acimaLinha: number): Semaforo {
 export function calcularBolsa(e: BolsaEntrada): Bolsa {
   const piso = e.piso ?? BOLSA_PISO_PADRAO;
   const linha = e.linha ?? LINHA_4PCT_PADRAO;
-  const premio = e.premio_pct ?? PREMIO_PADRAO;
+  const premioFixo = e.premio_pct ?? PREMIO_PADRAO;
   const receita = Math.max(0, e.receita_mtd);
   const custo = Math.max(0, e.custo_mtd);
   const desc = Math.max(0, e.desconto_mtd);
@@ -700,14 +784,38 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
   // teto por linha: o excedente sai da bolsa E da linha do prêmio (o prêmio não vê o que passou do teto)
   const excMtd = Math.max(0, e.excedente_mtd ?? 0);
   const excOrc = Math.max(0, e.excedente_orc ?? 0);
-  const saldo = receita - custo * piso + absMtd + ajMtd - excMtd;
-  const saldoApos = saldo + (recOrc - custoOrc * piso) + absOrc + ajOrc - excOrc;
+  const inicial = e.saldo_inicial ?? 0;
+  const gerado = receita - custo * piso + absMtd + ajMtd - excMtd;
+  const geradoApos = gerado + (recOrc - custoOrc * piso) + absOrc + ajOrc - excOrc;
+  const saldo = inicial + gerado;
+  const saldoApos = inicial + geradoApos;
   const acima = receita - custo * linha - excMtd;
   const acimaApos = acima + (recOrc - custoOrc * linha) - excOrc;
+  const meta = e.meta != null && e.meta > 0 ? e.meta : null;
+  // a taxa sai do atingimento sem arredondar (0,99996 não pode virar 100%); a resposta leva 4 casas
+  const ating = meta ? receita / meta : null;
+  const atingApos = meta ? (receita + recOrc) / meta : null;
+  const degraus = e.premio_degraus?.length ? e.premio_degraus : null;
+  const premio = degraus ? taxaPremio(degraus, ating) : premioFixo;
+  const premioApos = degraus ? taxaPremio(degraus, atingApos) : premioFixo;
+  const reservaPct = e.reserva_pct ?? RESERVA_PCT_PADRAO;
+  const reservaTeto = e.reserva_teto ?? RESERVA_TETO_PADRAO;
+  // O que CARREGA para o mês seguinte é a bolsa inteira (saldo, com absorvido e ajuste); o que
+  // PREMIA é só o lucro acima da linha (absorvido e ajuste são da empresa, nunca viraram lucro).
+  // A mesma conta do fechamento (fechamentoDaBolsa), aqui com a reserva só do saldo positivo.
+  const reserva = reservaDoSaldo(saldo, reservaPct, reservaTeto);
+  const reservaApos = reservaDoSaldo(saldoApos, reservaPct, reservaTeto);
+  const base = Math.max(0, acima - reserva);
+  const baseApos = Math.max(0, acimaApos - reservaApos);
   return {
     piso,
     linha,
     premio_pct: premio,
+    premio_pct_apos: premioApos,
+    premio_degraus: degraus,
+    meta: meta == null ? null : round2(meta),
+    atingimento: ating == null ? null : round4(ating),
+    atingimento_apos: atingApos == null ? null : round4(atingApos),
     bruto_mtd: round2(receita + desc),
     receita_mtd: round2(receita),
     custo_mtd: round2(custo),
@@ -715,6 +823,9 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
     pct_desconto: receita + desc > 0 ? round4(desc / (receita + desc)) : 0,
     markup_mtd: custo > 0 ? round4(receita / custo) : null,
     gerada: round2(receita + desc - custo * piso),
+    saldo_inicial: round2(inicial),
+    gerado: round2(gerado),
+    gerado_apos: round2(geradoApos),
     saldo: round2(saldo),
     saldo_apos: round2(saldoApos),
     orcamento: round2(recOrc - custoOrc * piso + absOrc + ajOrc - excOrc),
@@ -729,8 +840,14 @@ export function calcularBolsa(e: BolsaEntrada): Bolsa {
     teto_desde: e.teto_desde ?? null,
     acima_linha: round2(acima),
     acima_linha_apos: round2(acimaApos),
-    premio_estimado: round2(premio * Math.max(0, acima)),
-    premio_estimado_apos: round2(premio * Math.max(0, acimaApos)),
+    reserva: round2(reserva),
+    reserva_apos: round2(reservaApos),
+    premio_base: round2(base),
+    premio_base_apos: round2(baseApos),
+    reserva_pct: reservaPct,
+    reserva_teto: reservaTeto,
+    premio_estimado: round2(premio * base),
+    premio_estimado_apos: round2(premioApos * baseApos),
     semaforo_atual: semaforoBolsa(saldo, acima),
     semaforo_apos: semaforoBolsa(saldoApos, acimaApos),
   };
@@ -753,5 +870,32 @@ export function degrauMix1(participacao: number) {
     multiplicador: atual?.multiplicador ?? 1,
     proximo_minimo: proximo?.minimo ?? null,
     falta_pp: proximo ? round4(proximo.minimo - participacao) : 0,
+  };
+}
+
+/**
+ * FECHAMENTO DO MÊS COMISSIONAL a partir da bolsa do mês (calcularBolsa com o saldo inicial):
+ *   saldo_final = saldo inicial + gerado
+ *   reserva     = reservaDoFechamento(saldo_final)  → saldo inicial do mês seguinte
+ *   premio_base = max(0, acima_linha − reserva); premio = taxa do atingimento × premio_base
+ * Carrega a bolsa inteira (com absorvido e ajuste); premia só o lucro acima da linha — como o card.
+ */
+export function fechamentoDaBolsa(
+  b: Pick<Bolsa, 'saldo_inicial' | 'gerado' | 'saldo' | 'acima_linha' | 'premio_pct' | 'meta' | 'atingimento'>,
+  reservaPct: number,
+  reservaTeto: number,
+) {
+  const reserva = round2(reservaDoFechamento(b.saldo, reservaPct, reservaTeto));
+  const premio_base = round2(Math.max(0, b.acima_linha - reserva));
+  return {
+    saldo_inicial: b.saldo_inicial,
+    gerado: b.gerado,
+    saldo_final: b.saldo,
+    reserva,
+    meta: b.meta,
+    atingimento: b.atingimento,
+    premio_pct: b.premio_pct,
+    premio_base,
+    premio: round2(b.premio_pct * premio_base),
   };
 }

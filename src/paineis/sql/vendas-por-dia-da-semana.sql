@@ -21,7 +21,7 @@ Base AS (
     ON v.dt_emissao_convertida = c.data_date
   JOIN VendedoresFiltrados mv
     ON mv.vendedor = v.nome_representante
-  WHERE v.dt_emissao_convertida IS NOT NULL
+  WHERE {{canal:v.local_venda_1}} AND v.dt_emissao_convertida IS NOT NULL
 )
 SELECT
   CASE ordem_dia

@@ -26,7 +26,7 @@ VendasAgg AS (  -- soma receita e custo do(s) mês(es) comissional(is) tocados
   JOIN PeriodosSelecionados p
     ON p.mes_comissional = c.mes_comissional
    AND p.ano_comissional = c.ano_comissional
-  WHERE (
+  WHERE {{canal:v.local_venda_1}} AND (
     NOT EXISTS (SELECT 1 FROM VendSel)  -- sem filtro → pega todos
     OR UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI
        IN (SELECT vendedor_norm FROM VendSel)

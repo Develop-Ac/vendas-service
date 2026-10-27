@@ -104,7 +104,7 @@ VendasPorDia AS (
   FROM dbo.f_analise_vendas v
   JOIN CalendarioFiltrado cf
     ON cf.data_date = v.dt_emissao_convertida
-  WHERE
+  WHERE {{canal:v.local_venda_1}} AND
     v.dt_emissao_convertida >= CAST(@de AS date)
     AND v.dt_emissao_convertida < DATEADD(day, 1, CAST(@ate AS date))
     AND (NOT EXISTS (SELECT 1 FROM VendedoresFiltro)

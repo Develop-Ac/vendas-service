@@ -12,7 +12,7 @@ FROM dbo.f_analise_vendas
 JOIN CalendarioFiltrado AS cf
   -- MUDANÇA AQUI: Usando a nova coluna segura da view
   ON dbo.f_analise_vendas.dt_emissao_convertida = cf.data_date
-WHERE
+WHERE {{canal:dbo.f_analise_vendas.local_venda_1}} AND
   dbo.f_analise_vendas.opf_codigo IN (1,2,4,5,6,7,124,101,104,105,106,200)
   AND {{vendedor:dbo.f_analise_vendas.nome_representante}}
 GROUP BY

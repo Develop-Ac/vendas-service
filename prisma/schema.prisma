@@ -2935,6 +2935,32 @@ model ven_bolsa_ajuste {
   @@index([rep_codigo], map: "idx_ven_bolsa_ajuste_rep")
 }
 
+/// Fechamento mensal da bolsa do vendedor do atacado (mês comissional 26 → 25). fechado_em null = só o saldo inicial.
+model ven_bolsa_mes {
+  id            String    @id @default(cuid())
+  rep_codigo    Int
+  ano           Int
+  mes           Int
+  saldo_inicial Decimal   @default(0) @db.Decimal(15, 2)
+  gerado        Decimal?  @db.Decimal(15, 2)
+  saldo_final   Decimal?  @db.Decimal(15, 2)
+  reserva       Decimal?  @db.Decimal(15, 2)
+  meta          Decimal?  @db.Decimal(15, 2)
+  atingimento   Decimal?  @db.Decimal(8, 4)
+  premio_pct    Decimal?  @db.Decimal(6, 4)
+  premio_base   Decimal?  @db.Decimal(15, 2)
+  premio        Decimal?  @db.Decimal(15, 2)
+  piso          Decimal?  @db.Decimal(8, 4)
+  fechado_em    DateTime? @db.Timestamptz(6)
+  fechado_por   String?
+  observacao    String?
+  created_at    DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([rep_codigo, ano, mes], map: "uq_ven_bolsa_mes_rep_periodo")
+  @@index([ano, mes], map: "idx_ven_bolsa_mes_periodo")
+}
+
 enum rec_estado_resolucao {
   RESOLVIDA
   CONFIRMADA

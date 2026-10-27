@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Headers, Put, Query } from '@nestjs/common';
 import { PaineisService } from './paineis.service';
+import { listaCanais } from './painel-sql';
 
 /** `vendedores` aceita "A,B" ou o parâmetro repetido; normaliza para a chave do cache. */
 function listaVendedores(v: unknown): string[] {
@@ -19,15 +20,19 @@ function listaVendedores(v: unknown): string[] {
 export class PaineisController {
   constructor(private readonly service: PaineisService) {}
 
-  /** Painel do vendedor por hub; sem `vendedores` = empresa toda. Layout = catálogo + ajustes do hub. */
+  /**
+   * Painel do vendedor por hub; sem `vendedores` = empresa toda; `canais` = atacado |
+   * varejo | varejo-servico (vazio = todos). Layout = catálogo + ajustes do hub.
+   */
   @Get('vendedor')
   vendedor(
     @Query('hub') hub: string,
     @Query('vendedores') vendedores: unknown,
     @Query('de') de?: string,
     @Query('ate') ate?: string,
+    @Query('canais') canais?: unknown,
   ) {
-    return this.service.vendedor((hub ?? '').toUpperCase(), listaVendedores(vendedores), de, ate);
+    return this.service.vendedor((hub ?? '').toUpperCase(), listaVendedores(vendedores), de, ate, listaCanais(canais));
   }
 
   /** Grava o layout do hub: `{ itens: [{ dashcard, row, col, size_x, size_y, oculto, titulo }] }`, substitui tudo. */

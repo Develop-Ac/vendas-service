@@ -31,7 +31,7 @@ MetasTotal AS (
 VendasFiltradas AS (
   SELECT v.liquido_produto
   FROM dbo.f_analise_vendas v
-  WHERE EXISTS (
+  WHERE {{canal:v.local_venda_1}} AND EXISTS (
     SELECT 1 FROM CalendarioFiltrado c
     WHERE CAST(v.dt_emissao AS date) = c.data_date
   )

@@ -5,6 +5,8 @@ import { Prisma } from '@prisma/client';
 import { comPromosDoPortal, fracaoPromoPortal, PromosPortal } from './promocao-portal';
 import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta, ordenarBuscaClientes } from './orcamento.erp.repository';
 import { OrcamentoBiRepository, mesComissional, mesesAnteriores } from './orcamento.bi.repository';
+import { periodoComissional } from '../carteirizacao/supervisao.indicadores';
+import { ehGestaoVendas } from '../carteirizacao/papel';
 import { celulasDoOrcamento, comissaoComOrcamento } from './comissao';
 import { OrcamentoPrismaRepository, GiroItem, FiltroListaOrcamento } from './orcamento.prisma.repository';
 import {
@@ -12,11 +14,17 @@ import {
   alcadaDoItem,
   avaliarItem,
   calcularBolsa,
+  fechamentoDaBolsa,
+  type BolsaEntrada,
   BOLSA_PISO_PADRAO,
   LINHA_4PCT_PADRAO,
   PISO_ITEM_PADRAO,
   PREMIO_PADRAO,
   parseDegrausBolsa,
+  parseDegrausPremio,
+  DEGRAUS_PREMIO_PADRAO,
+  RESERVA_PCT_PADRAO,
+  RESERVA_TETO_PADRAO,
   pisoPorDre,
   pisoPorVolume,
   degrauMix1,
@@ -194,6 +202,12 @@ export class OrcamentoService {
       const v = Number(process.env[k]);
       return Number.isFinite(v) && v > 0 ? v : d;
     };
+    // como `num`, mas aceita 0 (desliga); vazio ou inválido fica no padrão
+    const numOuZero = (k: string, d: number) => {
+      const t = (process.env[k] ?? '').trim();
+      const v = Number(t);
+      return t !== '' && Number.isFinite(v) && v >= 0 ? v : d;
+    };
     // Teto da bolsa por linha: só vale para venda emitida a partir de ORCAMENTO_TETO_DESDE. Corte
     // ligado sem data válida fica DESLIGADO — aplicar o teto sem vigência mudaria a bolsa de venda já feita.
     const tetoCorte = num('ORCAMENTO_TETO_CORTE', 0);
@@ -218,7 +232,13 @@ export class OrcamentoService {
       teto_desde: tetoDesde,
       // 0 (padrão) = a linha do prêmio é o próprio piso: prêmio sobre TODO o saldo retido.
       linha_4pct: num('ORCAMENTO_LINHA_4PCT', 0),
+      // taxa fixa do prêmio: só vale com ORCAMENTO_PREMIO_DEGRAUS vazio (ou sem degrau válido)
       premio_pct: num('ORCAMENTO_PREMIO_PCT', PREMIO_PADRAO),
+      // escada do prêmio por atingimento da meta do mês ("mínimo:taxa", mínimo em fração da meta)
+      premio_degraus: parseDegrausPremio(process.env.ORCAMENTO_PREMIO_DEGRAUS ?? DEGRAUS_PREMIO_PADRAO),
+      // reserva do saldo retido para o mês seguinte, fora do prêmio: fração e teto em R$ (0 = sem reserva)
+      reserva_pct: Math.min(1, numOuZero('ORCAMENTO_RESERVA_PCT', RESERVA_PCT_PADRAO)),
+      reserva_teto: numOuZero('ORCAMENTO_RESERVA_TETO', RESERVA_TETO_PADRAO),
       piso_item: num('ORCAMENTO_ITEM_PISO', PISO_ITEM_PADRAO),
       validade_dias: num('ORCAMENTO_VALIDADE_DIAS', 7),
       // ICMS fora do estado: UFs liberadas (a situação 010 é do Pará; outro estado entra quando o
@@ -488,15 +508,14 @@ export class OrcamentoService {
       itens_teto?: Array<{ quantidade: number; total: number; custo_ref: number | null; preco_tabela: number }>;
     },
   ) {
-    const p = this.parametros();
     const { teto, ativo } = this.tetoVigente();
     const periodo = mesComissional();
     // o piso entra na leitura do mês (metade da promoção) — por isso vem antes; serviços ficam fora da bolsa
     const [{ piso, linha, pisoDre, degrau, vol }, servicos] = await Promise.all([this.pisoVigente(periodo), this.servicosDoErp()]);
     // compra de oportunidade: lotes que cobrem vendas do mês (vigentes ou encerrados há pouco)
     const lotes = await this.oportunidadesParaBolsa(2);
-    const [[v, ajustes], clientes, celulas, cfgComissao, canalMtd] = await Promise.all([
-      this.mesDaBolsa(rep, periodo, piso, servicos, lotes, 2, teto),
+    const [{ v, ajustes, entrada }, clientes, celulas, cfgComissao, canalMtd] = await Promise.all([
+      this.entradaDoMes(rep, periodo, { piso, linha, servicos, lotes, mesesAjuste: 2, teto }),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes, piso, teto).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
         return [];
@@ -530,26 +549,18 @@ export class OrcamentoService {
     // sem abatimentos manuais e média de férias — é estimativa para decidir na hora).
     const comissao = celulas && cfgComissao ? comissaoComOrcamento(celulas, celulasDoOrcamento(orc ?? {}), cfgComissao) : null;
     const bolsa = calcularBolsa({
-      receita_mtd: v.venda_liquida,
-      custo_mtd: v.custo,
-      desconto_mtd: v.desconto,
+      ...entrada,
       receita_orc: orc?.receita ?? 0,
       desconto_orc: orc?.desconto ?? 0,
       custo_orc: orc?.custo ?? 0,
       sem_custo_orc: orc?.sem_custo ?? 0,
-      absorvido_mtd: v.absorvido,
       absorvido_orc: absorvidoOrc,
-      ajuste_mtd: ajustes.reduce((s, l) => s + l.efetivo, 0),
       ajuste_orc: orc?.ajuste ?? 0,
-      excedente_mtd: v.excedente,
       excedente_orc: excedenteOrc,
       // regra fora de vigência hoje sai zerada: a tela entende 0 como desligada e não aplica nada
       teto_corte: ativo ? teto.corte : 0,
       teto_pct: ativo ? teto.pct : 0,
       teto_desde: teto.desde,
-      piso,
-      linha,
-      premio_pct: p.premio_pct,
     });
     const part = v.venda_liquida > 0 ? v.mix1_liquido / v.venda_liquida : 0;
     const abertos = await this.db.abertosDoVendedor(rep);
@@ -602,6 +613,153 @@ export class OrcamentoService {
           }
         : { modo: 'fixo' as const, piso, linha },
     };
+  }
+
+  /**
+   * Entrada de calcularBolsa para o mês comissional `periodo` do vendedor, sem orçamento em edição:
+   * o mês pela leitura do card (mesDaBolsa), a meta do mês, o saldo inicial (ven_bolsa_mes) e os
+   * parâmetros do prêmio. O card e o fechamento do mês partem daqui.
+   */
+  private async entradaDoMes(
+    rep: number,
+    periodo: { ano: number; mes: number },
+    c: { piso: number; linha: number; servicos: number[]; lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5]; mesesAjuste: number; teto: TetoBolsa },
+  ) {
+    const p = this.parametros();
+    const [[v, ajustes], meta, inicial] = await Promise.all([
+      this.mesDaBolsa(rep, periodo, c.piso, c.servicos, c.lotes, c.mesesAjuste, c.teto),
+      // sem meta (ou leitura falhou) o prêmio cai no degrau mais baixo
+      this.db.metaVendedor(rep, periodo.ano, periodo.mes).catch((e) => {
+        this.logger.warn(`Meta do vendedor indisponível (rep ${rep}): ${(e as Error).message}`);
+        return null;
+      }),
+      // sem linha (mês sem fechamento anterior) o saldo inicial é 0
+      this.db.bolsaMes(rep, periodo.ano, periodo.mes).then(
+        (r) => (r ? Number(r.saldo_inicial) : 0),
+        (e) => {
+          this.logger.warn(`Saldo inicial da bolsa indisponível (rep ${rep}): ${(e as Error).message}`);
+          return 0;
+        },
+      ),
+    ]);
+    const entrada: BolsaEntrada = {
+      receita_mtd: v.venda_liquida,
+      custo_mtd: v.custo,
+      desconto_mtd: v.desconto,
+      absorvido_mtd: v.absorvido,
+      ajuste_mtd: ajustes.reduce((s, l) => s + l.efetivo, 0),
+      excedente_mtd: v.excedente,
+      piso: c.piso,
+      linha: c.linha,
+      premio_pct: p.premio_pct,
+      meta,
+      premio_degraus: p.premio_degraus,
+      reserva_pct: p.reserva_pct,
+      reserva_teto: p.reserva_teto,
+      saldo_inicial: inicial,
+    };
+    return { v, ajustes, entrada };
+  }
+
+  /* ------------------------------------------------- fechamento mensal da bolsa */
+
+  /** 1º mês comissional fechado: env ORCAMENTO_BOLSA_FECHAMENTO_DESDE ("AAAA-MM"); vazio ou inválido → 2026-11. */
+  fechamentoDesde() {
+    const m = /^(\d{4})-(0[1-9]|1[0-2])$/.exec((process.env.ORCAMENTO_BOLSA_FECHAMENTO_DESDE ?? '').trim());
+    return m ? { ano: Number(m[1]), mes: Number(m[2]) } : { ano: 2026, mes: 11 };
+  }
+
+  /**
+   * Fecha o mês comissional (ano, mes) da bolsa de cada vendedor do atacado (ou só de `rep`):
+   * gerado = a bolsa do mês pela leitura do card, com o piso, a linha e o teto em vigor ao fechar e a
+   * meta do mês; saldo final = saldo inicial + gerado; a reserva (fechamentoDaBolsa) vira o saldo
+   * inicial do mês seguinte; o prêmio sai do lucro acima da linha − reserva, como no card. Reexecutar recalcula; recusa se o mês seguinte já estiver fechado.
+   * Vendedor cuja leitura falhou fica em `falhas`, sem linha gravada — reexecutar com `rep`.
+   *
+   * ponytail: o piso é o de quem fecha (pisoVigente de hoje). No dia 26 é o do mês que acabou;
+   * reexecutar muito depois pode usar outro — fica gravado em `piso` para conferência.
+   */
+  async fecharMes(ano: number, mes: number, por: string, rep?: number) {
+    if (!Number.isInteger(ano) || !Number.isInteger(mes) || mes < 1 || mes > 12) throw new BadRequestException('Informe ano e mês (1–12) do mês comissional.');
+    if (rep != null && !(Number.isInteger(rep) && rep > 0)) throw new BadRequestException('rep: código do vendedor.');
+    const mm = (a: number, m: number) => `${String(m).padStart(2, '0')}/${a}`;
+    const desde = this.fechamentoDesde();
+    const chave = ano * 12 + mes;
+    if (chave < desde.ano * 12 + desde.mes) throw new BadRequestException(`O fechamento da bolsa começa em ${mm(desde.ano, desde.mes)}.`);
+    const atual = mesComissional();
+    const atrasados = atual.ano * 12 + atual.mes - chave;
+    if (atrasados < 1) throw new BadRequestException(`O mês comissional ${mm(ano, mes)} ainda não terminou.`);
+    const seguinte = mes === 12 ? { ano: ano + 1, mes: 1 } : { ano, mes: mes + 1 };
+    const vendedores = rep != null ? [rep] : (await this.bi.vendedoresAtacado()).map((v) => v.rep_codigo);
+    const jaFechados = (await this.db.bolsaMesDoPeriodo(seguinte.ano, seguinte.mes, rep)).filter((r) => r.fechado_em && vendedores.includes(r.rep_codigo));
+    if (jaFechados.length) {
+      throw new BadRequestException(`O mês ${mm(seguinte.ano, seguinte.mes)} já foi fechado (rep ${jaFechados.map((r) => r.rep_codigo).join(', ')}): o saldo inicial dele não pode mudar.`);
+    }
+    const p = this.parametros();
+    const { teto } = this.tetoVigente();
+    const periodo = periodoComissional(ano, mes);
+    const [{ piso, linha }, servicos] = await Promise.all([this.pisoVigente(periodo), this.servicosDoErp()]);
+    // lotes e ajustes que cobrem vendas desde o início do mês fechado, com folga
+    const lotes = await this.oportunidadesParaBolsa(atrasados + 2);
+    const linhas: Array<ReturnType<typeof fechamentoDaBolsa> & { rep_codigo: number }> = [];
+    const falhas: Array<{ rep_codigo: number; erro: string }> = [];
+    // um vendedor por vez: cada leitura já faz várias consultas ao BI
+    for (const r of vendedores) {
+      try {
+        const { entrada } = await this.entradaDoMes(r, periodo, { piso, linha, servicos, lotes, mesesAjuste: atrasados + 2, teto });
+        const f = fechamentoDaBolsa(calcularBolsa(entrada), p.reserva_pct, p.reserva_teto);
+        await this.db.gravarFechamentoBolsa({ rep_codigo: r, ano, mes, ...f, piso, fechado_por: por }, seguinte);
+        linhas.push({ rep_codigo: r, ...f });
+      } catch (e) {
+        falhas.push({ rep_codigo: r, erro: (e as Error).message });
+        this.logger.error(`Fechamento da bolsa ${mm(ano, mes)} falhou (rep ${r}): ${(e as Error).message}`);
+      }
+    }
+    const soma = (k: 'gerado' | 'reserva' | 'premio') => round2(linhas.reduce((s, l) => s + l[k], 0));
+    this.logger.log(
+      `Bolsa ${mm(ano, mes)} fechada por ${por}: ${linhas.length} vendedor(es), ${falhas.length} falha(s) · piso ${piso} · gerado R$ ${soma('gerado')} · reserva R$ ${soma('reserva')} · prêmio R$ ${soma('premio')}.`,
+    );
+    return { ano, mes, periodo, piso, linhas, falhas };
+  }
+
+  /** Linhas do fechamento do mês (todas ou só de `rep`), com o nome do vendedor. */
+  async listarFechamento(ano: number, mes: number, rep?: number) {
+    if (!Number.isInteger(ano) || !Number.isInteger(mes) || mes < 1 || mes > 12) throw new BadRequestException('Informe ano e mês (1–12) do mês comissional.');
+    const [rows, vendedores] = await Promise.all([
+      this.db.bolsaMesDoPeriodo(ano, mes, rep),
+      this.bi.vendedoresAtacado().catch((e) => {
+        this.logger.warn(`Nomes dos vendedores indisponíveis: ${(e as Error).message}`);
+        return [] as Array<{ rep_codigo: number; rep_nome: string }>;
+      }),
+    ]);
+    const nome = new Map(vendedores.map((v): [number, string] => [v.rep_codigo, v.rep_nome]));
+    const n = (v: Prisma.Decimal | null) => (v == null ? null : Number(v));
+    return rows.map((r) => ({
+      rep_codigo: r.rep_codigo,
+      rep_nome: nome.get(r.rep_codigo) ?? null,
+      ano: r.ano,
+      mes: r.mes,
+      saldo_inicial: Number(r.saldo_inicial),
+      gerado: n(r.gerado),
+      saldo_final: n(r.saldo_final),
+      reserva: n(r.reserva),
+      meta: n(r.meta),
+      atingimento: n(r.atingimento),
+      premio_pct: n(r.premio_pct),
+      premio_base: n(r.premio_base),
+      premio: n(r.premio),
+      piso: n(r.piso),
+      fechado_em: r.fechado_em,
+      fechado_por: r.fechado_por,
+    }));
+  }
+
+  /** Quem fecha (ou refaz) o mês da bolsa: gestão de vendas (supervisão, gerência, direção). Devolve o nome para `fechado_por`. */
+  async gestorDaBolsa(usuarioId: string | undefined) {
+    const u = await this.db.usuarioPorRef(usuarioId);
+    if (!u) throw new ForbiddenException('Usuário não identificado: entre de novo na intranet e tente outra vez.');
+    if (!ehGestaoVendas(u)) throw new ForbiddenException('Só a supervisão e a gerência fecham o mês da bolsa.');
+    return u.nome || u.codigo || u.id;
   }
 
   /**

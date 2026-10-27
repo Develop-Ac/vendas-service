@@ -97,10 +97,11 @@ VendasPorDia AS (
   FROM dbo.f_analise_vendas v
   JOIN CalendarioFiltrado cf
     ON cf.data_date = CAST(v.dt_emissao AS date)
-  WHERE
+  WHERE {{canal:v.local_venda_1}} AND (
     NOT EXISTS (SELECT 1 FROM VendedoresFiltro)
     OR UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI
        IN (SELECT vendedor_norm FROM VendedoresFiltro)
+  )
   GROUP BY CAST(v.dt_emissao AS date),
            UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI
 )

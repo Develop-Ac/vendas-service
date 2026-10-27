@@ -89,6 +89,49 @@ export interface ChegadaPrevista {
 export class OrcamentoPrismaRepository {
   constructor(private readonly prisma: PrismaService) {}
 
+  /** Meta do vendedor no mês comissional (ven_meta_vendedor é gravada pelo mês comissional); sem linha → null. */
+  async metaVendedor(rep: number, ano: number, mes: number): Promise<number | null> {
+    const r = await this.prisma.ven_meta_vendedor.findUnique({ where: { rep_codigo_ano_mes: { rep_codigo: rep, ano, mes } } });
+    return r ? Number(r.valor_meta) : null;
+  }
+
+  /* ---------------------------------------------- fechamento mensal da bolsa */
+
+  /** Linha do vendedor no mês comissional (saldo inicial e, se fechado, o fechamento). */
+  bolsaMes(rep: number, ano: number, mes: number) {
+    return this.prisma.ven_bolsa_mes.findUnique({ where: { rep_codigo_ano_mes: { rep_codigo: rep, ano, mes } } });
+  }
+
+  /** Linhas do mês comissional (todas ou só de `rep`). */
+  bolsaMesDoPeriodo(ano: number, mes: number, rep?: number) {
+    return this.prisma.ven_bolsa_mes.findMany({ where: { ano, mes, ...(rep != null ? { rep_codigo: rep } : {}) }, orderBy: { rep_codigo: 'asc' } });
+  }
+
+  /**
+   * Grava o fechamento do mês (recalcula se já havia) e a reserva como saldo inicial do mês
+   * seguinte, juntos. `saldo_inicial` é o que já estava na linha (veio do fechamento anterior).
+   */
+  gravarFechamentoBolsa(
+    f: { rep_codigo: number; ano: number; mes: number; saldo_inicial: number; gerado: number; saldo_final: number; reserva: number; meta: number | null; atingimento: number | null; premio_pct: number; premio_base: number; premio: number; piso: number; fechado_por: string },
+    seguinte: { ano: number; mes: number },
+  ) {
+    const agora = new Date();
+    const { rep_codigo, ano, mes, ...valores } = f;
+    const dados = { ...valores, fechado_em: agora, updated_at: agora };
+    return this.prisma.$transaction([
+      this.prisma.ven_bolsa_mes.upsert({
+        where: { rep_codigo_ano_mes: { rep_codigo, ano, mes } },
+        create: { rep_codigo, ano, mes, ...dados },
+        update: dados,
+      }),
+      this.prisma.ven_bolsa_mes.upsert({
+        where: { rep_codigo_ano_mes: { rep_codigo, ano: seguinte.ano, mes: seguinte.mes } },
+        create: { rep_codigo, ano: seguinte.ano, mes: seguinte.mes, saldo_inicial: f.reserva },
+        update: { saldo_inicial: f.reserva, updated_at: agora },
+      }),
+    ]);
+  }
+
   /* ------------------------------------------------------------- régua */
 
   /** Régua vigente; sem linhas no banco, a régua padrão do código. */
@@ -779,7 +822,7 @@ export class OrcamentoPrismaRepository {
     if (!r) return Promise.resolve(null);
     return this.prisma.sis_usuarios.findFirst({
       where: { trash: 0, OR: [{ id: r }, { codigo: r }] },
-      select: { id: true, codigo: true, nome: true, vendas_rep_codigo: true, sis_permissoes: { select: { tela: true, editar: true, criar: true } } },
+      select: { id: true, codigo: true, nome: true, vendas_rep_codigo: true, setor: true, vendas_hub_inicial: true, sis_permissoes: { select: { tela: true, editar: true, criar: true } } },
     });
   }
 

@@ -3,9 +3,14 @@ import {
   alcadaDoItem,
   avaliarItem,
   calcularBolsa,
+  fechamentoDaBolsa,
+  reservaDoFechamento,
   corteNaData,
   tetoLinha,
   parseDegrausBolsa,
+  parseDegrausPremio,
+  taxaPremio,
+  DEGRAUS_PREMIO_PADRAO,
   pisoPorDre,
   pisoPorVolume,
   classeBase,
@@ -251,9 +256,10 @@ describe('calcularBolsa', () => {
     expect(b.pct_desconto).toBe(0.04);
     // orçamento: 9.000 − 5.000 × 1,48 = +1.600
     expect(b.saldo_apos).toBe(8800);
-    // linha dos 4%: 96.000 − 60.000 × 1,586 = +840 → prêmio 25% = 210
+    // linha dos 4%: 96.000 − 60.000 × 1,586 = +840; a reserva sai do saldo (30% × 7.200 = 2.160)
+    // e passa do lucro acima da linha → base 0, prêmio 0
     expect(b.acima_linha).toBe(840);
-    expect(b.premio_estimado).toBe(210);
+    expect(b).toMatchObject({ reserva: 2160, premio_base: 0, premio_estimado: 0 });
     expect(b.semaforo_atual).toBe('VERDE');
   });
   it('dentro da bolsa mas abaixo da linha é amarelo; bolsa estourada é vermelho', () => {
@@ -376,8 +382,144 @@ describe('tetoLinha (teto da bolsa por item)', () => {
     expect(com.orcamento).toBeCloseTo(sem.orcamento - 15, 6);
     expect(com.acima_linha).toBeCloseTo(sem.acima_linha - 40, 6);
     expect(com.acima_linha_apos).toBeCloseTo(sem.acima_linha_apos - 55, 6);
-    expect(com.premio_estimado).toBeCloseTo(0.25 * (sem.acima_linha - 40), 6);
+    expect(com.premio_estimado).toBeCloseTo(0.25 * 0.7 * (sem.acima_linha - 40), 6);
     expect(com).toMatchObject({ excedente_mtd: 40, excedente_orc: 15, teto_corte: 100, teto_pct: 0.4, teto_desde: '2026-10-28' });
     expect(sem).toMatchObject({ excedente_mtd: 0, excedente_orc: 0, teto_corte: 0, teto_pct: 0, teto_desde: null });
   });
 });
+
+describe('prêmio por atingimento da meta', () => {
+  const degraus = parseDegrausPremio(DEGRAUS_PREMIO_PADRAO)!;
+
+  it('parseDegrausPremio ordena, ignora entrada inválida e vazio vira null', () => {
+    expect(parseDegrausPremio('1.10:0.25,abc,0:0.05,1:x,1:0.15')).toEqual([
+      { minimo: 0, pct: 0.05 },
+      { minimo: 1, pct: 0.15 },
+      { minimo: 1.1, pct: 0.25 },
+    ]);
+    expect(parseDegrausPremio('')).toBeNull();
+    expect(parseDegrausPremio('lixo')).toBeNull();
+  });
+
+  it('taxaPremio: cada degrau, fronteiras sobem, logo abaixo fica, sem meta = mais baixo', () => {
+    expect(taxaPremio(degraus, 0.5)).toBe(0.05);
+    expect(taxaPremio(degraus, 0.9999)).toBe(0.05);
+    expect(taxaPremio(degraus, 1)).toBe(0.15);
+    expect(taxaPremio(degraus, 1.0999)).toBe(0.15);
+    expect(taxaPremio(degraus, 1.1)).toBe(0.25);
+    expect(taxaPremio(degraus, 1.5)).toBe(0.25);
+    expect(taxaPremio(degraus, null)).toBe(0.05);
+  });
+
+  const base = { custo_mtd: 50_000, desconto_mtd: 0, piso: 1.5, linha: 1.5, premio_pct: 0.25, premio_degraus: degraus };
+
+  it('calcularBolsa usa a taxa do atingimento na fronteira exata do mês', () => {
+    const b = calcularBolsa({ ...base, receita_mtd: 110_000, meta: 100_000 });
+    expect(b).toMatchObject({ meta: 100_000, atingimento: 1.1, premio_pct: 0.25 });
+    expect(b.premio_estimado).toBe(round(0.25 * b.premio_base));
+    expect(calcularBolsa({ ...base, receita_mtd: 99_990, meta: 100_000 }).premio_pct).toBe(0.05);
+    expect(calcularBolsa({ ...base, receita_mtd: 100_000, meta: 100_000 }).premio_pct).toBe(0.15);
+    expect(calcularBolsa({ ...base, receita_mtd: 109_990, meta: 100_000 }).premio_pct).toBe(0.15);
+  });
+
+  it('sem meta (ou meta 0) cai no degrau mais baixo', () => {
+    for (const meta of [null, 0]) {
+      const b = calcularBolsa({ ...base, receita_mtd: 200_000, meta });
+      expect(b).toMatchObject({ meta: null, atingimento: null, atingimento_apos: null, premio_pct: 0.05, premio_pct_apos: 0.05 });
+    }
+  });
+
+  it('orçamento que cruza a meta muda a taxa só no "após"', () => {
+    const b = calcularBolsa({ ...base, receita_mtd: 95_000, meta: 100_000, receita_orc: 6_000, custo_orc: 3_000 });
+    expect(b).toMatchObject({ atingimento: 0.95, atingimento_apos: 1.01, premio_pct: 0.05, premio_pct_apos: 0.15 });
+    expect(b.premio_estimado).toBe(round(0.05 * b.premio_base));
+    expect(b.premio_estimado_apos).toBe(round(0.15 * b.premio_base_apos));
+  });
+
+  it('sem degraus vale a taxa fixa, como antes', () => {
+    const b = calcularBolsa({ ...base, premio_degraus: null, receita_mtd: 95_000, meta: 100_000, receita_orc: 20_000, custo_orc: 10_000 });
+    expect(b).toMatchObject({ premio_pct: 0.25, premio_pct_apos: 0.25, premio_degraus: null, atingimento: 0.95 });
+    expect(b.premio_estimado).toBe(round(0.25 * b.premio_base));
+  });
+});
+
+describe('reserva do saldo retido para o mês seguinte', () => {
+  // custo 0 e linha qualquer: o saldo retido (acima_linha) é a própria receita
+  const bolsa = (saldo: number, premio_pct: number, extra: Partial<Parameters<typeof calcularBolsa>[0]> = {}) =>
+    calcularBolsa({ receita_mtd: saldo, custo_mtd: 0, desconto_mtd: 0, premio_pct, ...extra });
+
+  it('saldo 8.000: reserva 30% = 2.400, base 5.600; prêmio 5% / 15% / 25%', () => {
+    expect(bolsa(8_000, 0.05)).toMatchObject({ reserva: 2_400, premio_base: 5_600, premio_estimado: 280, reserva_pct: 0.3, reserva_teto: 3_000 });
+    expect(bolsa(8_000, 0.15).premio_estimado).toBe(840);
+    expect(bolsa(8_000, 0.25).premio_estimado).toBe(1_400);
+  });
+
+  it('saldo 12.000: reserva para no teto de 3.000, base 9.000, 25% = 2.250', () => {
+    expect(bolsa(12_000, 0.25)).toMatchObject({ reserva: 3_000, premio_base: 9_000, premio_estimado: 2_250 });
+  });
+
+  it('saldo negativo: reserva 0 e prêmio 0', () => {
+    const b = calcularBolsa({ receita_mtd: 1_000, custo_mtd: 1_000, desconto_mtd: 0, piso: 1.5, linha: 1.5, premio_pct: 0.25 });
+    expect(b.acima_linha).toBeLessThan(0);
+    expect(b).toMatchObject({ reserva: 0, premio_base: 0, premio_estimado: 0 });
+  });
+
+  it('reserva_pct 0: prêmio sobre o saldo inteiro', () => {
+    expect(bolsa(8_000, 0.25, { reserva_pct: 0 })).toMatchObject({ reserva: 0, premio_base: 8_000, premio_estimado: 2_000 });
+  });
+
+  it('o "após" aplica a reserva sobre o saldo com o orçamento', () => {
+    const b = bolsa(8_000, 0.25, { receita_orc: 4_000 });
+    expect(b).toMatchObject({ reserva: 2_400, reserva_apos: 3_000, premio_base_apos: 9_000, premio_estimado_apos: 2_250 });
+  });
+});
+
+describe('saldo inicial (reserva do mês anterior)', () => {
+  // custo 0, linha = piso: gerado = receita e o lucro acima da linha também
+  const bolsa = (inicial: number, gerado: number, extra: Partial<Parameters<typeof calcularBolsa>[0]> = {}) =>
+    calcularBolsa({ receita_mtd: Math.max(0, gerado), custo_mtd: 0, desconto_mtd: 0, ajuste_mtd: Math.min(0, gerado), premio_pct: 0.25, saldo_inicial: inicial, ...extra });
+
+  it('inicial 2.400 + gerado 5.000: saldo 7.400, reserva 2.220, base 2.780', () => {
+    expect(bolsa(2_400, 5_000)).toMatchObject({ saldo_inicial: 2_400, gerado: 5_000, saldo: 7_400, reserva: 2_220, premio_base: 2_780, premio_estimado: 695 });
+  });
+
+  it('inicial −570 + gerado 1.000: saldo 430, reserva 129, base 871', () => {
+    expect(bolsa(-570, 1_000)).toMatchObject({ gerado: 1_000, saldo: 430, reserva: 129, premio_base: 871 });
+  });
+
+  it('inicial 2.400 e gerado −1.000: saldo 1.400, reserva 420, base 0', () => {
+    const b = calcularBolsa({ receita_mtd: 1_000, custo_mtd: 1_000, desconto_mtd: 0, piso: 2, linha: 2, premio_pct: 0.25, saldo_inicial: 2_400 });
+    expect(b).toMatchObject({ gerado: -1_000, saldo: 1_400, reserva: 420, premio_base: 0, premio_estimado: 0 });
+  });
+
+  it('o "após" soma o orçamento ao gerado, com o mesmo saldo inicial', () => {
+    expect(bolsa(2_400, 5_000, { receita_orc: 1_000 })).toMatchObject({ gerado_apos: 6_000, saldo_apos: 8_400, reserva_apos: 2_520, premio_base_apos: 3_480 });
+  });
+
+  it('sem saldo inicial nada muda', () => {
+    const base = { receita_mtd: 96000, custo_mtd: 60000, desconto_mtd: 4000, piso: 1.48, linha: 1.586, premio_pct: 0.25 };
+    expect(calcularBolsa({ ...base, saldo_inicial: 0 })).toEqual({ ...calcularBolsa(base) });
+    expect(calcularBolsa(base)).toMatchObject({ saldo_inicial: 0, gerado: 7200, saldo: 7200 });
+  });
+});
+
+describe('fechamento do mês', () => {
+  it('reserva positiva para no teto; negativa passa 30% sem teto', () => {
+    expect(reservaDoFechamento(8_000, 0.3, 3_000)).toBe(2_400);
+    expect(reservaDoFechamento(12_000, 0.3, 3_000)).toBe(3_000);
+    expect(reservaDoFechamento(-20_000, 0.3, 3_000)).toBe(-6_000);
+    expect(reservaDoFechamento(0, 0.3, 3_000)).toBe(0);
+  });
+
+  it('fechamentoDaBolsa: carrega a bolsa, premia acima da linha − reserva (≥ 0)', () => {
+    const f = fechamentoDaBolsa({ saldo_inicial: 2_400, gerado: 5_000, saldo: 7_400, acima_linha: 5_000, premio_pct: 0.15, meta: 100_000, atingimento: 1.02 }, 0.3, 3_000);
+    expect(f).toEqual({ saldo_inicial: 2_400, gerado: 5_000, saldo_final: 7_400, reserva: 2_220, meta: 100_000, atingimento: 1.02, premio_pct: 0.15, premio_base: 2_780, premio: 417 });
+    const neg = fechamentoDaBolsa({ saldo_inicial: 0, gerado: -2_000, saldo: -2_000, acima_linha: -2_000, premio_pct: 0.05, meta: null, atingimento: null }, 0.3, 3_000);
+    expect(neg).toMatchObject({ reserva: -600, premio_base: 0, premio: 0 });
+    // absorvido/ajuste carregam mas não premiam: bolsa 6.000 (1.000 da empresa), acima da linha 5.000
+    const abs = fechamentoDaBolsa({ saldo_inicial: 0, gerado: 6_000, saldo: 6_000, acima_linha: 5_000, premio_pct: 0.25, meta: null, atingimento: null }, 0.3, 3_000);
+    expect(abs).toMatchObject({ saldo_final: 6_000, reserva: 1_800, premio_base: 3_200, premio: 800 });
+  });
+});
+
+const round = (v: number) => Math.round(v * 100) / 100;

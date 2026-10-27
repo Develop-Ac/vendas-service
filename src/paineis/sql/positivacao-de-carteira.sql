@@ -14,7 +14,7 @@
 WITH Unicos AS (
   SELECT COUNT(DISTINCT dbo.f_analise_vendas.CLI_CODIGO) AS clientes_unicos
   FROM dbo.f_analise_vendas
-  WHERE dbo.f_analise_vendas.dt_emissao_convertida >= CAST(@de AS date)
+  WHERE {{canal:dbo.f_analise_vendas.local_venda_1}} AND dbo.f_analise_vendas.dt_emissao_convertida >= CAST(@de AS date)
     AND dbo.f_analise_vendas.dt_emissao_convertida < DATEADD(day, 1, CAST(@ate AS date))
     AND {{vendedor:dbo.f_analise_vendas.nome_representante}}
 ),

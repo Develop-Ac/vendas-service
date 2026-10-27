@@ -116,6 +116,7 @@ async function bootstrap() {
       'Origin',
       'Cache-Control',
       'Pragma',
+      'x-user-id',
     ],
     exposedHeaders: ['Content-Disposition'],
     maxAge: 86400, // cache do preflight por 1 dia

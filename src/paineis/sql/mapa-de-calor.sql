@@ -16,7 +16,7 @@ WITH VendasFonte AS (
   FROM dbo.f_analise_vendas
   JOIN dbo.vw_d_calendario_tipado
     ON dbo.f_analise_vendas.dt_emissao_convertida = dbo.vw_d_calendario_tipado.data_date
-  WHERE
+  WHERE {{canal:dbo.f_analise_vendas.local_venda_1}} AND
       dbo.f_analise_vendas.UF IN ('MT','PA')
        AND dbo.f_analise_vendas.dt_emissao_convertida >= CAST(@de AS date)
        AND dbo.f_analise_vendas.dt_emissao_convertida < DATEADD(day, 1, CAST(@ate AS date))

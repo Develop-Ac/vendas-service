@@ -11,6 +11,7 @@ import { OrcamentoCeltaRepository } from './orcamento.celta.repository';
 import { RelacionadosScheduler } from './relacionados.scheduler';
 import { OrcamentoVencendoScheduler } from './vencendo.scheduler';
 import { OrcamentoComparativoScheduler } from './comparativo.scheduler';
+import { BolsaFechamentoScheduler } from './bolsa-fechamento.scheduler';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 
 /**
@@ -24,6 +25,7 @@ import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
   providers: [
     OrcamentoVencendoScheduler,
     OrcamentoComparativoScheduler,
+    BolsaFechamentoScheduler,
     AvisosVendasService,
     OrcamentoService,
     ProdutosDiaService,

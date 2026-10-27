@@ -24,7 +24,7 @@ Base AS (
   FROM dbo.f_analise_vendas v
   JOIN CalendarioFiltrado cf
     ON v.dt_emissao_convertida = cf.data_date -- Usando a coluna segura que criamos antes
-  WHERE
+  WHERE {{canal:v.local_venda_1}} AND
     -- Lógica de filtro mantida: se o filtro de vendedor estiver vazio, essa CTE VendedoresFiltro
     -- contém todos os vendedores da f_metas_vendedores, restringindo a análise a eles.
     -- Para incluir TODOS os vendedores (mesmo os sem meta), a lógica precisaria mudar.

@@ -44,7 +44,7 @@ VendasPorPeriodo AS (
   JOIN PeriodosSelecionados p
     ON p.mes_comissional = c.mes_comissional
    AND p.ano_comissional = c.ano_comissional
-  WHERE v.dt_emissao_convertida >= @ini AND v.dt_emissao_convertida <= @fim
+  WHERE {{canal:v.local_venda_1}} AND v.dt_emissao_convertida >= @ini AND v.dt_emissao_convertida <= @fim
     AND (UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI
             IN (SELECT vendedor_norm FROM VendedoresFiltrados))
   GROUP BY c.mes_comissional, c.ano_comissional,

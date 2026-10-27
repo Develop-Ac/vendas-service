@@ -54,7 +54,7 @@ VendasPeriodo AS (
   JOIN dbo.vw_d_calendario_tipado c
     ON CAST(v.dt_emissao AS date) = c.data_date
   CROSS JOIN DataLimite dl
-  WHERE c.data_date BETWEEN dl.data_ini AND dl.data_fim
+  WHERE {{canal:v.local_venda_1}} AND c.data_date BETWEEN dl.data_ini AND dl.data_fim
     AND (
       NOT EXISTS (SELECT 1 FROM VendSel)    -- sem filtro de vendedor → todos
       OR UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI

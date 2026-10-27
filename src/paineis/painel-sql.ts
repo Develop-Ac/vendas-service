@@ -8,7 +8,11 @@
  *     (o date/range do Metabase é inclusivo nas duas pontas; CAST(... AS date) porque a
  *     conversão implícita de 'YYYY-MM-DD' para datetime depende do idioma do login);
  *   - vendedor: marcador `{{vendedor:<schema.tabela.coluna>}}`, resolvido aqui por
- *     requisição — lista de vendedores (`coluna IN (@v0, @v1...)`) ou sem filtro (`1 = 1`).
+ *     requisição — lista de vendedores (`coluna IN (@v0, @v1...)`) ou sem filtro (`1 = 1`);
+ *   - canal: marcador `{{canal:<alias>.local_venda_1}}` nos cards que leem vendas
+ *     (f_analise_vendas / vw_analise_vendas), mesma mecânica (`IN (@c0...)` ou `1 = 1`).
+ *     `local_venda_1` é o canal já classificado (serviço de montagem = VAREJO-SERVIÇO);
+ *     `local_venda` é só a loja. Meta, orçamento e carteira não têm canal: ficam inteiros.
  *
  * Lista vazia vira `1 = 1` (empresa toda), inclusive nos cards escritos como
  * `WHERE 1 = 2 [[OR {{vendedor}}]]`: no Metabase, filtro vazio ali zera o card; a
@@ -19,9 +23,26 @@ export interface FiltroPainel {
   de: string;
   ate: string;
   vendedores: string[];
+  /** Valores de `local_venda_1` (ver CANAIS); vazio = todos os canais. */
+  canais?: string[];
 }
 
 export const MARCADOR_VENDEDOR = /\{\{vendedor:([A-Za-z0-9_.]+)\}\}/g;
+export const MARCADOR_CANAL = /\{\{canal:([A-Za-z0-9_.]+)\}\}/g;
+
+/** Canal como a tela pede → valor gravado em `local_venda_1` no BI. */
+export const CANAIS: Record<string, string> = {
+  atacado: 'ATACADO',
+  varejo: 'BALCÃO',
+  'varejo-servico': 'VAREJO-SERVIÇO',
+};
+
+/** "atacado,varejo" (ou parâmetro repetido) → valores do BI; desconhecidos são ignorados. */
+export function listaCanais(v: unknown): string[] {
+  const brutos = (Array.isArray(v) ? v : [v]).flatMap((x) => (typeof x === 'string' ? x.split(',') : []));
+  const chaves = brutos.map((c) => c.trim().toLowerCase()).filter((c) => c in CANAIS);
+  return [...new Set(chaves.map((c) => CANAIS[c]))].sort();
+}
 
 /** Condição de período sobre uma coluna (date ou datetime). */
 export const condicaoPeriodo = (coluna: string) =>
@@ -46,7 +67,12 @@ export function montarConsulta(sql: string, f: FiltroPainel): { texto: string; p
   const lista = [...new Set(f.vendedores.map((v) => v.trim()).filter(Boolean))];
   const vendedores = lista.length ? expandir(params, 'v', lista) : null;
   const condicao = (coluna: string) => (vendedores ? `${coluna} IN (${vendedores})` : '1 = 1');
-  return { texto: sql.replace(MARCADOR_VENDEDOR, (_m, coluna: string) => `(${condicao(coluna)})`), params };
+  const canais = f.canais?.length ? expandir(params, 'c', [...new Set(f.canais)]) : null;
+  const condicaoCanal = (coluna: string) => (canais ? `${coluna} IN (${canais})` : '1 = 1');
+  const texto = sql
+    .replace(MARCADOR_VENDEDOR, (_m, coluna: string) => `(${condicao(coluna)})`)
+    .replace(MARCADOR_CANAL, (_m, coluna: string) => `(${condicaoCanal(coluna)})`);
+  return { texto, params };
 }
 
 /**

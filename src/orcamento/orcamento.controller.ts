@@ -4,6 +4,7 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   ParseIntPipe,
   Post,
@@ -475,6 +476,34 @@ export class OrcamentoController {
   ) {
     for (const d of [de, ate]) if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new BadRequestException('de/ate: YYYY-MM-DD');
     return this.service.listarAjustesBolsa({ de, ate, rep: toNum(rep), ajustador: ajustador?.trim() || undefined, motivo: motivo || undefined, pro: toNum(pro) });
+  }
+
+  /* ---------------------------------------------- fechamento mensal da bolsa */
+
+  @Post('bolsa/fechamento')
+  @ApiOperation({
+    summary: 'Fecha (ou refaz) o mês comissional da bolsa: grava o fechamento de cada vendedor do atacado em ven_bolsa_mes e a reserva como saldo inicial do mês seguinte. Gestão de vendas (x-user-id).',
+    description:
+      'gerado = bolsa do mês (receita − custo × piso + absorvido + ajuste − excedente); saldo_final = saldo_inicial + gerado; reserva = 30% do saldo_final até R$ 3 mil (negativo: 30% sem teto); premio_base = max(0, acima_linha − reserva), sem absorvido nem ajuste (mesma conta do card); premio = taxa do atingimento da meta × premio_base. Recusa mês anterior a ORCAMENTO_BOLSA_FECHAMENTO_DESDE, mês ainda aberto e mês cujo seguinte já foi fechado.',
+  })
+  @ApiQuery({ name: 'ano', required: true })
+  @ApiQuery({ name: 'mes', required: true, description: 'Mês comissional (26 do anterior a 25 deste), 1–12' })
+  @ApiQuery({ name: 'rep', required: false, description: 'Só este vendedor; sem ele, todos os vendedores do atacado' })
+  async fecharBolsa(@Query('ano') ano: string, @Query('mes') mes: string, @Query('rep') rep?: string, @Headers('x-user-id') usuario?: string) {
+    const por = await this.service.gestorDaBolsa(usuario);
+    return this.service.fecharMes(Number(ano), Number(mes), por, toNum(rep));
+  }
+
+  @Get('bolsa/fechamento')
+  @ApiOperation({
+    summary: 'Linhas do mês comissional em ven_bolsa_mes, com o nome do vendedor: saldo inicial, gerado, saldo final, reserva, meta, atingimento, taxa, base e prêmio, piso, quem e quando fechou. Leitura aberta (tela de comissões do RH).',
+    description: 'Linha com fechado_em null = mês ainda aberto, só com o saldo inicial vindo do fechamento anterior.',
+  })
+  @ApiQuery({ name: 'ano', required: true })
+  @ApiQuery({ name: 'mes', required: true, description: 'Mês comissional, 1–12' })
+  @ApiQuery({ name: 'rep', required: false })
+  fechamentoBolsa(@Query('ano') ano: string, @Query('mes') mes: string, @Query('rep') rep?: string) {
+    return this.service.listarFechamento(Number(ano), Number(mes), toNum(rep));
   }
 
   @Get(':id')

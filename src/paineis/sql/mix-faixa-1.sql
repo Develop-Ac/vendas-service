@@ -19,7 +19,7 @@ BaseFiltrada AS (
     ON v.dt_emissao_convertida = c.data_date
   JOIN VendedoresFiltrados mv
     ON mv.vendedor = v.nome_representante
-  WHERE v.mix_custo IS NOT NULL
+  WHERE {{canal:v.local_venda_1}} AND v.mix_custo IS NOT NULL
 ),
 Totais AS (
   SELECT SUM(liquido_produto) AS total_faturamento

@@ -51,7 +51,7 @@ VendasPeriodo AS (
   JOIN dbo.vw_d_calendario_tipado c
     ON CAST(v.dt_emissao AS date) = c.data_date
   CROSS JOIN DataFim df
-  WHERE c.data_date BETWEEN df.data_ini AND df.data_fim
+  WHERE {{canal:v.local_venda_1}} AND c.data_date BETWEEN df.data_ini AND df.data_fim
     AND (UPPER(LTRIM(RTRIM(v.nome_representante))) COLLATE Latin1_General_CI_AI
          IN (SELECT vendedor_norm FROM VendSel))
 ),

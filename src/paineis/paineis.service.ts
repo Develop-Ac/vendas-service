@@ -100,7 +100,7 @@ export function validarLayout(body: unknown, catalogo: Catalogo): ItemLayout[] {
 
 export interface RespostaPainel {
   painel: 'vendedor';
-  filtros: { hub: Hub; vendedores: string[]; de: string; ate: string };
+  filtros: { hub: Hub; vendedores: string[]; de: string; ate: string; canais: string[] };
   geradoEm: string;
   cache: boolean;
   cards: (Omit<CardCatalogo, 'sql' | 'sqlManual' | 'cols' | 'indisponivel'> & {
@@ -146,10 +146,10 @@ export class PaineisService {
     }
   }
 
-  async vendedor(hub: string, vendedores: string[], de?: string, ate?: string) {
+  async vendedor(hub: string, vendedores: string[], de?: string, ate?: string, canais: string[] = []) {
     const h = this.hub(hub);
     const periodo = await this.periodo(de, ate);
-    return this.painel(this.catalogos.get(h)!, { hub: h, vendedores, ...periodo });
+    return this.painel(this.catalogos.get(h)!, { hub: h, vendedores, ...periodo, canais });
   }
 
   /** Substitui todos os ajustes de layout do hub (o que não vier volta ao padrão do catálogo). */
