@@ -134,18 +134,24 @@ describe('FilaService', () => {
     expect(r.geradas).toBe(2);
   });
 
-  it('gera RESGATE com prazo curto para curva A em risco de inativação', async () => {
+  it('gera RESGATE com prazo curto para curva A/B na janela de resgate; curva C nunca; mensagem recente segura', async () => {
     clientes = [
-      cliente({ cli_codigo: 1, curva_abc: 'A', risco_inativacao: true, dias_sem_compra: 50, dias_sem_orcamento: 50 }),
-      // risco em curva B não é resgate — cai na régua comum (30 < 50 -> CONTATO)
+      cliente({ cli_codigo: 1, curva_abc: 'A', risco_inativacao: true, dias_sem_compra: 31, dias_sem_orcamento: 31 }),
       cliente({ cli_codigo: 2, curva_abc: 'B', risco_inativacao: true, dias_sem_compra: 50, dias_sem_orcamento: 50 }),
+      // curva C não tem resgate — cai na régua comum (70 > 60 -> CONTATO)
+      cliente({ cli_codigo: 3, curva_abc: 'C', risco_inativacao: false, dias_sem_compra: 70, dias_sem_orcamento: 70 }),
+      // curva A em risco pelo ERP, mas com mensagem há 5 dias: nem resgate nem contato (5 < 15)
+      cliente({ cli_codigo: 4, curva_abc: 'A', risco_inativacao: true, dias_sem_compra: 40, dias_sem_orcamento: 40 }),
     ];
+    msgEnviadaPorCliente.set(4, new Date(Date.now() - 5 * 86_400_000));
     await service.gerar();
     const porCli = new Map(criadas.map((c) => [c.cli_codigo, c]));
     expect(porCli.get(1)!.tipo).toBe('RESGATE');
-    expect(porCli.get(2)!.tipo).toBe('CONTATO');
+    expect(porCli.get(2)!.tipo).toBe('RESGATE');
+    expect(porCli.get(3)!.tipo).toBe('CONTATO');
+    expect(porCli.has(4)).toBe(false);
     // prazo do resgate (48h) chega antes do prazo de contato (3d)
-    expect(porCli.get(1)!.prazo_em.getTime()).toBeLessThan(porCli.get(2)!.prazo_em.getTime());
+    expect(porCli.get(1)!.prazo_em.getTime()).toBeLessThan(porCli.get(3)!.prazo_em.getTime());
   });
 
   it('cliente grande fora do próprio ritmo entra antes da régua da curva; orçado depois da compra não entra', async () => {

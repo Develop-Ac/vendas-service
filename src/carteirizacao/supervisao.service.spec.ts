@@ -78,6 +78,8 @@ describe('SupervisaoService', () => {
   );
 
   beforeEach(() => {
+    // Corte de implantacao (26/10/2026 por padrao) no passado: o teste nao depende do calendario.
+    process.env.FILA_DESFECHO_INICIO = '2020-01-01';
     clientes = [
       cli({ cli_codigo: 1, dias_sem_compra: 30, dias_sem_orcamento: 20 }), // curva A fora da régua
       cli({ cli_codigo: 2, dias_sem_compra: 3 }), // dentro
@@ -110,7 +112,7 @@ describe('SupervisaoService', () => {
   });
 
   it('PERDIDO dado na tela de orçamento da intranet conta como motivo apontado', async () => {
-    // Emissão há 13 dias: entrou no sem desfecho há 6 e o prazo do motivo (3
+    // Emissão há 13 dias: entrou no sem desfecho há 10 (carência 3) e o prazo do motivo (3
     // dias úteis) já venceu dentro da janela das últimas 2 semanas.
     const emissao = diasAtras(13);
     const base = { cli_codigo: 1, cli_nome: 'CLI 1', rep_codigo: 10, total: 100, dias_desde_emissao: 13, fechou: false, emissao };

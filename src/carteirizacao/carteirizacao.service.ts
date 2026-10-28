@@ -82,7 +82,7 @@ export interface ClienteCarteira {
   curva_motivo: string | null; // trava aplicada (inadimplente, só à vista, amostra pequena)
   financeiro: Omit<PerfilFinanceiro, 'curva' | 'pontos' | 'motivo'> | null;
   // risco/revisão
-  risco_inativacao: boolean; // ativo, mas 45–60 dias sem compra
+  risco_inativacao: boolean; // ativo e na janela de resgate (RESGATE_DIAS da curva sem compra nem orçamento)
   revisao: boolean; // saiu do atacado: sem vendedor, aguardando confirmação de exclusão
   revisao_motivo: string | null;
   // esforço (orçamentos do Celta — CRM do Atacado, fase 1)
@@ -107,8 +107,25 @@ export type QuadranteCliente =
 
 // Inativação: cliente em carteira sem compra há mais de 60 dias vira INATIVO.
 const DEFAULT_JANELA_DIAS = 60;
-// Risco de inativação: ativo, mas já a 45+ dias sem compra (alerta antecipado).
-const RISCO_INATIVACAO_DIAS = 45;
+/**
+ * Janela de resgate (acordo com o atacado em 26/10/2026; pontua o prêmio do
+ * supervisor): cliente ATIVO entra em resgate quando passa estes dias sem
+ * sinal (compra, orçamento ou mensagem) — curva A 30, curva B 45. Curva C (e D,
+ * que a curva financeira não separa) não tem resgate: só a régua de contato dos
+ * 60 dias, que é a própria inativação.
+ */
+export const RESGATE_DIAS: Partial<Record<ClienteCarteira['curva_abc'], number>> = { A: 30, B: 45 };
+/** Orçamento sem venda do cliente em `CARENCIA_DIAS` vira "sem desfecho" (era 7; 3 desde 26/10/2026). */
+export const CARENCIA_DIAS = 3;
+/**
+ * Corte de implantação da pesquisa de motivo e dos KPIs de orçamento: só
+ * orçamentos emitidos a partir daqui contam. FILA_DESFECHO_INICIO (yyyy-mm-dd)
+ * sobrepõe; sem a env vale o reset acordado com o atacado em 26/10/2026.
+ */
+export const inicioApontamento = (): string => {
+  const v = process.env.FILA_DESFECHO_INICIO;
+  return v && !Number.isNaN(Date.parse(v)) ? v.slice(0, 10) : '2026-10-26';
+};
 const BASE_CACHE_TTL_MS = 60_000;
 // Conceito do cliente (CON_CODIGO em dbo.Stage_Clientes) -> descrição (cadastro do ERP).
 const CONCEITO_MAP: Record<number, string> = {
@@ -350,10 +367,6 @@ export class CarteirizacaoService {
       else if (dias != null && dias <= janelaDias) status = 'ATIVO';
       else status = 'INATIVO';
 
-      // Risco de inativação: ainda ATIVO, mas já 45+ dias sem compra.
-      const riscoInativacao =
-        status === 'ATIVO' && dias != null && dias >= RISCO_INATIVACAO_DIAS;
-
       // ---- Score do cliente (0-100): RFM + tendência + margem ----
       const sValor = pctl(fats, fat12m); // valor relativo
       const sFreq = pctl(peds, qtd); // frequência relativa
@@ -382,6 +395,12 @@ export class CarteirizacaoService {
       // esforço ~ orçamento no trimestre. Sem dados de orçamento, quadrante nulo.
       const orc = orcamentos?.get(b.cli_codigo) ?? null;
       const ultOrcamento = orc?.ult_orcamento ?? intranetSemErp?.get(b.cli_codigo)?.ult_orcamento ?? null;
+      const curvaAbc = perfil ? perfil.curva : abcMap.get(b.cli_codigo) ?? 'C';
+      // Risco de inativação = janela de resgate da curva: ATIVO e sem compra nem
+      // orçamento há RESGATE_DIAS (a mensagem do WhatsApp entra na fila/esteira).
+      const limiteResgate = RESGATE_DIAS[curvaAbc];
+      const diasSemSinal = Math.min(dias ?? Infinity, this.diasDesde(ultOrcamento) ?? Infinity);
+      const riscoInativacao = status === 'ATIVO' && limiteResgate != null && diasSemSinal >= limiteResgate;
       const comprou90 = fat3m > 0;
       const orcou90 = (orc?.orcamentos_90d ?? 0) > 0;
       const quadrante: QuadranteCliente | null =
@@ -437,7 +456,7 @@ export class CarteirizacaoService {
         novo: fatTotal > 0 && Math.abs(fatTotal - fat3m) < 0.01,
         score,
         score_faixa,
-        curva_abc: perfil ? perfil.curva : abcMap.get(b.cli_codigo) ?? 'C',
+        curva_abc: curvaAbc,
         curva_criterio: perfil ? 'FINANCEIRO' : 'FATURAMENTO',
         curva_pontos: perfil?.pontos ?? null,
         curva_motivo: perfil?.motivo ?? null,
@@ -562,7 +581,7 @@ export class CarteirizacaoService {
     carenciaDias?: number;
     janelaDias?: number;
   }) {
-    const carencia = Math.max(1, Math.min(30, params.carenciaDias ?? 7));
+    const carencia = Math.max(1, Math.min(30, params.carenciaDias ?? CARENCIA_DIAS));
     const janela = Math.max(carencia + 1, Math.min(180, params.janelaDias ?? 60));
     const [intranet, ativos] = await Promise.all([
       this.orcamentosIntranetAtacado(hojeYmd(new Date(Date.now() - janela * 86_400_000)), hojeYmd()),
@@ -575,15 +594,10 @@ export class CarteirizacaoService {
       itens = itens.filter((o) => o.rep_codigo === Number(params.rep_codigo));
     }
 
-    // Corte de implantação: com FILA_DESFECHO_INICIO (yyyy-mm-dd) definida, a
-    // pesquisa só cobra orçamentos emitidos a partir dessa data — o time começa
-    // do zero no dia em que a tela for liberada, sem herdar o passivo antigo.
-    const inicioEnv = process.env.FILA_DESFECHO_INICIO;
-    const inicio =
-      inicioEnv && !Number.isNaN(Date.parse(inicioEnv)) ? new Date(inicioEnv) : null;
-    if (inicio) {
-      itens = itens.filter((o) => new Date(o.emissao) >= inicio);
-    }
+    // Corte de implantação (inicioApontamento): a pesquisa só cobra orçamentos
+    // emitidos a partir do reset — o time começa do zero, sem herdar o passivo.
+    const inicio = new Date(inicioApontamento());
+    itens = itens.filter((o) => new Date(o.emissao) >= inicio);
 
     // Orçamento com motivo já registrado sai da fila — a pesquisa não cobra duas
     // vezes. E o placar de motivos (30d) volta junto: é a resposta acumulando.
@@ -607,7 +621,7 @@ export class CarteirizacaoService {
     return {
       carencia_dias: carencia,
       janela_dias: janela,
-      inicio_apontamento: inicio ? inicio.toISOString().slice(0, 10) : null,
+      inicio_apontamento: inicioApontamento(),
       total: itens.length,
       valor_total: itens.reduce((soma, o) => soma + o.total, 0),
       motivos_30d: motivos30d,

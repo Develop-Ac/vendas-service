@@ -118,12 +118,14 @@ describe('ResgateService', () => {
     jest.clearAllMocks();
   });
 
-  it('abre episódio para risco novo — SLA de 48h só na curva A', async () => {
+  it('abre episódio para risco novo — SLA de 48h só na curva A; mensagem dentro da janela segura', async () => {
     clientes = [
       cliente({ cli_codigo: 1, curva_abc: 'A' }),
       cliente({ cli_codigo: 2, curva_abc: 'B' }),
       cliente({ cli_codigo: 3, risco_inativacao: false }), // fora de risco: não abre
+      cliente({ cli_codigo: 4, curva_abc: 'A' }), // em risco pelo ERP, mas falou por WhatsApp há 10 dias (< 30)
     ];
+    msgEnviada.set(4, new Date(Date.now() - 10 * 86_400_000));
     const r = await service.reconciliar();
     expect(r.novos).toBe(2);
     const porCli = new Map(abertosNovos.map((n) => [n.cli_codigo, n]));

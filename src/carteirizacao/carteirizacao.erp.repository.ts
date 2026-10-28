@@ -586,7 +586,7 @@ export class CarteirizacaoErpRepository {
   }
 
   async orcamentosSemDesfecho(
-    carenciaDias = 7,
+    carenciaDias = 3,
     janelaDias = 60,
     intranet: OrcamentoIntranet[] = [],
   ): Promise<OrcamentoSemDesfecho[]> {
@@ -609,7 +609,7 @@ export class CarteirizacaoErpRepository {
   /**
    * Orçamentos do atacado emitidos em [desde, ateEmissao], cada um com `fechou`
    * = houve venda do mesmo cliente em até `carenciaDias` da emissão. É a base
-   * da fila "sem desfecho" (os que não fecharam) e da conversão em 7 dias da
+   * da fila "sem desfecho" (os que não fecharam) e da conversão na carência da
    * tela do supervisor (fechados / total) — a mesma inferência nos dois.
    *
    * `intranet`: orçamentos da intranet que não foram ao Celta, já recortados
@@ -620,7 +620,7 @@ export class CarteirizacaoErpRepository {
   async orcamentosComFechamento(
     desdeYmd: string,
     ateEmissaoYmd: string,
-    carenciaDias = 7,
+    carenciaDias = 3,
     intranet: OrcamentoIntranet[] = [],
   ): Promise<Array<OrcamentoSemDesfecho & { fechou: boolean; emissao_ymd: string }>> {
     if (ateEmissaoYmd < desdeYmd) return [];

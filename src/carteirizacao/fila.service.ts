@@ -4,7 +4,7 @@ import {
   Logger,
   ServiceUnavailableException,
 } from '@nestjs/common';
-import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
+import { CarteirizacaoService, ClienteCarteira, RESGATE_DIAS } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { DesfechoOrcamentoDto } from './dto/carteirizacao.dto';
@@ -19,9 +19,12 @@ import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
  *
  * A régua (dias sem contato por curva ABC) e os prazos são configuráveis por
  * env — a calibração com o supervisor muda configuração, não código:
- *   FILA_REGUA_A / FILA_REGUA_B / FILA_REGUA_C   (padrão 15 / 30 / 60 dias)
+ *   FILA_REGUA_A / FILA_REGUA_B / FILA_REGUA_C   (padrão 15 / 30 / 60 dias; curva D = C,
+ *                                                  60 dias é a própria inativação)
  *   FILA_PRAZO_CONTATO_DIAS                       (padrão 3 dias)
- *   FILA_PRAZO_RESGATE_HORAS                      (padrão 48h — resgate curva A)
+ *   FILA_PRAZO_RESGATE_HORAS                      (padrão 48h — 1º contato do resgate)
+ * A janela de resgate (curva A 30 d, B 45 d, C sem resgate) é RESGATE_DIAS no
+ * carteirizacao.service — acordo com o atacado em 26/10/2026.
  *
  * "Contato" hoje = compra ou orçamento (os dois sinais que o ERP enxerga).
  * Quando o sensor WhatsApp entrar (piloto WAHA), a mensagem enviada vira o
@@ -138,8 +141,10 @@ export class FilaService {
       const diasSemContato = Math.min(diasCompra, diasOrc, diasMsg);
       const limite = regua[cli.curva_abc];
 
-      // Resgate: curva A entrando na zona de inativação — prioridade com prazo curto.
-      if (cli.risco_inativacao && cli.curva_abc === 'A') {
+      // Resgate: curva A/B na janela de resgate (RESGATE_DIAS sem compra, orçamento
+      // nem mensagem) — prioridade com prazo curto. Curva C não tem resgate.
+      const limiteResgate = RESGATE_DIAS[cli.curva_abc];
+      if (cli.risco_inativacao && limiteResgate != null && diasMsg >= limiteResgate) {
         novas.push({
           tipo: 'RESGATE',
           cli_codigo: cli.cli_codigo,
@@ -147,7 +152,7 @@ export class FilaService {
           rep_codigo: cli.rep_codigo,
           rep_nome: cli.rep_nome,
           curva: cli.curva_abc,
-          motivo_geracao: `Curva A a ${diasCompra}d sem compra — janela de resgate de ${this.prazoResgateHoras}h antes de inativar`,
+          motivo_geracao: `Curva ${cli.curva_abc} a ${diasSemContato}d sem contato (resgate aos ${limiteResgate}d) — ${this.prazoResgateHoras}h para o primeiro contato`,
           prazo_em: new Date(agora + this.prazoResgateHoras * 3_600_000),
         });
         continue;

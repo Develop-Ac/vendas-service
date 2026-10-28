@@ -1,5 +1,5 @@
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
-import { CarteirizacaoService, ClienteCarteira, REP_DISPONIVEL } from './carteirizacao.service';
+import { CARENCIA_DIAS, CarteirizacaoService, ClienteCarteira, REP_DISPONIVEL, inicioApontamento } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
 import { FilaService } from './fila.service';
@@ -27,7 +27,6 @@ import {
 } from './supervisao.indicadores';
 
 const DIA_MS = 86_400_000;
-const CARENCIA_DIAS = 7;
 
 const envNum = (nome: string, padrao: number): number => {
   const n = Number(process.env[nome]);
@@ -117,9 +116,9 @@ export class SupervisaoService {
     return envNum('FILA_REGUA_A', 15);
   }
 
-  private get inicioApontamento(): string | null {
-    const v = process.env.FILA_DESFECHO_INICIO;
-    return v && !Number.isNaN(Date.parse(v)) ? v.slice(0, 10) : null;
+  /** Corte do reset (26/10/2026, ou FILA_DESFECHO_INICIO): orçamento anterior não conta. */
+  private get inicioApontamento(): string {
+    return inicioApontamento();
   }
 
   // ------------------------------------------------------------------ metas
@@ -209,8 +208,8 @@ export class SupervisaoService {
     const fimEfetivo = ate < agora ? ate : agora;
     const filtroRep = params.rep_codigo != null ? Number(params.rep_codigo) : null;
 
-    // Orçamentos que entraram em "sem desfecho" (emissão + 7d) com prazo de 3
-    // dias úteis vencendo na janela: emissões até ~2 semanas antes dela.
+    // Orçamentos que entraram em "sem desfecho" (emissão + carência) com prazo de
+    // 3 dias úteis vencendo na janela: emissões até ~1 semana antes dela.
     const emissaoDesde = menosDias(janela.desde, CARENCIA_DIAS + 7);
     const emissaoAte = menosDias(janela.ate, CARENCIA_DIAS);
     const [tarefas, resgatesSla, orcs] = await Promise.all([
@@ -223,7 +222,7 @@ export class SupervisaoService {
     ]);
 
     const inicioApont = this.inicioApontamento;
-    // Entra em "sem desfecho" no 7º dia após a emissão; o motivo vence 3 dias úteis depois.
+    // Entra em "sem desfecho" ao vencer a carência; o motivo vence 3 dias úteis depois.
     const prazoMotivo = (o: { emissao: Date; emissao_ymd?: string }) =>
       fimDia(somarDiasUteis(somarDias(diaEmissao(o), CARENCIA_DIAS), 3));
     const semDesfecho = (orcs ?? []).filter((o) => {
@@ -508,7 +507,7 @@ export class SupervisaoService {
       }
     }
 
-    // 6 — conversão em 7 dias: orçamentos do mês já com a carência vencida.
+    // 6 — conversão na carência: orçamentos do mês já com a carência vencida.
     const limiteConv = menosDias(hoje, CARENCIA_DIAS);
     const conversao = (orcs: typeof orcAtual, p: { inicio: string; fim: string }) => {
       if (orcs == null) return null;
@@ -526,7 +525,7 @@ export class SupervisaoService {
         convAnt == null ? null : pct(convAnt.filter((o) => o.fechou).length, convAnt.length),
         convAtual == null ? [] : linhasPct(agrupar(convAtual, (o) => o.rep_codigo, (o) => ({ num: o.fechou ? 1 : 0, den: 1 }))),
         {
-          nota: convAtual == null ? semErp : 'Conta só orçamentos com os 7 dias já vencidos.',
+          nota: convAtual == null ? semErp : `Conta só orçamentos com os ${CARENCIA_DIAS} dias já vencidos.`,
           detalhe: convAtual == null ? null : { orcamentos: convAtual.length, fechados: convAtual.filter((o) => o.fechou).length },
         },
       ),

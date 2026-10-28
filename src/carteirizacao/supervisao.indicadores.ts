@@ -77,8 +77,9 @@ export const INDICADORES: DefIndicador[] = [
   {
     chave: 'CONVERSAO_7D_PCT',
     grupo: 'KPI',
-    nome: 'Conversão de orçamento em 7 dias',
-    descricao: '% dos orçamentos do mês com venda do cliente em até 7 dias da emissão.',
+    // Chave histórica (metas gravadas em ven_atacado_meta); a carência caiu de 7 para 3 dias em 26/10/2026.
+    nome: 'Conversão de orçamento em 3 dias',
+    descricao: '% dos orçamentos do mês com venda do cliente em até 3 dias da emissão.',
     unidade: 'pct',
     sentido: 'MAIOR',
     padrao: 65,

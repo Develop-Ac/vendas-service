@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
+import { CarteirizacaoService, ClienteCarteira, RESGATE_DIAS } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
@@ -8,8 +8,9 @@ import { WhatsappRepository } from '../whatsapp/whatsapp.repository';
 /**
  * Esteira de resgate + painel esforço × resultado (fase 1, Sprint 3).
  *
- * A esteira: um EPISÓDIO abre quando o cliente entra em risco de inativação
- * (45+ dias sem compra) e acompanha até o desfecho. O estágio avança SOZINHO
+ * A esteira: um EPISÓDIO abre quando o cliente entra na janela de resgate
+ * (RESGATE_DIAS sem compra, orçamento nem mensagem: curva A 30 d, B 45 d; curva
+ * C não tem resgate) e acompanha até o desfecho. O estágio avança SOZINHO
  * por sinal observado — nenhum card é arrastado:
  *
  *   A_CONTATAR -> CONTATADO (mensagem enviada, sensor WAHA)
@@ -153,10 +154,17 @@ export class ResgateService {
     }
 
     // Abertura: quem entrou em risco e ainda não tem episódio em andamento.
+    // risco_inativacao já olha compra e orçamento; a mensagem (sensor WAHA) é o 3º sinal.
+    const semMensagemNaJanela = (c: ClienteCarteira) => {
+      const limite = RESGATE_DIAS[c.curva_abc];
+      const msg = msgEnviada.get(c.cli_codigo);
+      return limite != null && (!msg || agora.getTime() - msg.getTime() >= limite * DIA_MS);
+    };
     const novos = clientes
       .filter(
         (c) =>
           c.risco_inativacao &&
+          semMensagemNaJanela(c) &&
           c.em_carteira &&
           c.rep_codigo != null &&
           !c.revisao &&
