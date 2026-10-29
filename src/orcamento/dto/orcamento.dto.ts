@@ -5,6 +5,7 @@ import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
@@ -194,6 +195,15 @@ export class AcaoOrcamentoDto {
   @IsOptional()
   @IsString()
   usuario_nome?: string;
+}
+
+/** Gerência devolve o orçamento em APROVAÇÃO ao vendedor, com o motivo. */
+export class DevolverOrcamentoDto extends AcaoOrcamentoDto {
+  @ApiProperty({ maxLength: 500 })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(500)
+  motivo: string;
 }
 
 /** Ajuste da bolsa negativa numa linha: `valor` = R$ da linha que AINDA sai da bolsa (negativo da linha ≤ valor ≤ 0). */

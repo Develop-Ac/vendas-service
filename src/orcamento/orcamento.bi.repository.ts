@@ -598,6 +598,35 @@ export class OrcamentoBiRepository {
     return saida;
   }
 
+  /**
+   * Preço médio praticado no ATACADO (emp. 3) nos últimos 90 dias, com o volume
+   * e o número de clientes: base do semáforo Curva da aprovação. Devolução
+   * (OPF 2) fica fora; produto sem quantidade positiva não entra no Map.
+   */
+  async precoMedioCanal90d(codigos: number[]): Promise<Map<number, { medio: number; clientes: number; qtd: number }>> {
+    const saida = new Map<number, { medio: number; clientes: number; qtd: number }>();
+    const unicos = [...new Set(codigos.filter((c) => Number.isFinite(c)))];
+    if (!unicos.length) return saida;
+    const rows = await this.mssql.query<{ pro_codigo: number; liquido: number; qtd: number; clientes: number }>(
+      `
+      SELECT v.PRO_CODIGO AS pro_codigo,
+             SUM(v.liquido_produto) AS liquido, SUM(v.QUANTIDADE) AS qtd, COUNT(DISTINCT v.CLI_CODIGO) AS clientes
+      FROM dbo.vw_analise_vendas v
+      WHERE v.PRO_CODIGO IN (${unicos.map((c) => Math.trunc(c)).join(',')})
+        AND v.local_venda = 'ATACADO' AND v.EMPRESA = 3
+        AND v.DT_CANCELAMENTO IS NULL AND v.OPF_CODIGO <> 2
+        AND v.dt_emissao_convertida >= DATEADD(day, -90, CAST(GETDATE() AS date))
+      GROUP BY v.PRO_CODIGO
+      `,
+    );
+    for (const r of rows) {
+      const qtd = Number(r.qtd ?? 0);
+      if (!(qtd > 0)) continue;
+      saida.set(Number(r.pro_codigo), { medio: Math.round((Number(r.liquido ?? 0) / qtd) * 100) / 100, clientes: Number(r.clientes ?? 0), qtd });
+    }
+    return saida;
+  }
+
   /** Crédito em aberto, faturamento e última compra do cliente. */
   async resumoCliente(cli: number): Promise<ResumoClienteBi> {
     const rows = await this.mssql.query<any>(

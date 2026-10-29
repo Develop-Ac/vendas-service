@@ -66,6 +66,10 @@ export interface GiroItem {
   /** demanda média diária de todos os canais e ponto de pedido (produtos do dia) */
   demanda_media_dia: number | null;
   estoque_min_sugerido: number | null;
+  /** unidades 12 m por canal e venda perdida — análise da aprovação */
+  qtd_varejo_12m: number | null;
+  qtd_atacado_12m: number | null;
+  venda_perdida_12m: number | null;
 }
 
 /** Uma chegada prevista de um produto: pedido de compra em aberto, com a data e de onde ela veio. */
@@ -466,7 +470,8 @@ export class OrcamentoPrismaRepository {
     if (!codigos.length) return saida;
     const rows = await this.prisma.$queryRaw<any[]>`
       SELECT f.pro_codigo, f.curva_abc, f.categoria_saldo_atual, f.tempo_medio_saldo_atual,
-             f.tendencia_label, f.group_id, f.grupo_chave, f.demanda_media_dia, f.estoque_min_sugerido
+             f.tendencia_label, f.group_id, f.grupo_chave, f.demanda_media_dia, f.estoque_min_sugerido,
+             f.qtd_varejo_12m, f.qtd_atacado_12m, f.venda_perdida_12m
       FROM com_fifo_completo f
       WHERE f.pro_codigo IN (${Prisma.join(codigos.map(String))})
         AND f.data_processamento = (SELECT MAX(data_processamento) FROM com_fifo_completo)
@@ -482,6 +487,9 @@ export class OrcamentoPrismaRepository {
         grupo_chave: r.grupo_chave ?? null,
         demanda_media_dia: nn(r.demanda_media_dia),
         estoque_min_sugerido: nn(r.estoque_min_sugerido),
+        qtd_varejo_12m: nn(r.qtd_varejo_12m),
+        qtd_atacado_12m: nn(r.qtd_atacado_12m),
+        venda_perdida_12m: nn(r.venda_perdida_12m),
       });
     }
     return saida;
@@ -755,6 +763,10 @@ export class OrcamentoPrismaRepository {
       aprovado_em: o.aprovado_em,
       aprovado_codigo: o.aprovado_codigo ?? null,
       aprovado_por_ajuste: !!o.aprovado_por_ajuste,
+      // devolução da gerência ao vendedor; o reenvio limpa
+      devolvido_por: o.devolvido_por ?? null,
+      devolvido_em: o.devolvido_em ?? null,
+      devolvido_motivo: o.devolvido_motivo ?? null,
       enviado_em: o.enviado_em,
       desfecho_em: o.desfecho_em,
       desfecho_motivo: o.desfecho_motivo,
@@ -966,6 +978,15 @@ export class OrcamentoPrismaRepository {
       });
     });
     return this.mapOrcamento(o);
+  }
+
+  /**
+   * Atualiza o cabeçalho só se o status ainda é o lido (aprovar × devolver ao mesmo tempo: só a
+   * primeira ação grava). null = o status mudou no meio do caminho.
+   */
+  async atualizarNoStatus(id: string, status: string, cab: Prisma.ven_orcamentoUncheckedUpdateManyInput) {
+    const { count } = await this.prisma.ven_orcamento.updateMany({ where: { id, status }, data: cab });
+    return count ? this.obter(id) : null;
   }
 
   /** Regrava cabeçalho e itens (os itens são substituídos por inteiro); `limparAjustes` apaga os ajustes da bolsa junto. */

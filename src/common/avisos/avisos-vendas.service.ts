@@ -122,6 +122,18 @@ export class AvisosVendasService {
     });
   }
 
+  /** Gerência devolveu o orçamento em aprovação: avisa quem lançou (ou o vendedor do rep). */
+  async orcamentoDevolvido(o: { id: string; numero: number; rep_codigo: number | null; usuario_id: string | null }, gerente: string, motivo: string) {
+    const usuarios = o.usuario_id ? [o.usuario_id] : await this.usuariosDoRep(o.rep_codigo);
+    if (!usuarios.length) return;
+    this.avisos.emitir('orcamento.devolvido', {
+      ref: o.id,
+      vars: { numero: String(o.numero).padStart(6, '0'), gerente, motivo, id: o.id },
+      usuarios,
+      link: `/vendas/orcamento/${o.id}`,
+    });
+  }
+
   /**
    * Quem APROVA orçamento acima da alçada — a mesma regra de `aprovaOrcamento()`
    * da tela: hub GERENCIA ou setor Admin/Administrador/Diretoria (cache de 10 min).

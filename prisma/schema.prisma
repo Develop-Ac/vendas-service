@@ -2199,6 +2199,9 @@ model ven_orcamento {
   bolsa_pct_depois    Decimal?             @db.Decimal(6, 4)
   aprovado_por        String?
   aprovado_em         DateTime?            @db.Timestamptz(6)
+  devolvido_por       String?
+  devolvido_em        DateTime?            @db.Timestamptz(6)
+  devolvido_motivo    String?
   enviado_em          DateTime?            @db.Timestamptz(6)
   desfecho_em         DateTime?            @db.Timestamptz(6)
   desfecho_motivo     String?

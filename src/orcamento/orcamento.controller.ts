@@ -26,6 +26,7 @@ import {
   RegistrarOportunidadeDto,
   EntregueOrcamentoDto,
   DesfechoOrcamentoDto,
+  DevolverOrcamentoDto,
   ExcecaoReguaDto,
   SalvarOrcamentoDto,
   TributacaoDto,
@@ -580,10 +581,18 @@ export class OrcamentoController {
     return this.service.entregue(id, dto.canal);
   }
 
+  // Aprovar e devolver decidem pelo papel de quem age: o usuário vem do `x-user-id` que o proxy
+  // da intranet injeta a partir da sessão; o `usuario_id`/`usuario_nome` do body é descartado.
   @Post(':id/aprovar')
-  @ApiOperation({ summary: 'Supervisor libera item abaixo do mínimo (APROVACAO → ENVIADO).' })
-  aprovar(@Param('id') id: string, @Body() dto: AcaoOrcamentoDto) {
-    return this.service.aprovar(id, dto);
+  @ApiOperation({ summary: 'Supervisor libera item abaixo do mínimo (APROVACAO → ENVIADO). Quem aprova: x-user-id.' })
+  aprovar(@Param('id') id: string, @Headers('x-user-id') usuario?: string) {
+    return this.service.aprovar(id, { usuario_id: usuario });
+  }
+
+  @Post(':id/devolver')
+  @ApiOperation({ summary: 'Gerência devolve ao vendedor com motivo (APROVACAO → RASCUNHO). Quem devolve: x-user-id.' })
+  devolver(@Param('id') id: string, @Body() dto: DevolverOrcamentoDto, @Headers('x-user-id') usuario?: string) {
+    return this.service.devolver(id, { motivo: dto.motivo, usuario_id: usuario });
   }
 
   @Post(':id/desfecho')

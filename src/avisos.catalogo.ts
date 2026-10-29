@@ -86,6 +86,15 @@ export const CATALOGO_VENDAS: Catalogo = {
     // agrupar = aviso com chave por orçamento: é o que permite tirá-lo de todos quando alguém aprova
     agrupar: true,
   },
+  'orcamento.devolvido': {
+    descricao: 'Gerência devolveu ao vendedor o orçamento que estava em aprovação, com o motivo.',
+    titulo: 'Orçamento {numero} devolvido pela gerência',
+    corpo: '{gerente}: {motivo}',
+    link: '/vendas/orcamento/{id}',
+    canais: ['badge', 'mural', 'desktop'],
+    prioridade: 'alta',
+    alvo: { tipo: 'usuario' },
+  },
   'orcamento.vencendo': {
     descricao: 'Orçamento enviado vence amanhã sem venda nem desfecho.',
     titulo: 'Orçamento {numero} vence amanhã sem resposta',

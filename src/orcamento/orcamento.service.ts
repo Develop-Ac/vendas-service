@@ -1,6 +1,6 @@
 import { gerarPdfOrcamento, ModoDesconto, PdfItem, PdfOrcamento } from './orcamento.pdf';
 import { mensagemWhatsapp } from './orcamento.mensagem';
-import { BadRequestException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { comPromosDoPortal, fracaoPromoPortal, PromosPortal } from './promocao-portal';
 import { OrcamentoErpRepository, ProdutoErp, ClienteErp, PromocaoItem, hojeYmd, OpcoesBusca, OrcamentoCelta, ordenarBuscaClientes } from './orcamento.erp.repository';
@@ -40,6 +40,7 @@ import { AjusteBolsaDto, AlterarOportunidadeDto, DecisaoSaldoDto, DesfechoOrcame
 import { custoParaBolsa, PCT_VENDEDOR_PADRAO } from './oportunidade';
 import { calcularDifal, calcularSt, descricaoIndicadorIe, regimeInterestadual, seloTributacao, type ParametrosSt, type RegimeInterestadual } from './tributacao';
 import { aplicarDecisoes, pendenciasSaldo } from './saldo';
+import { analisarItem, analisarPacote, foraDaRegua, type AnaliseItem, type AnalisePacote, type CandidatoEquivalente, type PrecoCanal90d } from './analise';
 import { OrcamentoCeltaRepository, type ComparativoCelta } from './orcamento.celta.repository';
 import { chaveIdempotencia, corpoParaCelta, diferencasComparativo, justificativaAlcada, soAscii, type LinhaComparativo } from './celta';
 import { assinarComprovante, liberadorDoBloqueio } from './comprovante';
@@ -126,6 +127,8 @@ export interface ProdutoOrcamento {
    * padrão, bolsa padrão). Nulo quando não há promoção vigente na tabela.
    */
   sem_promocao: { preco_tabela: number; tabela_coluna: string; preco_fallback: boolean; avaliacao: Avaliacao } | null;
+  /** Só no conferir de orçamento em APROVACAO: análise do gerente (null = dentro da régua). */
+  analise?: AnaliseItem | null;
 }
 
 export interface ClienteOrcamento {
@@ -1188,7 +1191,7 @@ export class OrcamentoService {
       principal: false,
       avaliacao,
       excecao_motivo: excecao?.motivo ?? null,
-      giro: giro ? { curva_abc: giro.curva_abc, categoria_saldo_atual: giro.categoria_saldo_atual, tempo_medio_saldo_atual: giro.tempo_medio_saldo_atual, tendencia_label: giro.tendencia_label, group_id: giro.group_id, grupo_chave: giro.grupo_chave, demanda_media_dia: giro.demanda_media_dia, estoque_min_sugerido: giro.estoque_min_sugerido } : null,
+      giro: giro ? { curva_abc: giro.curva_abc, categoria_saldo_atual: giro.categoria_saldo_atual, tempo_medio_saldo_atual: giro.tempo_medio_saldo_atual, tendencia_label: giro.tendencia_label, group_id: giro.group_id, grupo_chave: giro.grupo_chave, demanda_media_dia: giro.demanda_media_dia, estoque_min_sugerido: giro.estoque_min_sugerido, qtd_varejo_12m: giro.qtd_varejo_12m, qtd_atacado_12m: giro.qtd_atacado_12m, venda_perdida_12m: giro.venda_perdida_12m } : null,
       ultimo_preco_cliente: ultimo ? { dt_emissao: ultimo.dt_emissao, unitario: ultimo.unitario, quantidade: ultimo.quantidade } : null,
       tem_equivalente: temEquivalente,
       promocao: aplica && promo ? { codigo: promo.prom_codigo, descricao: promo.descricao, data_final: promo.data_final, somente_avista: promo.somente_avista } : null,
@@ -1987,6 +1990,9 @@ export class OrcamentoService {
       enviado_em: precisaAprovar ? null : new Date(),
       usuario_id: usuario?.usuario_id ?? o.usuario_id,
       usuario_nome: usuario?.usuario_nome ?? o.usuario_nome,
+      devolvido_por: null,
+      devolvido_em: null,
+      devolvido_motivo: null,
     });
     // Aviso à gerência só na entrada em APROVAÇÃO (reenviar o que já está lá não repete).
     if (precisaAprovar && o.status !== 'APROVACAO') void this.avisos.orcamentoAprovacao(o);
@@ -2181,22 +2187,54 @@ export class OrcamentoService {
     const fechadoSemCelta = o.status === 'FECHADO' && !o.celta_orcamento && o.acima_alcada && !o.aprovado_em;
     if (o.status !== 'APROVACAO' && !fechadoSemCelta) throw new BadRequestException('Só orçamento em APROVAÇÃO pode ser aprovado.');
 
-    const u = await this.db.usuarioPorRef(usuario?.usuario_id);
-    if (!u) throw new ForbiddenException('Aprovador não identificado: entre de novo na intranet e tente outra vez.');
-    const telas = new Set(u.sis_permissoes.filter((p) => p.editar || p.criar).map((p) => p.tela));
-    const faltam = PERMISSOES_APROVACAO.filter((t) => !telas.has(t));
-    if (faltam.length) throw new ForbiddenException(`Aprovar exige as permissões "liberar bloqueio de orçamento" e "desconto excedido" (faltam: ${faltam.join(', ')}).`);
+    const u = await this.aprovadorOuErro(usuario?.usuario_id);
     const codigo = Number(u.codigo);
 
-    const r = await this.db.atualizar(id, {
+    const r = await this.db.atualizarNoStatus(id, o.status, {
       ...(o.status === 'APROVACAO' ? { status: 'ENVIADO', enviado_em: new Date() } : {}),
-      aprovado_por: usuario?.usuario_nome ?? u.nome,
+      aprovado_por: u.nome,
       aprovado_em: new Date(),
       aprovado_codigo: Number.isFinite(codigo) ? codigo : null,
       aprovado_por_ajuste: false,
     });
+    if (!r) throw new ConflictException('O orçamento mudou de situação enquanto você decidia: recarregue a tela.');
     if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
     return r;
+  }
+
+  /**
+   * Gerência devolve ao vendedor o orçamento em APROVAÇÃO, com o motivo (volta a RASCUNHO para
+   * ajuste). Mesmo gate de quem aprova; aprovado_* fica como estava. O reenvio limpa devolvido_*.
+   */
+  async devolver(id: string, dto: { usuario_id?: string; motivo: string }) {
+    const o = await this.obter(id);
+    if (o.status !== 'APROVACAO') throw new BadRequestException('Só orçamento em APROVAÇÃO pode ser devolvido.');
+    const u = await this.aprovadorOuErro(dto.usuario_id);
+    const gerente = u.nome;
+    const motivo = dto.motivo.trim();
+    if (!motivo) throw new BadRequestException('Informe o motivo da devolução.');
+
+    const r = await this.db.atualizarNoStatus(id, 'APROVACAO', {
+      status: 'RASCUNHO',
+      enviado_em: null,
+      devolvido_por: gerente,
+      devolvido_em: new Date(),
+      devolvido_motivo: motivo,
+    });
+    if (!r) throw new ConflictException('O orçamento mudou de situação enquanto você decidia: recarregue a tela.');
+    this.avisos.aprovacaoEncerrada(id);
+    void this.avisos.orcamentoDevolvido(o, gerente, motivo);
+    return r;
+  }
+
+  /** Quem aprova ou devolve precisa das duas permissões que o Celta exige (PERMISSOES_APROVACAO). */
+  private async aprovadorOuErro(usuarioId: string | undefined) {
+    const u = await this.db.usuarioPorRef(usuarioId);
+    if (!u) throw new ForbiddenException('Aprovador não identificado: entre de novo na intranet e tente outra vez.');
+    const telas = new Set(u.sis_permissoes.filter((p) => p.editar || p.criar).map((p) => p.tela));
+    const faltam = PERMISSOES_APROVACAO.filter((t) => !telas.has(t));
+    if (faltam.length) throw new ForbiddenException(`Aprovar ou devolver exige as permissões "liberar bloqueio de orçamento" e "desconto excedido" (faltam: ${faltam.join(', ')}).`);
+    return u;
   }
 
   /* ------------------------------------------------ ajuste da bolsa negativa */
@@ -2240,7 +2278,7 @@ export class OrcamentoService {
       servico: servicos.includes(proCodigo),
     });
     if (!v.ok) throw new BadRequestException(v.erro);
-    const nome = dto.usuario_nome ?? u.nome;
+    const nome = u.nome;
     const codigo = Number(u.codigo);
     const aprova = !o.acima_alcada && !o.aprovado_em;
     const libera = o.status === 'APROVACAO' && (!o.acima_alcada || !!o.aprovado_em) && ajustesPendentes(o, proCodigo) === 0;
@@ -2589,6 +2627,10 @@ export class OrcamentoService {
       desfecho_em: new Date(),
       desfecho_motivo: dto.resultado === 'PERDIDO' ? dto.motivo : null,
       desfecho_ref: dto.referencia ?? null,
+      // a devolução da gerência se resolve com o desfecho; reaberto, o orçamento não a mostra de novo
+      devolvido_por: null,
+      devolvido_em: null,
+      devolvido_motivo: null,
       observacao: dto.observacao ? `${o.observacao ? o.observacao + '\n' : ''}${dto.observacao}` : o.observacao,
     });
   }
@@ -2795,7 +2837,76 @@ export class OrcamentoService {
       if (Math.abs(p.preco_tabela - i.preco_tabela) > 0.005) a.push(`${i.pro_codigo} ${i.descricao}: tabela mudou de ${i.preco_tabela.toFixed(2)} para ${p.preco_tabela.toFixed(2)}.`);
       return a;
     });
-    return { orcamento: o, produtos, avisos };
+    const orcamento: typeof o & { analise_pacote?: AnalisePacote } = o;
+    if (o.status === 'APROVACAO') orcamento.analise_pacote = await this.analisarAprovacao(o, porCodigo);
+    return { orcamento, produtos, avisos };
+  }
+
+  /**
+   * Análise da aprovação (ver `analise.ts`): preenche `analise` em cada produto e devolve o
+   * pacote. Só os itens abaixo do mínimo ou acima da alçada consultam BI, chegadas e similares;
+   * BI fora → Curva cinza, nunca quebra o conferir.
+   */
+  private async analisarAprovacao(o: Awaited<ReturnType<OrcamentoService['obter']>>, porCodigo: Map<number, ProdutoOrcamento>): Promise<AnalisePacote> {
+    const itens = o.itens ?? [];
+    const qtdPor = new Map<number, number>();
+    // Uma linha por produto: a que dispara o gate e, entre elas, a de menor preço.
+    const linhaPor = new Map<number, (typeof itens)[number]>();
+    for (const i of itens) {
+      qtdPor.set(i.pro_codigo, (qtdPor.get(i.pro_codigo) ?? 0) + i.quantidade);
+      const l = linhaPor.get(i.pro_codigo);
+      const fora = foraDaRegua(i);
+      if (!l || (fora && !foraDaRegua(l)) || (fora === foraDaRegua(l) && i.preco_unit < l.preco_unit)) linhaPor.set(i.pro_codigo, i);
+    }
+    const codigos = [...linhaPor.values()].filter(foraDaRegua).map((l) => l.pro_codigo);
+
+    // Fontes auxiliares em UMA consulta cada e com .catch: a análise é um extra do conferir e
+    // nunca pode impedir o gerente de abrir o orçamento. Similares via gruposDe (lote) em vez de
+    // um equivalentes() por código — 40 itens fora da régua eram 40 CTEs paralelas no pool do Prisma.
+    const [canal, chegadas, grupos, piso, servicos] = await Promise.all([
+      codigos.length ? this.bi.precoMedioCanal90d(codigos).catch(() => new Map<number, PrecoCanal90d>()) : new Map<number, PrecoCanal90d>(),
+      codigos.length ? this.db.chegadasPrevistas(codigos).catch(() => []) : [],
+      codigos.length ? this.db.gruposDe(codigos).catch(() => []) : [],
+      this.pisoVigente(mesComissional()),
+      this.servicosDoErp(),
+    ]);
+    const membros = new Map<string, number[]>();
+    for (const g of grupos) membros.set(g.chave, [...(membros.get(g.chave) ?? []), g.pro_codigo]);
+    const chaveDe = new Map(grupos.map((g) => [g.pro_codigo, g.chave] as const));
+    const similares = codigos.map((c) => [c, (membros.get(chaveDe.get(c) ?? '') ?? []).filter((x) => x !== c)] as const);
+    const chegadaPor = new Map<number, { qtd: number; data: string }>();
+    for (const c of chegadas) if (!chegadaPor.has(c.pro_codigo)) chegadaPor.set(c.pro_codigo, { qtd: c.quantidade, data: c.data });
+
+    // Similar inativo não é lançável; o saldo desconta o que o próprio orçamento já pega dele.
+    const uniao = [...new Set(similares.flatMap(([, eq]) => eq))];
+    const [erpSim, giroSim] = uniao.length ? await Promise.all([this.erp.produtosPorCodigo(uniao), this.db.giro(uniao)]) : [[], new Map<number, GiroItem>()];
+    const candidato = new Map<number, CandidatoEquivalente>(erpSim.filter((p) => p.INATIVO !== 'S').map((p) => {
+      const g = giroSim.get(p.PRO_CODIGO);
+      return [p.PRO_CODIGO, { pro_codigo: p.PRO_CODIGO, descricao: p.PRO_DESCRICAO ?? null, saldo: p.ESTOQUE_DISPONIVEL - (qtdPor.get(p.PRO_CODIGO) ?? 0), curva: g?.curva_abc ?? null, min: g?.estoque_min_sugerido ?? null }];
+    }));
+    const similaresPor = new Map(similares.map(([c, eq]) => [c, eq.flatMap((x) => candidato.get(x) ?? [])]));
+
+    for (const p of porCodigo.values()) {
+      const l = linhaPor.get(p.pro_codigo);
+      p.analise = l
+        ? analisarItem({
+            preco_unit: l.preco_unit, preco_minimo: l.preco_minimo, acima_alcada: l.acima_alcada,
+            quantidade: qtdPor.get(p.pro_codigo) ?? 0,
+            custo_ref: l.custo_ref, markup_regua: l.markup_regua,
+            estoque_disponivel: p.estoque_disponivel,
+            giro: p.giro,
+            canal: canal.get(p.pro_codigo) ?? null,
+            chegada: chegadaPor.get(p.pro_codigo) ?? null,
+            equivalentes: similaresPor.get(p.pro_codigo) ?? [],
+          })
+        : null;
+    }
+    return analisarPacote(
+      itens,
+      [...porCodigo.values()].map((p) => p.analise),
+      { piso: piso.piso, linha: piso.linha, piso_item: this.parametros().piso_item },
+      new Set(servicos),
+    );
   }
 
   private async pendenciasDe(o: { itens?: any[]; tabela_preco: string | null; cli_codigo: number }) {
