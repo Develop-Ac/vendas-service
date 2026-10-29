@@ -603,26 +603,38 @@ export class OrcamentoBiRepository {
    * e o número de clientes: base do semáforo Curva da aprovação. Devolução
    * (OPF 2) fica fora; produto sem quantidade positiva não entra no Map.
    */
-  async precoMedioCanal90d(codigos: number[]): Promise<Map<number, { medio: number; clientes: number; qtd: number }>> {
-    const saida = new Map<number, { medio: number; clientes: number; qtd: number }>();
+  async precoMedioCanal90d(codigos: number[]): Promise<Map<number, { medio: number; clientes: number; qtd: number; qtd_varejo_12m: number; qtd_atacado_12m: number }>> {
+    const saida = new Map<number, { medio: number; clientes: number; qtd: number; qtd_varejo_12m: number; qtd_atacado_12m: number }>();
     const unicos = [...new Set(codigos.filter((c) => Number.isFinite(c)))];
     if (!unicos.length) return saida;
-    const rows = await this.mssql.query<{ pro_codigo: number; liquido: number; qtd: number; clientes: number }>(
+    // Mesma passada traz a divisão varejo × atacado de 12 meses: `com_fifo_completo` tem as colunas
+    // qtd_varejo_12m/qtd_atacado_12m, mas a análise de estoque não as preenche (nulas em 25/10/2026).
+    // Varejo = tudo que não é ATACADO (BALCÃO, VAREJO-SERVIÇO).
+    const rows = await this.mssql.query<{ pro_codigo: number; liquido: number; qtd: number; clientes: number; varejo_12m: number; atacado_12m: number }>(
       `
       SELECT v.PRO_CODIGO AS pro_codigo,
-             SUM(v.liquido_produto) AS liquido, SUM(v.QUANTIDADE) AS qtd, COUNT(DISTINCT v.CLI_CODIGO) AS clientes
+             SUM(CASE WHEN v.local_venda = 'ATACADO' AND v.dt_emissao_convertida >= DATEADD(day, -90, CAST(GETDATE() AS date)) THEN v.liquido_produto ELSE 0 END) AS liquido,
+             SUM(CASE WHEN v.local_venda = 'ATACADO' AND v.dt_emissao_convertida >= DATEADD(day, -90, CAST(GETDATE() AS date)) THEN v.QUANTIDADE ELSE 0 END) AS qtd,
+             COUNT(DISTINCT CASE WHEN v.local_venda = 'ATACADO' AND v.dt_emissao_convertida >= DATEADD(day, -90, CAST(GETDATE() AS date)) THEN v.CLI_CODIGO END) AS clientes,
+             SUM(CASE WHEN v.local_venda = 'ATACADO' THEN 0 ELSE v.QUANTIDADE END) AS varejo_12m,
+             SUM(CASE WHEN v.local_venda = 'ATACADO' THEN v.QUANTIDADE ELSE 0 END) AS atacado_12m
       FROM dbo.vw_analise_vendas v
       WHERE v.PRO_CODIGO IN (${unicos.map((c) => Math.trunc(c)).join(',')})
-        AND v.local_venda = 'ATACADO' AND v.EMPRESA = 3
+        AND v.EMPRESA = 3
         AND v.DT_CANCELAMENTO IS NULL AND v.OPF_CODIGO <> 2
-        AND v.dt_emissao_convertida >= DATEADD(day, -90, CAST(GETDATE() AS date))
+        AND v.dt_emissao_convertida >= DATEADD(month, -12, CAST(GETDATE() AS date))
       GROUP BY v.PRO_CODIGO
       `,
     );
     for (const r of rows) {
       const qtd = Number(r.qtd ?? 0);
-      if (!(qtd > 0)) continue;
-      saida.set(Number(r.pro_codigo), { medio: Math.round((Number(r.liquido ?? 0) / qtd) * 100) / 100, clientes: Number(r.clientes ?? 0), qtd });
+      saida.set(Number(r.pro_codigo), {
+        medio: qtd > 0 ? Math.round((Number(r.liquido ?? 0) / qtd) * 100) / 100 : 0,
+        clientes: Number(r.clientes ?? 0),
+        qtd,
+        qtd_varejo_12m: Number(r.varejo_12m ?? 0),
+        qtd_atacado_12m: Number(r.atacado_12m ?? 0),
+      });
     }
     return saida;
   }

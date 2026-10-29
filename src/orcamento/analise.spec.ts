@@ -51,12 +51,25 @@ describe('analisarItem — Curva', () => {
 
 describe('analisarItem — Varejo', () => {
   it('≥ 50 % vermelho, ≥ 30 % amarelo, < 30 % verde', () => {
-    expect(item(giro({ qtd_varejo_12m: 50, qtd_atacado_12m: 50 })).varejo).toEqual({ cor: 'VERMELHO', pct_varejo: 0.5 });
+    expect(item(giro({ qtd_varejo_12m: 50, qtd_atacado_12m: 50 })).varejo).toMatchObject({ cor: 'VERMELHO', pct_varejo: 0.5, qtd_varejo_12m: 50, qtd_atacado_12m: 50 });
     expect(item(giro({ qtd_varejo_12m: 30, qtd_atacado_12m: 70 })).varejo.cor).toBe('AMARELO');
-    expect(item().varejo).toEqual({ cor: 'VERDE', pct_varejo: 0.2 });
+    expect(item().varejo).toMatchObject({ cor: 'VERDE', pct_varejo: 0.2 });
+  });
+  it('divisão varejo × atacado do BI (canal) vale sobre a da análise de estoque', () => {
+    const v = item({ canal: { ...base.canal!, qtd_varejo_12m: 93, qtd_atacado_12m: 16 } }).varejo;
+    expect(v).toMatchObject({ cor: 'VERMELHO', pct_varejo: 0.8532, qtd_varejo_12m: 93, qtd_atacado_12m: 16 });
+    expect(v.motivo).toBe('85% das 109 un vendidas em 12 meses saíram no varejo (93 un no balcão, 16 un no atacado): o balcão vende este item sem desconto.');
+  });
+  it('motivo explica cada nota', () => {
+    expect(item({ preco_unit: 80 }).curva.motivo).toBe('Curva A: o atacado pagou R$ 100,00 nos últimos 90 dias (7 clientes, 30 un); o pedido de R$ 80,00 fica 20% abaixo. Este item vende sem esse desconto.');
+    expect(item(giro({ curva_abc: 'B' })).curva.motivo).toMatch(/^Curva B: item de giro menor/);
+    expect(item({ canal: null }).curva.motivo).toBe('Curva A, mas sem venda no atacado nos últimos 90 dias: não há preço de referência.');
+    expect(item().estoque.motivo).toBe('Ficam 40 un depois deste orçamento, no mínimo sugerido (20 un) ou acima: 20 dias de cobertura.');
+    expect(item({ quantidade: 45 }).estoque.motivo).toBe('Ficam 5 un depois deste orçamento, abaixo do mínimo sugerido (20 un), sem chegada prevista: o balcão fica sem.');
+    expect(item({ quantidade: 45, chegada: { qtd: 30, data: '2026-11-05' } }).estoque.motivo).toBe('Ficam 5 un depois deste orçamento, abaixo do mínimo sugerido (20 un); chegam 30 un em 05/11/2026 e cobrem a falta.');
   });
   it('sem venda em 12 m é cinza', () => {
-    expect(item(giro({ qtd_varejo_12m: 0, qtd_atacado_12m: 0 })).varejo).toEqual({ cor: 'CINZA', pct_varejo: null });
+    expect(item(giro({ qtd_varejo_12m: 0, qtd_atacado_12m: 0 })).varejo).toMatchObject({ cor: 'CINZA', pct_varejo: null, qtd_varejo_12m: null });
     expect(item(giro({ qtd_varejo_12m: null, qtd_atacado_12m: null })).varejo.cor).toBe('CINZA');
   });
 });
