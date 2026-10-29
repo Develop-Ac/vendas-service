@@ -1,3 +1,4 @@
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { WhatsappService, chaveTelefone } from './whatsapp.service';
 import { WhatsappRepository } from './whatsapp.repository';
 import { ErpApiService } from '../common/erp-api/erp-api.service';
@@ -43,10 +44,25 @@ describe('WhatsappService', () => {
     }),
     semearContatos: jest.fn(async (rows: any[]) => ({ count: rows.length })),
     religarPendentes: jest.fn(async () => 2),
-    vincular: jest.fn(async (p: any) => ({ contato: p, mensagens_resolvidas: 2 })),
+    vincular: jest.fn(async (p: any) => {
+      vinculos.set(p.chave, p.cli_codigo);
+      return { contato: p, mensagens_resolvidas: 2 };
+    }),
+    chavesIgnoradas: jest.fn(async () => new Set<string>()),
+    preencherContatoNome: jest.fn(async () => ({ count: 1 })),
+    upsertDivergencia: jest.fn(async () => undefined),
     pendentesVinculo: jest.fn(async () => []),
     contarContatos: jest.fn(async () => 0),
     medicoes: jest.fn(async () => ({ total: 0, casadas: 0, porSessao: [] })),
+    contatoPorChave: jest.fn(async (chave: string) =>
+      vinculos.has(chave) ? { chave, cli_codigo: vinculos.get(chave), origem: chave === '6588887777' ? 'SEED_ERP' : 'MANUAL' } : null,
+    ),
+    usuarioVendas: jest.fn(async (ref: string) =>
+      ref === 'sup' ? { id: 'sup', vendas_hub_inicial: 'SUPERVISAO_ATACADO', vendas_rep_codigo: null }
+        : ref === 'v316' ? { id: 'v316', vendas_hub_inicial: 'VENDEDOR', vendas_rep_codigo: 316 } : null,
+    ),
+    donoDaCarteira: jest.fn(async (cli: number) => (cli === 9 || cli === 40289 ? 316 : 163)),
+    removerContato: jest.fn(async () => undefined),
   } as unknown as WhatsappRepository;
 
   const erp = {
@@ -280,8 +296,102 @@ describe('WhatsappService', () => {
 
   it('vincular exige telefone e cliente', async () => {
     await expect(service.vincular({ telefone: '', cli_codigo: 1 } as any)).rejects.toThrow();
-    const ok = await service.vincular({ telefone: '65 9 1111-2222', cli_codigo: 9 });
+    const ok = await service.vincular({ telefone: '65 9 1111-2222', cli_codigo: 9, usuario_id: 'v316', contato_nome: ' João ' });
     expect(ok.mensagens_resolvidas).toBe(2);
-    expect((repo.vincular as jest.Mock).mock.calls[0][0]).toMatchObject({ chave: '6511112222' });
+    expect((repo.vincular as jest.Mock).mock.calls[0][0]).toMatchObject({ chave: '6511112222', contato_nome: 'João' });
+  });
+
+  it('vendedor: número novo só na própria carteira; número já vinculado é da gestão (403)', async () => {
+    await expect(service.vincular({ telefone: '65 9 1111-2222', cli_codigo: 5, usuario_id: 'v316' })).rejects.toThrow(ForbiddenException);
+    await expect(service.vincular({ telefone: '65 9 8888-7777', cli_codigo: 9, usuario_id: 'v316' })).rejects.toThrow(ForbiddenException);
+    await expect(service.vincular({ telefone: '65 9 8888-7777', cli_codigo: 9 })).rejects.toThrow(ForbiddenException);
+    await service.vincular({ telefone: '65 9 8888-7777', cli_codigo: 9, usuario_id: 'sup' });
+    expect(repo.vincular).toHaveBeenCalledTimes(1);
+  });
+
+  describe('vínculo pela agenda', () => {
+    // serviço novo por caso: o cache de 10 min dos clientes do atacado não vaza entre testes
+    let svc: WhatsappService;
+    const atacado = [{ CLI_CODIGO: 40289, CLI_NOME: 'AUTO VIDROS' }];
+
+    beforeEach(() => {
+      svc = new WhatsappService(repo, erp, s3);
+      process.env.WA_API_URL = 'http://waha.local';
+      (erp.consultar as jest.Mock).mockResolvedValueOnce(atacado);
+    });
+    afterEach(() => {
+      delete process.env.WA_API_URL;
+      delete (global as any).fetch;
+    });
+
+    it('webhook: número sem vínculo com código no nome da agenda vincula e grava a mensagem já casada', async () => {
+      (global as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({ name: '40289 João' }) }));
+      const r = await svc.processarWebhook({
+        event: 'message',
+        session: 'rep-316',
+        payload: { id: 'ag1', from: '556511112222@c.us', fromMe: false },
+      });
+      expect(repo.vincular).toHaveBeenCalledWith(
+        expect.objectContaining({ chave: '6511112222', cli_codigo: 40289, contato_nome: 'João', origem: 'AGENDA', criado_por: 'agenda:rep-316' }),
+      );
+      expect(r).toMatchObject({ casada: true });
+      expect(gravadas[0]).toMatchObject({ chave: '6511112222', cli_codigo: 40289 });
+    });
+
+    it('webhook: nome do perfil (pushname) não vincula; cliente de outra carteira também não', async () => {
+      (global as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({ pushname: 'Loja 40289' }) }));
+      await svc.processarWebhook({ event: 'message', session: 'rep-316', payload: { id: 'ag2', from: '556511112222@c.us' } });
+      (global as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({ name: '40289 João' }) }));
+      await svc.processarWebhook({ event: 'message', session: 'rep-163', payload: { id: 'ag3', from: '556522223333@c.us' } });
+      expect(repo.vincular).not.toHaveBeenCalled();
+      expect(gravadas).toHaveLength(2);
+    });
+
+    it('webhook: ERP fora não perde a mensagem', async () => {
+      await (erp.consultar as jest.Mock)(); // consome a lista do beforeEach
+      const fora = { consultar: jest.fn(async () => Promise.reject(new Error('erp fora'))) } as unknown as ErpApiService;
+      (global as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({ name: '40289 João' }) }));
+      const r = await new WhatsappService(repo, fora, s3).processarWebhook({ event: 'message', session: 'rep-316', payload: { id: 'ag4', from: '556511112222@c.us' } });
+      expect(r).toMatchObject({ casada: false });
+      expect(gravadas).toHaveLength(1);
+    });
+
+    it('varredura: chave nova vincula; chave vinculada a outro cliente vira divergência sem alterar o vínculo', async () => {
+      (global as any).fetch = jest.fn(async (url: string) => ({
+        ok: true,
+        json: async () =>
+          url.endsWith('/api/sessions')
+            ? [
+                { name: 'rep-316', status: 'WORKING' },
+                { name: 'rep-163', status: 'STOPPED' },
+                { name: 'assistente', status: 'WORKING' },
+              ]
+            : [
+                { id: '556588887777@c.us', name: '40289 Maria' },
+                { id: '556511112222@c.us', name: '40289 João' },
+                { id: '556500001111@c.us', name: 'Fulano' },
+              ],
+      }));
+      const r = await svc.varrerAgendas();
+      expect(r).toEqual({ sessoes: 1, contatos_lidos: 3, vinculados: 1, divergencias: 1 });
+      expect(repo.upsertDivergencia).toHaveBeenCalledWith({
+        chave: '6588887777',
+        sessao: 'rep-316',
+        nome_agenda: '40289 Maria',
+        cli_agenda: 40289,
+        cli_vinculado: 1,
+      });
+      expect(repo.vincular).toHaveBeenCalledTimes(1);
+      expect((repo.vincular as jest.Mock).mock.calls[0][0]).toMatchObject({ chave: '6511112222' });
+      expect(vinculos.get('6588887777')).toBe(1);
+    });
+  });
+
+  it('remover: vendedor 403; número do ERP 400; manual apaga', async () => {
+    vinculos.set('6511112222', 9);
+    await expect(service.removerContato('6511112222', 'v316')).rejects.toThrow(ForbiddenException);
+    await expect(service.removerContato('6588887777', 'sup')).rejects.toThrow(BadRequestException);
+    await expect(service.removerContato('6511112222', 'sup')).resolves.toEqual({ ok: true });
+    expect(repo.removerContato).toHaveBeenCalledWith('6511112222');
   });
 });

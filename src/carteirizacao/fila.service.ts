@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   Injectable,
   Logger,
   ServiceUnavailableException,
@@ -7,7 +8,13 @@ import {
 import { CarteirizacaoService, ClienteCarteira, RESGATE_DIAS } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
-import { DesfechoOrcamentoDto } from './dto/carteirizacao.dto';
+import {
+  CriarCoberturaDto,
+  DelegarTarefaDto,
+  DesfechoOrcamentoDto,
+  EncerrarCoberturaDto,
+} from './dto/carteirizacao.dto';
+import { ehGestaoVendas } from './papel';
 import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
 /**
@@ -29,7 +36,38 @@ import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
  * "Contato" hoje = compra ou orçamento (os dois sinais que o ERP enxerga).
  * Quando o sensor WhatsApp entrar (piloto WAHA), a mensagem enviada vira o
  * terceiro sinal — mesmo mecanismo, mais um comparando.
+ *
+ * Executor × titular: `rep_codigo` é quem trabalha a tarefa (é quem a fila,
+ * os avisos e os indicadores cobram); `rep_titular_codigo` só é preenchido
+ * quando a supervisão passou a tarefa a outro vendedor, e guarda o dono da
+ * carteira. A troca real de carteira é comparada com o titular — tarefa
+ * passada adiante não é cancelada como órfã.
+ *
+ * Cobertura por período (`ven_fila_cobertura`): enquanto vale (datas de
+ * Cuiabá, inclusive), toda tarefa em andamento do titular ainda não passada vai
+ * ao substituto e tarefa nova da régua já nasce nele, com `cobertura_id`. No fim
+ * (data passou ou encerrada) só as tarefas daquela cobertura voltam ao titular.
  */
+
+type Tarefa = Awaited<ReturnType<CarteirizacaoPrismaRepository['tarefasEmAndamento']>>[number];
+type Cobertura = NonNullable<Awaited<ReturnType<CarteirizacaoPrismaRepository['obterCobertura']>>>;
+
+/** Dia corrente em Cuiabá, como a coluna @db.Date guarda (meia-noite UTC). */
+const hojeCuiaba = (): Date =>
+  new Date(`${new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Cuiaba' })}T00:00:00Z`);
+
+/** 'yyyy-mm-dd' válido -> Date da coluna @db.Date; qualquer outra coisa -> null. */
+const diaDe = (s: unknown): Date | null => {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  const d = new Date(`${s}T00:00:00Z`);
+  return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === s ? d : null;
+};
+
+const fmtCobertura = (c: Cobertura) => ({
+  ...c,
+  inicio: c.inicio.toISOString().slice(0, 10),
+  fim: c.fim.toISOString().slice(0, 10),
+});
 
 export const MOTIVOS_DESFECHO = [
   'PRECO',
@@ -94,6 +132,22 @@ export class FilaService {
     }
 
     const mapa = new Map(clientes.map((c) => [c.cli_codigo, c]));
+    const ativas = await this.aplicarCoberturas();
+    const coberturaDo = new Map(ativas.map((c) => [c.rep_titular_codigo, c]));
+    // Cliente de titular coberto: a tarefa nasce no substituto, guardando o titular.
+    const executor = (cli: ClienteCarteira) => {
+      const c = cli.rep_codigo != null ? coberturaDo.get(cli.rep_codigo) : undefined;
+      if (!c) return { rep_codigo: cli.rep_codigo, rep_nome: cli.rep_nome };
+      return {
+        rep_codigo: c.rep_substituto_codigo,
+        rep_nome: c.rep_substituto_nome,
+        rep_titular_codigo: cli.rep_codigo,
+        rep_titular_nome: cli.rep_nome,
+        delegada_por: `cobertura:${c.id}`,
+        delegada_em: new Date(),
+        cobertura_id: c.id,
+      };
+    };
     const [emAndamento, msgEnviada] = await Promise.all([
       this.repo.tarefasEmAndamento(),
       // Terceiro sinal (sensor WAHA): mensagem enviada também é contato — sem o
@@ -111,7 +165,7 @@ export class FilaService {
         canceladas++;
         continue;
       }
-      if (cli.rep_codigo !== t.rep_codigo) {
+      if (cli.rep_codigo !== (t.rep_titular_codigo ?? t.rep_codigo)) {
         await this.repo.cancelarTarefa(
           t.id,
           `Carteira trocou de vendedor (${t.rep_nome ?? t.rep_codigo} → ${cli.rep_nome ?? cli.rep_codigo})`,
@@ -149,8 +203,7 @@ export class FilaService {
           tipo: 'RESGATE',
           cli_codigo: cli.cli_codigo,
           cli_nome: cli.cli_nome,
-          rep_codigo: cli.rep_codigo,
-          rep_nome: cli.rep_nome,
+          ...executor(cli),
           curva: cli.curva_abc,
           motivo_geracao: `Curva ${cli.curva_abc} a ${diasSemContato}d sem contato (resgate aos ${limiteResgate}d) — ${this.prazoResgateHoras}h para o primeiro contato`,
           prazo_em: new Date(agora + this.prazoResgateHoras * 3_600_000),
@@ -166,8 +219,7 @@ export class FilaService {
           tipo: 'CONTATO',
           cli_codigo: cli.cli_codigo,
           cli_nome: cli.cli_nome,
-          rep_codigo: cli.rep_codigo,
-          rep_nome: cli.rep_nome,
+          ...executor(cli),
           curva: cli.curva_abc,
           motivo_geracao: `Fora do ritmo: ${c.dias_sem_compra}d sem compra e costuma comprar a cada ${Math.round(c.intervalo_dias)}d`,
           prazo_em: new Date(agora + this.prazoContatoDias * DIA_MS),
@@ -182,8 +234,7 @@ export class FilaService {
           tipo: 'CONTATO',
           cli_codigo: cli.cli_codigo,
           cli_nome: cli.cli_nome,
-          rep_codigo: cli.rep_codigo,
-          rep_nome: cli.rep_nome,
+          ...executor(cli),
           curva: cli.curva_abc,
           motivo_geracao: `Curva ${cli.curva_abc}: ${semCompra}, ${semOrc} (régua ${limite}d)`,
           prazo_em: new Date(agora + this.prazoContatoDias * DIA_MS),
@@ -254,6 +305,7 @@ export class FilaService {
   }
 
   private async reconciliarAgora(clientes: ClienteCarteira[]) {
+    await this.aplicarCoberturas();
     const mapa = new Map(clientes.map((c) => [c.cli_codigo, c]));
     const [emAndamento, msgEnviada] = await Promise.all([
       this.repo.tarefasEmAndamento(),
@@ -300,6 +352,21 @@ export class FilaService {
     }
   }
 
+  /**
+   * Coloca as tarefas em andamento de acordo com as coberturas do dia: devolve
+   * ao titular o que veio de cobertura vencida/encerrada e passa ao substituto
+   * o que o titular coberto tem em mãos. Devolve as coberturas ativas.
+   */
+  private async aplicarCoberturas() {
+    const hoje = hojeCuiaba();
+    for (const id of await this.repo.coberturasVencidasComTarefas(hoje)) {
+      await this.repo.devolverTarefasDaCobertura(id);
+    }
+    const ativas = await this.repo.coberturasAtivas(hoje);
+    for (const c of ativas) await this.repo.delegarTarefasDoTitular(c.rep_titular_codigo, c);
+    return ativas;
+  }
+
   // ------------------------------------------------------------------ listar
   /** A fila do dia de um vendedor (ou de todos, no gerencial). */
   async listar(params: { rep_codigo?: number }) {
@@ -314,37 +381,7 @@ export class FilaService {
     ]);
 
     const mapa = new Map(clientes.map((c) => [c.cli_codigo, c]));
-    const enriquecer = (t: (typeof tarefas)[number]) => {
-      const cli = mapa.get(t.cli_codigo);
-      return {
-        id: t.id,
-        tipo: t.tipo,
-        status: t.status,
-        cli_codigo: t.cli_codigo,
-        cli_nome: cli?.cli_nome ?? t.cli_nome,
-        rep_codigo: t.rep_codigo,
-        rep_nome: t.rep_nome,
-        curva: t.curva,
-        motivo_geracao: t.motivo_geracao,
-        gerada_em: t.gerada_em,
-        prazo_em: t.prazo_em,
-        escalada_em: t.escalada_em,
-        concluida_em: t.concluida_em,
-        conclusao_sinal: t.conclusao_sinal,
-        // contexto do cliente para agir sem trocar de tela
-        fone: cli?.fone ?? null,
-        cidade: cli?.cidade ?? null,
-        uf: cli?.uf ?? null,
-        dias_sem_compra: cli?.dias_sem_compra ?? null,
-        dias_sem_orcamento: cli?.dias_sem_orcamento ?? null,
-        faturamento_3m: cli?.faturamento_3m ?? 0,
-        faturamento_total: cli?.faturamento_total ?? 0,
-        valor_orcado_90d: cli?.valor_orcado_90d ?? 0,
-        score: cli?.score ?? null,
-        quadrante: cli?.quadrante ?? null,
-        crediario_bloqueado: cli != null && cli.crediario != null && !cli.crediario_liberado,
-      };
-    };
+    const enriquecer = (t: Tarefa) => this.enriquecer(t, mapa.get(t.cli_codigo));
 
     // Escaladas primeiro (pauta do supervisor), depois pelo prazo mais apertado.
     const itens = tarefas.map(enriquecer).sort((a, b) => {
@@ -365,6 +402,147 @@ export class FilaService {
       itens,
       concluidas_hoje: concluidasHoje.map(enriquecer),
     };
+  }
+
+  private enriquecer(t: Tarefa, cli: ClienteCarteira | undefined) {
+    return {
+      id: t.id,
+      tipo: t.tipo,
+      status: t.status,
+      cli_codigo: t.cli_codigo,
+      cli_nome: cli?.cli_nome ?? t.cli_nome,
+      rep_codigo: t.rep_codigo,
+      rep_nome: t.rep_nome,
+      rep_titular_codigo: t.rep_titular_codigo,
+      rep_titular_nome: t.rep_titular_nome,
+      cobertura_id: t.cobertura_id,
+      curva: t.curva,
+      motivo_geracao: t.motivo_geracao,
+      gerada_em: t.gerada_em,
+      prazo_em: t.prazo_em,
+      escalada_em: t.escalada_em,
+      concluida_em: t.concluida_em,
+      conclusao_sinal: t.conclusao_sinal,
+      // contexto do cliente para agir sem trocar de tela
+      fone: cli?.fone ?? null,
+      cidade: cli?.cidade ?? null,
+      uf: cli?.uf ?? null,
+      dias_sem_compra: cli?.dias_sem_compra ?? null,
+      dias_sem_orcamento: cli?.dias_sem_orcamento ?? null,
+      faturamento_3m: cli?.faturamento_3m ?? 0,
+      faturamento_total: cli?.faturamento_total ?? 0,
+      valor_orcado_90d: cli?.valor_orcado_90d ?? 0,
+      score: cli?.score ?? null,
+      quadrante: cli?.quadrante ?? null,
+      crediario_bloqueado: cli != null && cli.crediario != null && !cli.crediario_liberado,
+    };
+  }
+
+  // ------------------------------------------------------ delegar (passar)
+  /**
+   * A supervisão passa uma tarefa em andamento a outro vendedor sem mexer na
+   * carteira. O titular é preservado: passar de novo mantém o dono original,
+   * e a geração segue comparando a carteira com ele.
+   */
+  async delegar(id: string, dto: DelegarTarefaDto) {
+    const u = await this.exigirGestao(dto.usuario_id, 'passam tarefas entre vendedores');
+
+    const t = await this.repo.obterTarefa(id);
+    if (!t || (t.status !== 'ABERTA' && t.status !== 'ESCALADA')) {
+      throw new BadRequestException('Só dá para passar tarefa aberta ou escalada.');
+    }
+    const rep = Number(dto.rep_codigo);
+    if (!Number.isInteger(rep) || rep <= 0) throw new BadRequestException('Informe o vendedor de destino.');
+    if (rep === t.rep_codigo) throw new BadRequestException('A tarefa já está com este vendedor.');
+    const rep_nome = await this.carteirizacao.resolverNomeRep(rep);
+    if (!rep_nome) throw new BadRequestException('Vendedor inexistente.');
+
+    const titular = t.rep_titular_codigo ?? t.rep_codigo;
+    const titularNome = t.rep_titular_codigo != null ? t.rep_titular_nome : t.rep_nome;
+    // Voltar ao titular desfaz a passagem (a tarefa deixa de aparecer como "cobrindo").
+    const devolvida = rep === titular;
+    const atualizada = await this.repo.delegarTarefa(id, {
+      rep_codigo: rep,
+      rep_nome,
+      rep_titular_codigo: devolvida ? null : titular,
+      rep_titular_nome: devolvida ? null : titularNome,
+      delegada_por: u.nome,
+      delegada_em: new Date(),
+      cobertura_id: null,
+    });
+    const clientes = await this.carteirizacao.snapshotCarteira();
+    return this.enriquecer(atualizada, clientes.find((c) => c.cli_codigo === atualizada.cli_codigo));
+  }
+
+  private async exigirGestao(usuario_id: string | undefined, acao: string) {
+    const u = await this.repo.usuarioVendas(usuario_id);
+    if (!u) throw new ForbiddenException('Usuário não identificado: entre de novo na intranet e tente outra vez.');
+    if (!ehGestaoVendas(u)) throw new ForbiddenException(`Só a supervisão e a gerência ${acao}.`);
+    return u;
+  }
+
+  // ----------------------------------------------- cobertura por período
+  /** Ativas, futuras e as que acabaram nos últimos 30 dias. */
+  async coberturas(usuario_id?: string) {
+    await this.exigirGestao(usuario_id, 'veem as coberturas de ausência');
+    const lista = await this.repo.listarCoberturas(new Date(hojeCuiaba().getTime() - 30 * DIA_MS));
+    return lista.map(fmtCobertura);
+  }
+
+  async criarCobertura(dto: CriarCoberturaDto) {
+    const u = await this.exigirGestao(dto.usuario_id, 'cadastram cobertura de ausência');
+    const titular = Number(dto.rep_titular_codigo);
+    const substituto = Number(dto.rep_substituto_codigo);
+    if (!Number.isInteger(titular) || titular <= 0) throw new BadRequestException('Informe o vendedor ausente.');
+    if (!Number.isInteger(substituto) || substituto <= 0) throw new BadRequestException('Informe o vendedor que vai cobrir.');
+    if (substituto === titular) throw new BadRequestException('O substituto precisa ser outro vendedor.');
+    const inicio = diaDe(dto.inicio);
+    const fim = diaDe(dto.fim);
+    if (!inicio || !fim) throw new BadRequestException('Data inválida: informe início e fim no formato AAAA-MM-DD.');
+    if (fim < inicio) throw new BadRequestException('A data final não pode ser antes da inicial.');
+
+    const [titularNome, substitutoNome] = await Promise.all([
+      this.carteirizacao.resolverNomeRep(titular),
+      this.carteirizacao.resolverNomeRep(substituto),
+    ]);
+    if (!titularNome || !substitutoNome) throw new BadRequestException('Vendedor inexistente.');
+
+    const [doTitular, doSubstituto] = await Promise.all([
+      this.repo.coberturasSobrepostas(titular, inicio, fim),
+      this.repo.coberturasSobrepostas(substituto, inicio, fim),
+    ]);
+    if (doTitular.some((c) => c.rep_titular_codigo === titular)) {
+      throw new BadRequestException(`${titularNome} já tem cobertura que cruza esse período.`);
+    }
+    if (doTitular.some((c) => c.rep_substituto_codigo === titular)) {
+      throw new BadRequestException(`${titularNome} está cobrindo outro vendedor nesse período.`);
+    }
+    if (doSubstituto.some((c) => c.rep_titular_codigo === substituto)) {
+      throw new BadRequestException(`${substitutoNome} também está ausente (coberto) nesse período.`);
+    }
+
+    const criada = await this.repo.criarCobertura({
+      rep_titular_codigo: titular,
+      rep_titular_nome: titularNome,
+      rep_substituto_codigo: substituto,
+      rep_substituto_nome: substitutoNome,
+      inicio,
+      fim,
+      criado_por: u.nome,
+    });
+    // Começando hoje, as tarefas abertas do titular já passam agora.
+    await this.aplicarCoberturas();
+    return fmtCobertura(criada);
+  }
+
+  async encerrarCobertura(id: string, dto: EncerrarCoberturaDto) {
+    const u = await this.exigirGestao(dto.usuario_id, 'encerram cobertura de ausência');
+    const c = await this.repo.obterCobertura(id);
+    if (!c) throw new BadRequestException('Cobertura não encontrada.');
+    if (c.encerrada_em) throw new BadRequestException('Esta cobertura já foi encerrada.');
+    const cobertura = await this.repo.encerrarCobertura(id, u.nome);
+    const devolvidas = await this.repo.devolverTarefasDaCobertura(id);
+    return { cobertura: fmtCobertura(cobertura), devolvidas };
   }
 
   // ------------------------------------------------------ desfecho (motivo)

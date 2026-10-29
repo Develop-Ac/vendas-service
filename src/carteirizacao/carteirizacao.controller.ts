@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   ParseIntPipe,
   Post,
@@ -20,6 +21,9 @@ import {
   ConfigVendedorDto,
   ConfirmarCarteirizacaoDto,
   ConfirmarExclusaoDto,
+  CriarCoberturaDto,
+  DelegarTarefaDto,
+  EncerrarCoberturaDto,
   DesfechoOrcamentoDto,
   GravarMetaAtacadoDto,
   ListarClientesQuery,
@@ -140,6 +144,31 @@ export class CarteirizacaoController {
   @Post('fila/gerar')
   gerarFila() {
     return this.fila.gerar();
+  }
+
+  // Supervisão/gerência passa a tarefa a outro vendedor; a carteira não muda.
+  // Quem age vem do `x-user-id` que o proxy da intranet injeta a partir da
+  // sessão — o `usuario_id` do body é sempre descartado.
+  @Post('fila/:id/delegar')
+  delegarTarefa(@Param('id') id: string, @Body() dto: DelegarTarefaDto, @Headers('x-user-id') usuario?: string) {
+    return this.fila.delegar(id, { ...dto, usuario_id: usuario });
+  }
+
+  // Cobertura de ausência por período: as tarefas do titular vão ao substituto
+  // enquanto valer e voltam ao fim (data passou ou "encerrar agora"). Só gestão.
+  @Get('coberturas')
+  coberturas(@Headers('x-user-id') usuario?: string) {
+    return this.fila.coberturas(usuario);
+  }
+
+  @Post('coberturas')
+  criarCobertura(@Body() dto: CriarCoberturaDto, @Headers('x-user-id') usuario?: string) {
+    return this.fila.criarCobertura({ ...dto, usuario_id: usuario });
+  }
+
+  @Post('coberturas/:id/encerrar')
+  encerrarCobertura(@Param('id') id: string, @Body() dto: EncerrarCoberturaDto, @Headers('x-user-id') usuario?: string) {
+    return this.fila.encerrarCobertura(id, { ...dto, usuario_id: usuario });
   }
 
   // ---------------------------------------- Esteira de resgate (fase 1, S3)

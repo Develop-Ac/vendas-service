@@ -71,6 +71,37 @@ Lê FONE e CELULAR do cadastro do atacado no ERP (celular vence o fixo) e grava
 as chaves DDD+8 em `ven_wa_contato`. Idempotente; vínculo manual nunca é
 sobrescrito pela semente.
 
+### Vínculo pela agenda do celular (origem `AGENDA`)
+
+O vendedor salva o contato no celular corporativo com o código do cliente no
+nome — `40289 João`, `João 40289` ou `C40289`. Vale quando exatamente um bloco
+de 3 a 6 dígitos do nome é código de cliente do atacado (`src/whatsapp/agenda.ts`);
+o resto do nome vira `contato_nome` (a pessoa do cliente).
+
+- **Na hora (webhook):** mensagem de número sem vínculo (e fora de "Não é
+  cliente") consulta o nome na agenda da sessão e, se achar o código, vincula e
+  grava a mensagem já com o cliente. A lista de códigos do atacado fica 10 min em
+  cache.
+- **Varredura diária:** a carga das 5h, logo depois da semente, lê a agenda
+  inteira de cada sessão `rep-*` com status `WORKING` (`GET /api/sessions` e
+  `GET /api/contacts/all` do WAHA, 60 s por sessão; sessão que falha não para as
+  outras). Disparo manual: `POST /whatsapp/contatos/varrer-agendas` →
+  `{ sessoes, contatos_lidos, vinculados, divergencias }`.
+- **A agenda nunca sobrescreve.** Número já vinculado ao mesmo cliente só ganha o
+  `contato_nome` se estiver vazio. Vinculado a outro cliente vira linha em
+  `ven_wa_agenda_divergencia` (uma por número, `visto_em` atualizado a cada
+  leitura) e o vínculo atual fica como está.
+- **Divergências:** `GET /whatsapp/contatos/divergencias` (com o nome dos dois
+  clientes); `POST /whatsapp/contatos/divergencias/:chave/resolver
+  { acao: 'manter' | 'agenda' }` — só gestão de vendas. `agenda`
+  revincula ao cliente da agenda e conserta o histórico do número; as duas
+  ações apagam a divergência.
+- **Quem age:** vincular, consultar os números de um cliente, apagar,
+  divergências e varredura manual leem o usuário do header `x-user-id` (id do
+  `sis_usuarios`), que o proxy da intranet (`/api/proxy/vendas`) injeta a partir
+  da sessão. `usuario_id` no body ou na query é ignorado. Gestão faz tudo; o
+  vendedor só consulta e adiciona número de cliente da própria carteira.
+
 ## 5. Acompanhar o piloto
 
 - `GET /whatsapp/medicoes` — total de mensagens, **taxa de casamento**,

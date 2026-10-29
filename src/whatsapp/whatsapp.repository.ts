@@ -56,12 +56,21 @@ export class WhatsappRepository {
     cli_codigo: number;
     cli_nome?: string | null;
     criado_por?: string | null;
+    contato_nome?: string | null;
+    origem?: 'MANUAL' | 'AGENDA';
   }) {
-    const { chave, ...resto } = params;
+    const { chave, origem = 'MANUAL', ...resto } = params;
+    // Mesmo cliente = só ajuste de nome: origem e autor ficam (o número do ERP
+    // continua do ERP). Cliente novo = vínculo novo, com a origem de quem vinculou.
+    const atual = await this.prisma.ven_wa_contato.findUnique({ where: { chave }, select: { cli_codigo: true } });
+    const { criado_por, ...ajuste } = resto;
     const contato = await this.prisma.ven_wa_contato.upsert({
       where: { chave },
-      create: { chave, ...resto, origem: 'MANUAL' },
-      update: { ...resto, origem: 'MANUAL', updated_at: new Date() },
+      create: { chave, ...resto, origem },
+      update:
+        atual?.cli_codigo === params.cli_codigo
+          ? { ...ajuste, updated_at: new Date() }
+          : { ...resto, origem, updated_at: new Date() },
     });
     const msgs = await this.prisma.ven_wa_mensagem.updateMany({
       where: { chave },
@@ -70,6 +79,86 @@ export class WhatsappRepository {
     // vincular desfaz um "não é cliente" marcado antes
     await this.prisma.ven_wa_contato_ignorado.deleteMany({ where: { chave } }).catch(() => undefined);
     return { contato, mensagens_resolvidas: msgs.count };
+  }
+
+  /** Números vinculados ao cliente (ERP, manual e agenda), do mais antigo ao mais novo. */
+  async contatosDoCliente(cli_codigo: number) {
+    return this.prisma.ven_wa_contato.findMany({
+      where: { cli_codigo },
+      orderBy: { created_at: 'asc' },
+      select: { telefone: true, chave: true, contato_nome: true, origem: true, criado_por: true, created_at: true },
+    });
+  }
+
+  /** Desfaz o vínculo: as mensagens da chave voltam para a fila de vínculo. */
+  async removerContato(chave: string) {
+    await this.prisma.$transaction([
+      this.prisma.ven_wa_contato.delete({ where: { chave } }),
+      this.prisma.ven_wa_mensagem.updateMany({ where: { chave }, data: { cli_codigo: null } }),
+    ]);
+  }
+
+  /**
+   * Usuário da intranet pelo id (cuid do /login/me), com o papel de vendas e o
+   * vendedor que ele é. O código de login não vale: é conhecido de todos.
+   */
+  async usuarioVendas(ref: string | null | undefined) {
+    const r = (ref ?? '').trim();
+    if (!r) return null;
+    return this.prisma.sis_usuarios.findFirst({
+      where: { trash: 0, id: r },
+      select: { id: true, codigo: true, nome: true, setor: true, vendas_hub_inicial: true, vendas_rep_codigo: true },
+    });
+  }
+
+  /** Vendedor dono do cliente na carteira da intranet (null = sem dono). */
+  async donoDaCarteira(cli_codigo: number): Promise<number | null> {
+    const c = await this.prisma.ven_carteira_cliente.findFirst({ where: { cli_codigo, trash: 0 }, select: { rep_codigo: true } });
+    return c?.rep_codigo ?? null;
+  }
+
+  /** Nome da pessoa vindo da agenda: só preenche quando ainda está vazio. */
+  async preencherContatoNome(chave: string, contato_nome: string) {
+    return this.prisma.ven_wa_contato.updateMany({ where: { chave, contato_nome: null }, data: { contato_nome } });
+  }
+
+  // ------------------------------------------------- divergências da agenda
+  /** Agenda aponta outro cliente para uma chave já vinculada: registra, nunca sobrescreve. */
+  async upsertDivergencia(d: { chave: string; sessao: string; nome_agenda: string | null; cli_agenda: number; cli_vinculado: number }) {
+    const { chave, ...resto } = d;
+    const atual = await this.prisma.ven_wa_agenda_divergencia.findUnique({ where: { chave } });
+    // A gestão já mandou manter este mesmo par: a agenda repetida não reabre.
+    if (atual?.mantida_em && atual.cli_agenda === d.cli_agenda && atual.cli_vinculado === d.cli_vinculado) return atual;
+    return this.prisma.ven_wa_agenda_divergencia.upsert({
+      where: { chave },
+      create: d,
+      update: { ...resto, visto_em: new Date(), mantida_em: null },
+    });
+  }
+
+  /** 'Manter': a divergência fica guardada como decidida e some da tela. */
+  async manterDivergencia(chave: string) {
+    return this.prisma.ven_wa_agenda_divergencia.updateMany({ where: { chave }, data: { mantida_em: new Date() } });
+  }
+
+  async divergencia(chave: string) {
+    return this.prisma.ven_wa_agenda_divergencia.findUnique({ where: { chave } });
+  }
+
+  /** Divergências abertas, mais recentes primeiro, com o telefone do vínculo atual. */
+  async listarDivergencias() {
+    const ds = await this.prisma.ven_wa_agenda_divergencia.findMany({ where: { mantida_em: null }, orderBy: { visto_em: 'desc' } });
+    if (!ds.length) return [];
+    const fones = await this.prisma.ven_wa_contato.findMany({
+      where: { chave: { in: ds.map((d) => d.chave) } },
+      select: { chave: true, telefone: true },
+    });
+    const porChave = new Map(fones.map((f) => [f.chave, f.telefone]));
+    return ds.map((d) => ({ ...d, telefone: porChave.get(d.chave) ?? null }));
+  }
+
+  async apagarDivergencia(chave: string) {
+    return this.prisma.ven_wa_agenda_divergencia.deleteMany({ where: { chave } });
   }
 
   // ------------------------------------------------- "não é cliente"

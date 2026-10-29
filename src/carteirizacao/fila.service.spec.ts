@@ -1,5 +1,5 @@
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
-import { ServiceUnavailableException } from '@nestjs/common';
+import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { FilaService } from './fila.service';
 import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
@@ -73,6 +73,8 @@ describe('FilaService', () => {
   let escaladas: string[];
   let canceladas: Array<{ id: string; obs: string }>;
   let msgEnviadaPorCliente: Map<number, Date>;
+  let usuario: any;
+  let delegadas: Array<{ id: string; data: any }>;
 
   const repo = {
     tarefasEmAndamento: jest.fn(async () => tarefasEmAndamento),
@@ -96,11 +98,49 @@ describe('FilaService', () => {
     orcamentosComDesfecho: jest.fn(async () => new Set()),
     resumoMotivosDesde: jest.fn(async () => []),
     upsertDesfecho: jest.fn(async (p: any) => p),
+    usuarioVendas: jest.fn(async () => usuario),
+    obterTarefa: jest.fn(async (id: string) => tarefasEmAndamento.find((t) => t.id === id) ?? null),
+    delegarTarefa: jest.fn(async (id: string, data: any) => {
+      delegadas.push({ id, data });
+      return { ...tarefasEmAndamento.find((t) => t.id === id), ...data };
+    }),
+    // cobertura por período
+    coberturasVencidasComTarefas: jest.fn(async () => vencidas),
+    coberturasAtivas: jest.fn(async () => ativas),
+    coberturasSobrepostas: jest.fn(async (rep: number) =>
+      sobrepostas.filter((c) => c.rep_titular_codigo === rep || c.rep_substituto_codigo === rep),
+    ),
+    delegarTarefasDoTitular: jest.fn(async () => ({ count: 0 })),
+    devolverTarefasDaCobertura: jest.fn(async () => 2),
+    criarCobertura: jest.fn(async (data: any) => ({ id: 'cNova', ...data, encerrada_em: null })),
+    obterCobertura: jest.fn(async (id: string) => sobrepostas.find((c) => c.id === id) ?? null),
+    encerrarCobertura: jest.fn(async (id: string, por: string) => ({
+      ...sobrepostas.find((c) => c.id === id),
+      encerrada_em: new Date(),
+      encerrada_por: por,
+    })),
   } as unknown as CarteirizacaoPrismaRepository;
 
   const carteirizacao = {
     snapshotCarteira: jest.fn(async () => clientes),
+    resolverNomeRep: jest.fn(async (rep: number) =>
+      rep === 77 ? 'SUBSTITUTO' : rep === 10 ? 'VENDEDOR' : rep === 20 ? 'OUTRO' : null,
+    ),
   } as unknown as CarteirizacaoService;
+  let vencidas: string[];
+  let ativas: any[];
+  let sobrepostas: any[];
+  const cob = (over: any = {}) => ({
+    id: 'c1',
+    rep_titular_codigo: 10,
+    rep_titular_nome: 'VENDEDOR',
+    rep_substituto_codigo: 77,
+    rep_substituto_nome: 'SUBSTITUTO',
+    inicio: new Date('2026-11-03T00:00:00Z'),
+    fim: new Date('2026-11-14T00:00:00Z'),
+    encerrada_em: null,
+    ...over,
+  });
 
   const avisosVendas = { filaDia: jest.fn(async () => undefined), filaEscalada: jest.fn(async () => undefined), resgateSla: jest.fn(async () => undefined), orcamentoVencendo: jest.fn(async () => undefined), escaladasSupervisor: jest.fn(async () => undefined) } as unknown as AvisosVendasService;
   const service = new FilaService(carteirizacao, repo, avisosVendas);
@@ -113,7 +153,75 @@ describe('FilaService', () => {
     escaladas = [];
     canceladas = [];
     msgEnviadaPorCliente = new Map();
+    usuario = { id: 'u1', nome: 'SUPERVISOR', vendas_hub_inicial: 'SUPERVISAO_ATACADO', setor: null };
+    delegadas = [];
+    vencidas = [];
+    ativas = [];
+    sobrepostas = [];
     jest.clearAllMocks();
+  });
+
+  // ------------------------------------------------------------- cobertura
+  it('cobertura ativa: passa as abertas do titular e a tarefa nova nasce no substituto', async () => {
+    ativas = [cob()];
+    clientes = [cliente({ cli_codigo: 1, curva_abc: 'A', dias_sem_compra: 20, dias_sem_orcamento: 20 })];
+    await service.gerar();
+    expect((repo as any).delegarTarefasDoTitular).toHaveBeenCalledWith(10, ativas[0]);
+    expect(criadas).toHaveLength(1);
+    expect(criadas[0]).toMatchObject({
+      rep_codigo: 77,
+      rep_nome: 'SUBSTITUTO',
+      rep_titular_codigo: 10,
+      rep_titular_nome: 'VENDEDOR',
+      cobertura_id: 'c1',
+      delegada_por: 'cobertura:c1',
+    });
+  });
+
+  it('cobertura vencida/encerrada devolve as tarefas dela na leitura', async () => {
+    vencidas = ['cVelha'];
+    await service.listar({});
+    expect((repo as any).devolverTarefasDaCobertura).toHaveBeenCalledWith('cVelha');
+  });
+
+  it('encerrar devolve só as tarefas da cobertura (avulsa não volta)', async () => {
+    sobrepostas = [cob()];
+    const r = await service.encerrarCobertura('c1', { usuario_id: 'u1' });
+    expect(r.devolvidas).toBe(2);
+    expect(r.cobertura).toMatchObject({ id: 'c1', inicio: '2026-11-03', fim: '2026-11-14', encerrada_por: 'SUPERVISOR' });
+    // a devolução é por cobertura_id; tarefa passada avulsa não é tocada
+    expect((repo as any).devolverTarefasDaCobertura).toHaveBeenCalledWith('c1');
+    expect((repo as any).delegarTarefa).not.toHaveBeenCalled();
+    sobrepostas = [cob({ encerrada_em: new Date() })];
+    await expect(service.encerrarCobertura('c1', { usuario_id: 'u1' })).rejects.toThrow(/já foi encerrada/);
+  });
+
+  it('listar coberturas exige gestão identificada', async () => {
+    usuario = null;
+    await expect(service.coberturas(undefined)).rejects.toThrow(/não identificado/);
+    usuario = { id: 'u2', nome: 'VENDEDOR', vendas_hub_inicial: 'ATACADO', setor: null };
+    await expect(service.coberturas('u2')).rejects.toThrow(/Só a supervisão/);
+  });
+
+  it('criar cobertura: valida gestão, datas, substituto e sobreposição', async () => {
+    const base = { rep_titular_codigo: 10, rep_substituto_codigo: 77, inicio: '2026-11-03', fim: '2026-11-14', usuario_id: 'u1' };
+    const ok = await service.criarCobertura(base);
+    expect(ok).toMatchObject({ rep_titular_nome: 'VENDEDOR', rep_substituto_nome: 'SUBSTITUTO', inicio: '2026-11-03' });
+    expect((repo as any).coberturasAtivas).toHaveBeenCalled(); // aplica na hora
+
+    usuario = { id: 'u2', nome: 'VENDEDOR', vendas_hub_inicial: 'ATACADO', setor: null };
+    await expect(service.criarCobertura(base)).rejects.toThrow(ForbiddenException);
+    usuario = { id: 'u1', nome: 'SUPERVISOR', vendas_hub_inicial: 'SUPERVISAO_ATACADO', setor: null };
+
+    await expect(service.criarCobertura({ ...base, rep_substituto_codigo: 10 })).rejects.toThrow(/outro vendedor/);
+    await expect(service.criarCobertura({ ...base, fim: '2026-11-01' })).rejects.toThrow(/antes da inicial/);
+    await expect(service.criarCobertura({ ...base, inicio: '2026-02-30' })).rejects.toThrow(/Data inválida/);
+
+    sobrepostas = [cob({ id: 'cX', inicio: new Date('2026-11-10T00:00:00Z'), fim: new Date('2026-11-20T00:00:00Z'), rep_substituto_codigo: 20 })];
+    await expect(service.criarCobertura(base)).rejects.toThrow(/já tem cobertura/);
+
+    sobrepostas = [cob({ id: 'cY', rep_titular_codigo: 77, rep_substituto_codigo: 20 })];
+    await expect(service.criarCobertura(base)).rejects.toThrow(/também está ausente/);
   });
 
   // ------------------------------------------------------------------ gerar
@@ -199,6 +307,42 @@ describe('FilaService', () => {
     expect(canceladas).toHaveLength(1);
     expect(criadas).toHaveLength(1);
     expect(criadas[0].rep_codigo).toBe(99);
+  });
+
+  it('tarefa passada a outro vendedor sobrevive à geração (carteira = titular)', async () => {
+    clientes = [cliente({ cli_codigo: 1, rep_codigo: 10, curva_abc: 'A', dias_sem_compra: 30, dias_sem_orcamento: 30 })];
+    tarefasEmAndamento = [
+      { id: 't1', cli_codigo: 1, rep_codigo: 77, rep_nome: 'SUBSTITUTO', rep_titular_codigo: 10, rep_titular_nome: 'VENDEDOR', status: 'ABERTA', gerada_em: new Date(), prazo_em: new Date(Date.now() + DIA_MS) },
+    ];
+    await service.gerar();
+    expect(canceladas).toHaveLength(0);
+    expect(criadas).toHaveLength(0);
+  });
+
+  it('troca real de carteira cancela mesmo tarefa passada adiante', async () => {
+    clientes = [cliente({ cli_codigo: 1, rep_codigo: 99, rep_nome: 'NOVO', curva_abc: 'A', dias_sem_compra: 30, dias_sem_orcamento: 30 })];
+    tarefasEmAndamento = [
+      { id: 't1', cli_codigo: 1, rep_codigo: 77, rep_nome: 'SUBSTITUTO', rep_titular_codigo: 10, rep_titular_nome: 'VENDEDOR', status: 'ABERTA', gerada_em: new Date(), prazo_em: new Date(Date.now() + DIA_MS) },
+    ];
+    await service.gerar();
+    expect(canceladas.map((c) => c.id)).toEqual(['t1']);
+    expect(criadas[0].rep_codigo).toBe(99);
+  });
+
+  it('delegar: só a gestão passa; guarda o titular e devolve a tarefa enriquecida', async () => {
+    clientes = [cliente({ cli_codigo: 1 })];
+    tarefasEmAndamento = [
+      { id: 't1', cli_codigo: 1, rep_codigo: 10, rep_nome: 'VENDEDOR', rep_titular_codigo: null, rep_titular_nome: null, status: 'ABERTA', gerada_em: new Date(), prazo_em: new Date(Date.now() + DIA_MS) },
+    ];
+    usuario = { id: 'u2', nome: 'VENDEDOR', vendas_hub_inicial: 'VENDEDOR', setor: 'VENDAS' };
+    await expect(service.delegar('t1', { rep_codigo: 77, usuario_id: 'u2' })).rejects.toThrow(ForbiddenException);
+    expect(delegadas).toHaveLength(0);
+
+    usuario = { id: 'u1', nome: 'SUPERVISOR', vendas_hub_inicial: 'SUPERVISAO_ATACADO', setor: null };
+    const r = await service.delegar('t1', { rep_codigo: 77, usuario_id: 'u1' });
+    expect(delegadas[0].data).toMatchObject({ rep_codigo: 77, rep_nome: 'SUBSTITUTO', rep_titular_codigo: 10, rep_titular_nome: 'VENDEDOR', delegada_por: 'SUPERVISOR' });
+    expect(r).toMatchObject({ id: 't1', rep_codigo: 77, rep_titular_codigo: 10, fone: '65999990000' });
+    await expect(service.delegar('t1', { rep_codigo: 10, usuario_id: 'u1' })).rejects.toThrow(/já está com este vendedor/);
   });
 
   it('recusa gerar sem a leitura de orçamentos (quadrantes nulos)', async () => {

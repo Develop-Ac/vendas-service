@@ -2113,28 +2113,51 @@ model ven_encomenda_pecas_itens_encomendados {
 }
 
 model ven_fila_tarefa {
-  id              String    @id @default(cuid())
-  tipo            String
-  cli_codigo      Int
-  cli_nome        String?
-  rep_codigo      Int?
-  rep_nome        String?
-  curva           String?
-  motivo_geracao  String?
-  gerada_em       DateTime  @default(now()) @db.Timestamptz(6)
-  prazo_em        DateTime  @db.Timestamptz(6)
-  status          String    @default("ABERTA")
-  escalada_em     DateTime? @db.Timestamptz(6)
-  concluida_em    DateTime? @db.Timestamptz(6)
-  conclusao_sinal String?
-  conclusao_obs   String?
-  created_at      DateTime  @default(now()) @db.Timestamptz(6)
-  updated_at      DateTime  @default(now()) @db.Timestamptz(6)
+  id                 String    @id @default(cuid())
+  tipo               String
+  cli_codigo         Int
+  cli_nome           String?
+  rep_codigo         Int?
+  rep_nome           String?
+  curva              String?
+  motivo_geracao     String?
+  gerada_em          DateTime  @default(now()) @db.Timestamptz(6)
+  prazo_em           DateTime  @db.Timestamptz(6)
+  status             String    @default("ABERTA")
+  escalada_em        DateTime? @db.Timestamptz(6)
+  concluida_em       DateTime? @db.Timestamptz(6)
+  conclusao_sinal    String?
+  conclusao_obs      String?
+  created_at         DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at         DateTime  @default(now()) @db.Timestamptz(6)
+  /// vendedor dono da carteira quando a tarefa está com outro (delegada ou em cobertura)
+  rep_titular_codigo Int?
+  rep_titular_nome   String?
+  delegada_por       String?
+  delegada_em        DateTime? @db.Timestamptz(6)
+  cobertura_id       String?
 
   @@index([cli_codigo], map: "idx_ven_fila_tarefa_cli")
   @@index([gerada_em], map: "idx_ven_fila_tarefa_gerada")
   @@index([rep_codigo, status], map: "idx_ven_fila_tarefa_rep_status")
   @@index([status, prazo_em], map: "idx_ven_fila_tarefa_status_prazo")
+}
+
+/// período em que o substituto recebe as tarefas da fila do titular
+model ven_fila_cobertura {
+  id                    String    @id @default(cuid())
+  rep_titular_codigo    Int
+  rep_titular_nome      String?
+  rep_substituto_codigo Int
+  rep_substituto_nome   String?
+  inicio                DateTime  @db.Date
+  fim                   DateTime  @db.Date
+  criado_por            String?
+  created_at            DateTime  @default(now()) @db.Timestamptz(6)
+  encerrada_em          DateTime? @db.Timestamptz(6)
+  encerrada_por         String?
+
+  @@index([rep_titular_codigo, fim], map: "idx_ven_fila_cobertura_titular_fim")
 }
 
 model ven_meta_vendedor {
@@ -2432,17 +2455,31 @@ model ven_subgrupo_relacionado {
 }
 
 model ven_wa_contato {
-  id         String   @id @default(cuid())
-  chave      String   @unique(map: "uq_ven_wa_contato_chave")
-  telefone   String
-  cli_codigo Int
-  cli_nome   String?
-  origem     String   @default("SEED_ERP")
-  criado_por String?
-  created_at DateTime @default(now()) @db.Timestamptz(6)
-  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  id           String   @id @default(cuid())
+  chave        String   @unique(map: "uq_ven_wa_contato_chave")
+  telefone     String
+  cli_codigo   Int
+  cli_nome     String?
+  origem       String   @default("SEED_ERP")
+  criado_por   String?
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+  updated_at   DateTime @default(now()) @db.Timestamptz(6)
+  /// nome da pessoa do cliente dona do número (ex.: "João" da agenda "40289 João")
+  contato_nome String?
 
   @@index([cli_codigo], map: "idx_ven_wa_contato_cli")
+}
+
+/// número já vinculado a um cliente cujo nome na agenda da sessão aponta outro cliente
+model ven_wa_agenda_divergencia {
+  chave         String   @id
+  sessao        String
+  nome_agenda   String?
+  cli_agenda    Int
+  cli_vinculado Int
+  visto_em      DateTime @default(now()) @db.Timestamptz(6)
+  /// gestão mandou manter o vínculo; a varredura não reabre o mesmo par
+  mantida_em    DateTime? @db.Timestamptz(6)
 }
 
 model ven_wa_contato_ignorado {

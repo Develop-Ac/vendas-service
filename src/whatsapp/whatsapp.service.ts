@@ -1,9 +1,11 @@
-import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { ehGestaoVendas } from '../carteirizacao/papel';
 import { Cron } from '@nestjs/schedule';
 import { ErpApiService } from '../common/erp-api/erp-api.service';
 import { S3Service } from '../storage/s3.service';
 import { WhatsappRepository, MensagemRow } from './whatsapp.repository';
 import { ClienteCadastro, ConversaSemCliente, OrcamentoJanela, sugerirVinculos } from './sugestao-vinculo';
+import { codigoDaAgenda } from './agenda';
 
 /**
  * Sensor WhatsApp do CRM do Atacado (piloto WAHA).
@@ -21,6 +23,12 @@ import { ClienteCadastro, ConversaSemCliente, OrcamentoJanela, sugerirVinculos }
  *
  * Convenção de sessão: `rep-<codigo>` (ex.: rep-316). É dela que sai o vendedor
  * dono do contato; sessão fora do padrão é registrada sem rep.
+ *
+ * VÍNCULO PELA AGENDA: o vendedor salva o contato no celular corporativo com o
+ * código do cliente no nome ("40289 João"). Número sem vínculo que conversa é
+ * lido na agenda na hora (webhook) e a varredura diária lê a agenda inteira de
+ * cada sessão `rep-*`. A agenda nunca sobrescreve: chave já vinculada a outro
+ * cliente vira divergência para a gestão decidir.
  *
  * A mensagem ENVIADA é o terceiro sinal de auto-conclusão da fila do dia
  * (FilaService), ao lado do orçamento e da venda.
@@ -151,7 +159,9 @@ export class WhatsappService {
    */
   private lidCache = new Map<string, string>();
   private agendaCache = new Map<string, string | null>();
+  private agendaLida = new Map<string, number>();
   private sugestoesCache: { chave: string; em: number; valor: unknown } | null = null;
+  private atacadoCache: { em: number; nomes: Map<number, string>; codigos: Set<number> } | null = null;
   private transcrevendo = false;
   private historicos = new Map<string, HistoricoEstado>();
 
@@ -249,7 +259,7 @@ export class WhatsappService {
       telefone = (await this.resolverLid(sessao, telefone)) ?? telefone;
     }
     const chave = chaveTelefone(telefone);
-    const cli_codigo = chave ? await this.repo.resolverChave(chave) : null;
+    let cli_codigo = chave ? await this.repo.resolverChave(chave) : null;
     // WEBJS manda `type`; NOWEB não (o `_data` é a mensagem crua do Baileys),
     // então o tipo sai da mídia: texto → 'chat', mídia → prefixo do mimetype.
     const mimeMidia = (p.media?.mimetype ?? p._data?.mimetype ?? '').toString();
@@ -262,6 +272,23 @@ export class WhatsappService {
     // Reentrega do webhook ou histórico repetindo o que já entrou: sai antes de baixar mídia.
     if (await this.repo.existe(sessao, String(p.id))) {
       return { gravada: false, casada: cli_codigo != null, midia: false, duplicada: true };
+    }
+
+    // Número sem vínculo: o nome salvo na agenda pode trazer o código do cliente.
+    // Uma leitura por número a cada 10 min (o vendedor costuma salvar o contato
+    // depois da 1ª conversa; a varredura diária pega o resto). Falha do WAHA ou
+    // do ERP não pode custar a mensagem: segue sem vínculo.
+    if (chave && cli_codigo == null && this.agendaVencida(sessao, chave)) {
+      try {
+        if (!(await this.repo.chavesIgnoradas()).has(chave)) {
+          const nome = await this.nomeAgenda(sessao, chave, telefone, true);
+          if ((await this.vincularPelaAgenda(sessao, chave, telefone, nome)) === 'vinculado') {
+            cli_codigo = await this.repo.resolverChave(chave);
+          }
+        }
+      } catch (e) {
+        this.logger.warn(`Vínculo pela agenda de ${chave} não lido: ${(e as Error).message}`);
+      }
     }
 
     let conteudo: Pick<MensagemRow, 'corpo' | 'midia_chave' | 'midia_mime' | 'transcricao_status'> = {};
@@ -715,10 +742,24 @@ export class WhatsappService {
     return vazio;
   }
 
-  /** Nome do contato: o salvo na agenda do celular corporativo, senão o do perfil. */
-  private async nomeAgenda(sessao: string, chave: string, telefone: string): Promise<string | null> {
+  /** Número ainda não lido na agenda nos últimos 10 min (e marca a leitura). */
+  private agendaVencida(sessao: string, chave: string): boolean {
     const k = `${sessao}|${chave}`;
-    if (this.agendaCache.has(k)) return this.agendaCache.get(k) ?? null;
+    const em = this.agendaLida.get(k);
+    if (em != null && Date.now() - em < 10 * 60_000) return false;
+    if (this.agendaLida.size > 5_000) this.agendaLida.clear();
+    this.agendaLida.set(k, Date.now());
+    return true;
+  }
+
+  /**
+   * Nome do contato: o salvo na agenda do celular corporativo, senão o do perfil.
+   * `soAgenda` (vínculo automático) lê o WAHA na hora e devolve só o nome salvo
+   * pelo vendedor: o do perfil é escolhido pela própria pessoa e não vincula.
+   */
+  private async nomeAgenda(sessao: string, chave: string, telefone: string, soAgenda = false): Promise<string | null> {
+    const k = `${sessao}|${chave}`;
+    if (!soAgenda && this.agendaCache.has(k)) return this.agendaCache.get(k) ?? null;
     if (!this.wahaBase) return null;
     const contato = chave.length > 11 ? `${telefone}@lid` : telefone;
     try {
@@ -727,9 +768,10 @@ export class WhatsappService {
         { headers: this.wahaHeaders(), signal: AbortSignal.timeout(10_000) },
       );
       const j = r.ok ? ((await r.json()) as { name?: string | null; pushname?: string | null }) : null;
-      const nome = (j?.name || j?.pushname || '').trim() || null;
+      const salvo = (j?.name || '').trim() || null;
+      const nome = salvo ?? ((j?.pushname || '').trim() || null);
       this.agendaCache.set(k, nome);
-      return nome;
+      return soAgenda ? salvo : nome;
     } catch {
       return null; // WAHA fora: a sugestão segue sem o sinal do nome
     }
@@ -785,26 +827,208 @@ export class WhatsappService {
     return r.map((c) => ({ cli: Number(c.CLI_CODIGO), nome: String(c.CLI_NOME ?? ''), contato: c.CONTATO ?? null }));
   }
 
+  /** Clientes do atacado por código (nome) — cache de 10 min; o webhook consulta a cada número novo. */
+  private async atacado() {
+    if (this.atacadoCache && Date.now() - this.atacadoCache.em < 10 * 60_000) return this.atacadoCache;
+    const nomes = new Map((await this.clientesAtacado()).map((c) => [c.cli, c.nome] as [number, string]));
+    this.atacadoCache = { em: Date.now(), nomes, codigos: new Set(nomes.keys()) };
+    return this.atacadoCache;
+  }
+
+  /**
+   * Código do cliente no nome da agenda → vínculo. Chave sem vínculo: vincula
+   * (origem AGENDA; o vincular do repo já religa o histórico da chave). Mesmo
+   * cliente: só completa o nome da pessoa se estiver vazio. Outro cliente:
+   * registra a divergência e mantém o vínculo atual.
+   */
+  private async vincularPelaAgenda(
+    sessao: string,
+    chave: string,
+    telefone: string,
+    nome: string | null,
+  ): Promise<'vinculado' | 'divergencia' | null> {
+    if (!nome) return null;
+    const { nomes, codigos } = await this.atacado();
+    const achado = codigoDaAgenda(nome, codigos);
+    if (!achado) return null;
+    const atual = await this.repo.contatoPorChave(chave);
+    if (!atual) {
+      // Só vincula cliente da carteira do dono da sessão: o resto fica na lista de sugestões.
+      const rep = this.repDaSessao(sessao);
+      if (rep == null || (await this.repo.donoDaCarteira(achado.cli_codigo)) !== rep) return null;
+      await this.repo.vincular({
+        chave,
+        telefone,
+        cli_codigo: achado.cli_codigo,
+        cli_nome: nomes.get(achado.cli_codigo) ?? null,
+        contato_nome: achado.contato_nome,
+        origem: 'AGENDA',
+        criado_por: `agenda:${sessao}`,
+      });
+      this.sugestoesCache = null;
+      return 'vinculado';
+    }
+    if (atual.cli_codigo === achado.cli_codigo) {
+      if (achado.contato_nome) await this.repo.preencherContatoNome(chave, achado.contato_nome);
+      return null;
+    }
+    await this.repo.upsertDivergencia({
+      chave,
+      sessao,
+      nome_agenda: nome,
+      cli_agenda: achado.cli_codigo,
+      cli_vinculado: atual.cli_codigo,
+    });
+    return 'divergencia';
+  }
+
+  /**
+   * Varredura das agendas: lê os contatos salvos de cada sessão `rep-*`
+   * conectada no WAHA e vincula pelo código no nome. Roda na carga diária e por
+   * POST /whatsapp/contatos/varrer-agendas; sessão que falha não para as outras.
+   */
+  async varrerAgendas() {
+    const r = { sessoes: 0, contatos_lidos: 0, vinculados: 0, divergencias: 0 };
+    if (!this.wahaBase) return r;
+    const s = await fetch(`${this.wahaBase}/api/sessions`, { headers: this.wahaHeaders(), signal: AbortSignal.timeout(10_000) });
+    if (!s.ok) throw new Error(`WAHA /api/sessions respondeu ${s.status}`);
+    const sessoes = ((await s.json()) as Array<{ name?: string; status?: string }>)
+      .filter((x) => x.name?.startsWith('rep-') && x.status === 'WORKING')
+      .map((x) => x.name as string);
+    const ignoradas = await this.repo.chavesIgnoradas();
+    for (const sessao of sessoes) {
+      try {
+        const c = await fetch(`${this.wahaBase}/api/contacts/all?session=${encodeURIComponent(sessao)}`, {
+          headers: this.wahaHeaders(),
+          signal: AbortSignal.timeout(60_000),
+        });
+        if (!c.ok) throw new Error(`HTTP ${c.status}`);
+        const contatos = (await c.json()) as Array<{ id?: string; name?: string | null }>;
+        r.sessoes++;
+        for (const ct of contatos) {
+          if (!ct.id || !ct.name) continue;
+          const telefone = String(ct.id).replace(/@.*$/, '').replace(/\D/g, '');
+          const chave = chaveTelefone(telefone);
+          if (!chave || ignoradas.has(chave)) continue;
+          r.contatos_lidos++;
+          const x = await this.vincularPelaAgenda(sessao, chave, telefone, ct.name);
+          if (x === 'vinculado') r.vinculados++;
+          else if (x === 'divergencia') r.divergencias++;
+        }
+      } catch (e) {
+        this.logger.warn(`Agenda da sessão ${sessao} não lida: ${(e as Error).message}`);
+      }
+    }
+    this.logger.log(
+      `Varredura de agendas: ${r.sessoes} sessões, ${r.contatos_lidos} contatos, ` +
+        `${r.vinculados} vínculos novos, ${r.divergencias} divergências.`,
+    );
+    return r;
+  }
+
+  /** Divergências da agenda com o nome dos dois clientes (null se fora do atacado). */
+  async divergencias() {
+    const [ds, { nomes }] = await Promise.all([this.repo.listarDivergencias(), this.atacado()]);
+    return ds.map((d) => ({
+      chave: d.chave,
+      telefone: d.telefone,
+      sessao: d.sessao,
+      nome_agenda: d.nome_agenda,
+      cli_agenda: d.cli_agenda,
+      cli_agenda_nome: nomes.get(d.cli_agenda) ?? null,
+      cli_vinculado: d.cli_vinculado,
+      cli_vinculado_nome: nomes.get(d.cli_vinculado) ?? null,
+      visto_em: d.visto_em,
+    }));
+  }
+
+  /** Gestão decide: 'manter' o vínculo atual ou trocar para o cliente da 'agenda'. */
+  async resolverDivergencia(chave: string, acao: string, usuario_id?: string) {
+    if (acao !== 'manter' && acao !== 'agenda') throw new BadRequestException("acao deve ser 'manter' ou 'agenda'.");
+    await this.exigirPapel(usuario_id, { gestao: true });
+    const d = await this.repo.divergencia(chave);
+    if (!d) return { ok: true };
+    if (acao === 'agenda') {
+      const { nomes, codigos } = await this.atacado();
+      const atual = await this.repo.contatoPorChave(chave);
+      await this.repo.vincular({
+        chave,
+        telefone: atual?.telefone ?? chave,
+        cli_codigo: d.cli_agenda,
+        cli_nome: nomes.get(d.cli_agenda) ?? null,
+        contato_nome: codigoDaAgenda(d.nome_agenda, codigos)?.contato_nome ?? null,
+        origem: 'AGENDA',
+        criado_por: `agenda:${d.sessao}`,
+      });
+      this.sugestoesCache = null;
+      await this.repo.apagarDivergencia(chave);
+    } else {
+      await this.repo.manterDivergencia(chave);
+    }
+    return { ok: true };
+  }
+
   /** 1 toque que aprende para sempre: vincula a chave e conserta o histórico. */
   async vincular(dto: {
     telefone: string;
     cli_codigo: number;
     cli_nome?: string;
     usuario_nome?: string;
+    contato_nome?: string;
+    usuario_id?: string;
   }) {
     if (!dto.telefone || dto.cli_codigo == null) {
       throw new BadRequestException('telefone e cli_codigo são obrigatórios.');
     }
     const chave = chaveTelefone(dto.telefone) ?? dto.telefone.replace(/\D/g, '');
     if (!chave) throw new BadRequestException('Telefone inválido.');
+    const cli_codigo = Number(dto.cli_codigo);
+    // número já vinculado = alterar (só gestão); novo = vendedor na própria carteira
+    const existente = await this.repo.contatoPorChave(chave);
+    const u = await this.exigirPapel(dto.usuario_id, existente ? { gestao: true } : { cli: cli_codigo });
     this.sugestoesCache = null;
     return this.repo.vincular({
       chave,
       telefone: dto.telefone,
-      cli_codigo: Number(dto.cli_codigo),
+      cli_codigo,
       cli_nome: dto.cli_nome ?? null,
-      criado_por: dto.usuario_nome ?? null,
+      criado_por: u.nome,
+      // ausente não apaga o nome que já está lá
+      contato_nome: dto.contato_nome === undefined ? undefined : dto.contato_nome.trim() || null,
     });
+  }
+
+  /** Números do cliente (ERP, manual e agenda) — o menu do Conversar e a tela de contatos. */
+  contatosDoCliente(cli_codigo: number) {
+    return this.repo.contatosDoCliente(cli_codigo);
+  }
+
+  /** Apagar número: só gestão; o do cadastro do ERP volta na semente — corrige-se no Celta. */
+  async removerContato(chave: string, usuario_id?: string) {
+    await this.exigirPapel(usuario_id, { gestao: true });
+    const c = await this.repo.contatoPorChave(chave);
+    if (!c) return { ok: true };
+    if (c.origem === 'SEED_ERP') {
+      throw new BadRequestException('Número do cadastro do ERP: corrija no Celta.');
+    }
+    await this.repo.removerContato(chave);
+    this.sugestoesCache = null;
+    return { ok: true };
+  }
+
+  /**
+   * Papel de vendas de quem mexe nos contatos: gestão (ehGestaoVendas) faz
+   * tudo; o vendedor só adiciona número a cliente da própria carteira.
+   */
+  async exigirPapel(usuario_id: string | undefined, o: { gestao?: boolean; cli?: number }) {
+    const u = await this.repo.usuarioVendas(usuario_id);
+    if (!u) throw new ForbiddenException('Usuário não identificado.');
+    if (ehGestaoVendas(u)) return u;
+    if (o.gestao) throw new ForbiddenException('Só a gestão de vendas altera ou apaga contatos.');
+    if (o.cli != null && (u.vendas_rep_codigo == null || (await this.repo.donoDaCarteira(o.cli)) !== u.vendas_rep_codigo)) {
+      throw new ForbiddenException('Só para cliente da sua carteira.');
+    }
+    return u;
   }
 
   // ------------------------------------------- conversa ativa (estação)

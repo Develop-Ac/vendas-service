@@ -1,8 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Headers,
+  Param,
+  ParseIntPipe,
   Post,
   Query,
   UnauthorizedException,
@@ -10,7 +13,10 @@ import {
 import { WhatsappService } from './whatsapp.service';
 
 /**
- * Rotas do sensor WhatsApp (piloto WAHA). O webhook aceita o token compartilhado
+ * Rotas do sensor WhatsApp (piloto WAHA). Nas rotas de contatos com papel
+ * (vincular, consultar, apagar, divergências, varredura) quem age vem do
+ * `x-user-id` que o proxy da intranet injeta a partir da sessão; o
+ * `usuario_id` do body/query é descartado. O webhook aceita o token compartilhado
  * em `x-webhook-token` quando WA_WEBHOOK_TOKEN está definido — configure o mesmo
  * valor nos customHeaders do webhook no WAHA. Sem a variável, o endpoint aceita
  * qualquer chamada (rede interna) — defina o token antes de generalizar.
@@ -63,9 +69,54 @@ export class WhatsappController {
   @Post('contatos/vincular')
   vincular(
     @Body()
-    dto: { telefone: string; cli_codigo: number; cli_nome?: string; usuario_nome?: string },
+    dto: {
+      telefone: string;
+      cli_codigo: number;
+      cli_nome?: string;
+      usuario_nome?: string;
+      contato_nome?: string;
+    },
+    @Headers('x-user-id') usuario?: string,
   ) {
-    return this.service.vincular(dto ?? ({} as any));
+    return this.service.vincular({ ...dto, usuario_id: usuario });
+  }
+
+  // Agenda do celular apontando outro cliente para número já vinculado (só gestão).
+  @Get('contatos/divergencias')
+  async divergencias(@Headers('x-user-id') usuario?: string) {
+    await this.service.exigirPapel(usuario, { gestao: true });
+    return this.service.divergencias();
+  }
+
+  // Gestão decide a divergência: 'manter' o vínculo ou trocar para o da 'agenda'.
+  @Post('contatos/divergencias/:chave/resolver')
+  resolverDivergencia(
+    @Param('chave') chave: string,
+    @Body() dto: { acao: string },
+    @Headers('x-user-id') usuario?: string,
+  ) {
+    return this.service.resolverDivergencia(chave, dto?.acao, usuario);
+  }
+
+  // Lê agora a agenda das sessões rep-* (a carga diária também roda). Só gestão.
+  @Post('contatos/varrer-agendas')
+  async varrerAgendas(@Headers('x-user-id') usuario?: string) {
+    await this.service.exigirPapel(usuario, { gestao: true });
+    return this.service.varrerAgendas();
+  }
+
+  // Números do cliente (ERP, manual e agenda) com o nome da pessoa: gestão vê
+  // todos; o vendedor, só os de cliente da própria carteira.
+  @Get('contatos/cliente/:cli')
+  async contatosDoCliente(@Param('cli', ParseIntPipe) cli: number, @Headers('x-user-id') usuario?: string) {
+    await this.service.exigirPapel(usuario, { cli });
+    return this.service.contatosDoCliente(cli);
+  }
+
+  // Apaga um vínculo (só gestão; número do ERP não se apaga por aqui).
+  @Delete('contatos/:chave')
+  removerContato(@Param('chave') chave: string, @Headers('x-user-id') usuario?: string) {
+    return this.service.removerContato(chave, usuario);
   }
 
   // As medições que o piloto valida: taxa de casamento e atividade por sessão

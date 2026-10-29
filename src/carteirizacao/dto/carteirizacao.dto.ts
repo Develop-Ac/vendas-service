@@ -110,6 +110,28 @@ export class DesfechoOrcamentoDto {
   usuario_nome?: string;
 }
 
+/**
+ * Passar uma tarefa da fila a outro vendedor (supervisão/gerência). Nos DTOs de
+ * fila e cobertura, `usuario_id` é preenchido pelo controller com o `x-user-id`.
+ */
+export class DelegarTarefaDto {
+  rep_codigo: number;
+  usuario_id?: string;
+}
+
+/** Cobertura de ausência: as tarefas do titular vão ao substituto no período (datas inclusive). */
+export class CriarCoberturaDto {
+  rep_titular_codigo: number;
+  rep_substituto_codigo: number;
+  inicio: string; // yyyy-mm-dd
+  fim: string; // yyyy-mm-dd
+  usuario_id?: string;
+}
+
+export class EncerrarCoberturaDto {
+  usuario_id?: string;
+}
+
 export class SeedDto {
   // 'rep_codigo' (default) = só cadastro; 'hibrido' = rep_codigo + vendedor dominante; 'vendas' = só vendas
   estrategia?: 'rep_codigo' | 'hibrido' | 'vendas';

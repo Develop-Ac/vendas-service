@@ -58,6 +58,14 @@ export class CarteirizacaoSyncScheduler {
       this.logger.error(`Falha na semente de contatos WhatsApp: ${(e as Error).message}`);
     }
 
+    // Agenda dos celulares corporativos: contato salvo com o código do cliente
+    // no nome vira vínculo (o log da varredura sai do próprio WhatsappService).
+    try {
+      await this.whatsapp.varrerAgendas();
+    } catch (e) {
+      this.logger.error(`Falha na varredura das agendas WhatsApp: ${(e as Error).message}`);
+    }
+
     // Fila do dia na sequência da carga: a régua trabalha sobre a carteira
     // recém-reconciliada. Falha aqui não derruba a carga — a geração também
     // roda em POST /carteirizacao/fila/gerar.

@@ -239,10 +239,35 @@ export class CarteirizacaoPrismaRepository {
       curva: string | null;
       motivo_geracao: string;
       prazo_em: Date;
+      rep_titular_codigo?: number | null;
+      rep_titular_nome?: string | null;
+      delegada_por?: string | null;
+      delegada_em?: Date | null;
+      cobertura_id?: string | null;
     }>,
   ) {
     if (!rows.length) return { count: 0 };
     return this.prisma.ven_fila_tarefa.createMany({ data: rows });
+  }
+
+  async obterTarefa(id: string) {
+    return this.prisma.ven_fila_tarefa.findUnique({ where: { id } });
+  }
+
+  /** Passa a tarefa a outro vendedor (executor), guardando o titular da carteira. */
+  async delegarTarefa(
+    id: string,
+    data: {
+      rep_codigo: number;
+      rep_nome: string | null;
+      rep_titular_codigo: number | null;
+      rep_titular_nome: string | null;
+      delegada_por: string | null;
+      delegada_em: Date;
+      cobertura_id: string | null;
+    },
+  ) {
+    return this.prisma.ven_fila_tarefa.update({ where: { id }, data });
   }
 
   async concluirTarefa(id: string, sinal: string, quando: Date) {
@@ -281,6 +306,109 @@ export class CarteirizacaoPrismaRepository {
     });
   }
 
+  // ======================================= cobertura da fila por período
+  /** Coberturas ativas, futuras e as que acabaram (vencidas ou encerradas) desde o corte. */
+  async listarCoberturas(desde: Date) {
+    return this.prisma.ven_fila_cobertura.findMany({
+      where: { OR: [{ fim: { gte: desde } }, { encerrada_em: { gte: desde } }] },
+      orderBy: { inicio: 'asc' },
+    });
+  }
+
+  /** Coberturas valendo no dia (datas inclusive, não encerradas). */
+  async coberturasAtivas(hoje: Date) {
+    return this.prisma.ven_fila_cobertura.findMany({
+      where: { encerrada_em: null, inicio: { lte: hoje }, fim: { gte: hoje } },
+    });
+  }
+
+  /** Coberturas não encerradas em que `rep` é titular ou substituto e que cruzam o período. */
+  async coberturasSobrepostas(rep: number, inicio: Date, fim: Date) {
+    return this.prisma.ven_fila_cobertura.findMany({
+      where: {
+        encerrada_em: null,
+        OR: [{ rep_titular_codigo: rep }, { rep_substituto_codigo: rep }],
+        inicio: { lte: fim },
+        fim: { gte: inicio },
+      },
+    });
+  }
+
+  async criarCobertura(data: {
+    rep_titular_codigo: number;
+    rep_titular_nome: string | null;
+    rep_substituto_codigo: number;
+    rep_substituto_nome: string | null;
+    inicio: Date;
+    fim: Date;
+    criado_por: string | null;
+  }) {
+    return this.prisma.ven_fila_cobertura.create({ data });
+  }
+
+  async obterCobertura(id: string) {
+    return this.prisma.ven_fila_cobertura.findUnique({ where: { id } });
+  }
+
+  async encerrarCobertura(id: string, por: string | null) {
+    return this.prisma.ven_fila_cobertura.update({
+      where: { id },
+      data: { encerrada_em: new Date(), encerrada_por: por },
+    });
+  }
+
+  /** Passa ao substituto as tarefas em andamento do titular que ainda não foram passadas. */
+  async delegarTarefasDoTitular(
+    titular: number,
+    cob: { id: string; rep_titular_nome: string | null; rep_substituto_codigo: number; rep_substituto_nome: string | null },
+  ) {
+    return this.prisma.ven_fila_tarefa.updateMany({
+      // delegada_por preenchido = a gestão devolveu a tarefa ao titular à mão: a cobertura não a puxa de volta
+      where: { status: { in: ['ABERTA', 'ESCALADA'] }, rep_codigo: titular, rep_titular_codigo: null, delegada_por: null },
+      data: {
+        rep_codigo: cob.rep_substituto_codigo,
+        rep_nome: cob.rep_substituto_nome,
+        rep_titular_codigo: titular,
+        rep_titular_nome: cob.rep_titular_nome,
+        delegada_por: `cobertura:${cob.id}`,
+        delegada_em: new Date(),
+        cobertura_id: cob.id,
+      },
+    });
+  }
+
+  /**
+   * Fim da cobertura: o que ela passou e ainda está em andamento volta ao
+   * titular. Tarefa passada avulsa (sem cobertura_id) fica com quem está.
+   * SQL direto porque updateMany não copia coluna para coluna.
+   */
+  async devolverTarefasDaCobertura(cobertura_id: string): Promise<number> {
+    return this.prisma.$executeRaw`
+      UPDATE ven_fila_tarefa
+         SET rep_codigo = rep_titular_codigo, rep_nome = rep_titular_nome,
+             rep_titular_codigo = NULL, rep_titular_nome = NULL,
+             delegada_por = NULL, delegada_em = NULL, cobertura_id = NULL
+       WHERE cobertura_id = ${cobertura_id} AND status IN ('ABERTA', 'ESCALADA')`;
+  }
+
+  /** Ids das coberturas vencidas (fim < hoje) ou encerradas que ainda seguram tarefa em andamento. */
+  async coberturasVencidasComTarefas(hoje: Date): Promise<string[]> {
+    const comTarefa = await this.prisma.ven_fila_tarefa.findMany({
+      where: { status: { in: ['ABERTA', 'ESCALADA'] }, cobertura_id: { not: null } },
+      select: { cobertura_id: true },
+      distinct: ['cobertura_id'],
+    });
+    if (!comTarefa.length) return [];
+    const vencidas = await this.prisma.ven_fila_cobertura.findMany({
+      where: {
+        id: { in: comTarefa.map((t) => t.cobertura_id!) },
+        OR: [{ encerrada_em: { not: null } }, { fim: { lt: hoje } }],
+      },
+      select: { id: true },
+    });
+    return vencidas.map((c) => c.id);
+  }
+
   // ===================================== esteira de resgate (fase 1, S3)
   /** Episódios em andamento (tudo que não é RECUPERADO/PERDIDO). */
   async resgatesAbertos() {
@@ -296,12 +424,15 @@ export class CarteirizacaoPrismaRepository {
     });
   }
 
-  /** Usuário da intranet (id ou código) com o papel de vendas — quem pode mexer na carteira. */
+  /**
+   * Usuário da intranet pelo id (cuid do /login/me) com o papel de vendas — quem
+   * pode mexer na carteira. O código de login não vale: é conhecido de todos.
+   */
   async usuarioVendas(ref: string | null | undefined) {
     const r = (ref ?? '').trim();
     if (!r) return null;
     return this.prisma.sis_usuarios.findFirst({
-      where: { trash: 0, OR: [{ id: r }, { codigo: r }] },
+      where: { trash: 0, id: r },
       select: { id: true, codigo: true, nome: true, setor: true, vendas_hub_inicial: true },
     });
   }
