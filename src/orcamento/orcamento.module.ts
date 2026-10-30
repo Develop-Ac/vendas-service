@@ -10,6 +10,7 @@ import { OrcamentoPrismaRepository } from './orcamento.prisma.repository';
 import { OrcamentoCeltaRepository } from './orcamento.celta.repository';
 import { RelacionadosScheduler } from './relacionados.scheduler';
 import { OrcamentoVencendoScheduler } from './vencendo.scheduler';
+import { OrcamentoRetornoScheduler } from './retorno.scheduler';
 import { OrcamentoComparativoScheduler } from './comparativo.scheduler';
 import { BolsaFechamentoScheduler } from './bolsa-fechamento.scheduler';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
@@ -24,6 +25,7 @@ import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
   controllers: [OrcamentoController],
   providers: [
     OrcamentoVencendoScheduler,
+    OrcamentoRetornoScheduler,
     OrcamentoComparativoScheduler,
     BolsaFechamentoScheduler,
     AvisosVendasService,

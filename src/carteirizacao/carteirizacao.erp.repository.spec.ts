@@ -11,6 +11,7 @@ function repoCom(orcsCelta: any[], vendas: Array<{ CLI_CODIGO: number; DT_EMISSA
 
 function intranet(over: Partial<OrcamentoIntranet>): OrcamentoIntranet {
   return {
+    id: 'orc-500',
     numero: 500,
     created_at: new Date('2026-10-01T15:00:00Z'),
     cli_codigo: 7,

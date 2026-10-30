@@ -122,6 +122,33 @@ export class AvisosVendasService {
     });
   }
 
+  /**
+   * Orçamento ADIADO chegou à data de retorno: avisa quem lançou (ou o vendedor do rep).
+   * Com cobertura da fila valendo hoje para o rep, o aviso vai ao substituto.
+   */
+  async orcamentoRetorno(o: { id: string; numero: number; cli_codigo: number; cli_nome: string | null; rep_codigo: number | null; usuario_id: string | null; total: unknown }) {
+    let usuarios: string[] | null = null;
+    if (o.rep_codigo != null) {
+      const hoje = new Date(`${ymdHoje()}T00:00:00Z`);
+      try {
+        const cob = await this.prisma.ven_fila_cobertura.findFirst({
+          where: { rep_titular_codigo: o.rep_codigo, encerrada_em: null, inicio: { lte: hoje }, fim: { gte: hoje } },
+        });
+        if (cob) usuarios = await this.usuariosDoRep(cob.rep_substituto_codigo);
+      } catch (e) {
+        this.logger.warn(`cobertura do rep ${o.rep_codigo}: ${(e as Error).message}`); // sem a tabela, fica com o titular
+      }
+    }
+    usuarios ??= o.usuario_id ? [o.usuario_id] : await this.usuariosDoRep(o.rep_codigo);
+    if (!usuarios.length) return;
+    this.avisos.emitir('orcamento.retorno', {
+      ref: o.id,
+      vars: { numero: String(o.numero).padStart(6, '0'), cliente: o.cli_nome ?? `Cliente ${o.cli_codigo}`, total: brl(o.total), id: o.id },
+      usuarios,
+      link: `/vendas/orcamento/${o.id}`,
+    });
+  }
+
   /** Gerência devolveu o orçamento em aprovação: avisa quem lançou (ou o vendedor do rep). */
   async orcamentoDevolvido(o: { id: string; numero: number; rep_codigo: number | null; usuario_id: string | null }, gerente: string, motivo: string) {
     const usuarios = o.usuario_id ? [o.usuario_id] : await this.usuariosDoRep(o.rep_codigo);
@@ -243,6 +270,11 @@ export class AvisosVendasService {
    */
   aprovacaoEncerrada(id: string) {
     this.avisos.resolver('orcamento.aprovacao', id);
+  }
+
+  /** O orçamento ADIADO saiu do retorno (fechado, perdido, cancelado, reagendado): o aviso do dia some. */
+  retornoEncerrado(id: string) {
+    this.avisos.resolver('orcamento.retorno', id);
   }
 
   /**

@@ -9,6 +9,7 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Matches,
   MaxLength,
   Min,
   ValidateNested,
@@ -252,6 +253,15 @@ export class DesfechoOrcamentoDto extends AcaoOrcamentoDto {
   @IsString()
   @MaxLength(500)
   observacao?: string;
+
+  @ApiProperty({
+    required: false,
+    example: '2026-11-15',
+    description: 'PERDIDO + CLIENTE_ADIOU: dia (YYYY-MM-DD, Cuiabá) do retorno ao cliente; o orçamento fica ADIADO.',
+  })
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/)
+  retorno_em?: string;
 }
 
 export const ACOES_SALDO = ['VENDA_PERDIDA', 'ENCOMENDA', 'RETIRAR'] as const;

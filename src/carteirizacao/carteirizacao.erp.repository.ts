@@ -105,7 +105,9 @@ export interface OrcamentoSemDesfecho {
   origem: 'CELTA' | 'INTRANET';
   /** Nº de tela do orçamento da intranet (positivo); nulo nos do Celta. */
   numero_intranet: number | null;
-  /** Desfecho já dado na própria tela de orçamento (PERDIDO, com motivo). */
+  /** Id (ven_orcamento.id) para abrir o orçamento da intranet; nulo nos do Celta. */
+  intranet_id: string | null;
+  /** Desfecho já dado na própria tela de orçamento, com motivo: PERDIDO, ou ADIADO (cliente adiou, com data de retorno). */
   motivo_em: Date | null;
   emissao: Date;
   cli_codigo: number;
@@ -118,6 +120,7 @@ export interface OrcamentoSemDesfecho {
 
 /** Orçamento da intranet ainda não enviado ao Celta (ven_orcamento). */
 export interface OrcamentoIntranet {
+  id: string;
   numero: number;
   created_at: Date;
   cli_codigo: number;
@@ -615,7 +618,7 @@ export class CarteirizacaoErpRepository {
    * `intranet`: orçamentos da intranet que não foram ao Celta, já recortados
    * ao atacado pelo chamador. Passam pela mesma inferência de venda; e o
    * desfecho dado na própria tela de orçamento vale (FECHADO = fechou,
-   * PERDIDO = motivo já apontado).
+   * PERDIDO ou ADIADO = motivo já apontado; ADIADO não conta como fechado).
    */
   async orcamentosComFechamento(
     desdeYmd: string,
@@ -676,6 +679,7 @@ export class CarteirizacaoErpRepository {
         orcamento: Number(o.ORCAMENTO),
         origem: 'CELTA' as const,
         numero_intranet: null,
+        intranet_id: null,
         motivo_em: null,
         emissao: new Date(o.EMISSAO),
         cli_codigo: Number(o.CLI_CODIGO),
@@ -695,7 +699,8 @@ export class CarteirizacaoErpRepository {
         orcamento: -o.numero,
         origem: 'INTRANET' as const,
         numero_intranet: o.numero,
-        motivo_em: o.status === 'PERDIDO' ? o.desfecho_em ?? null : null,
+        intranet_id: o.id,
+        motivo_em: ['PERDIDO', 'ADIADO'].includes(o.status) ? o.desfecho_em ?? null : null,
         emissao: new Date(o.created_at),
         cli_codigo: o.cli_codigo,
         cli_nome: o.cli_nome ?? null,

@@ -181,7 +181,8 @@ const BUSCA_CLIENTES_LIMITE = 20;
 const CASAMENTO_MESES = 8;
 
 const CONCEITO: Record<number, string> = { 1: 'BOM', 2: 'REGULAR', 3: 'RUIM' };
-const STATUS_EDITAVEL = new Set(['RASCUNHO', 'ENVIADO', 'APROVACAO']);
+// ADIADO é proposta viva (o cliente pediu para voltar num dia marcado): edita como ENVIADO.
+const STATUS_EDITAVEL = new Set(['RASCUNHO', 'ENVIADO', 'APROVACAO', 'ADIADO']);
 
 @Injectable()
 export class OrcamentoService {
@@ -1285,7 +1286,7 @@ export class OrcamentoService {
       this.erp.orcamentosCeltaAtivos(cli).catch(() => [] as OrcamentoCelta[]),
     ]);
     const intranet = (lista.itens as any[]).filter((o) => {
-      if (!['RASCUNHO', 'ENVIADO', 'APROVACAO'].includes(o.status)) return false;
+      if (!['RASCUNHO', 'ENVIADO', 'APROVACAO', 'ADIADO'].includes(o.status)) return false;
       const v = ymd(o.validade);
       return !v || v >= hoje;
     });
@@ -1931,7 +1932,11 @@ export class OrcamentoService {
     // mostra ao vendedor; sem isso o WhatsApp dizia "aguardando o supervisor" por um status velho.
     const saiDaAprovacao = atual.status === 'APROVACAO' && mesmosItens && !acimaAlcada && ajustesPendentes(atual) === 0;
     if (atual.status === 'APROVACAO' && (!mesmosItens || saiDaAprovacao)) this.avisos.aprovacaoEncerrada(id);
-    return this.db.atualizar(
+    // ADIADO com itens trocados segue ADIADO; o que pede a gerência (alçada ou ajuste da bolsa) vai a
+    // APROVAÇÃO como no enviar, e aprovado volta a ADIADO pelo retorno_em, que fica gravado.
+    const adiadoVaiAprovar = atual.status === 'ADIADO' && !mesmosItens && (acimaAlcada || m.linhas.some((l) => l.pedir_ajuste));
+    if (adiadoVaiAprovar) this.avisos.retornoEncerrado(id);
+    const r = await this.db.atualizar(
       id,
       {
         cli_codigo: dto.cli_codigo,
@@ -1940,7 +1945,7 @@ export class OrcamentoService {
         rep_codigo: dto.rep_codigo,
         // Vendedor trocado na edição: o nome gravado antes não serve mais.
         rep_nome: dto.rep_nome || (atual.rep_codigo === dto.rep_codigo && atual.rep_nome) || (await this.erp.nomeRepresentante(dto.rep_codigo)),
-        status: !mesmosItens ? 'RASCUNHO' : saiDaAprovacao ? 'ENVIADO' : atual.status,
+        status: !mesmosItens ? (atual.status === 'ADIADO' ? (adiadoVaiAprovar ? 'APROVACAO' : 'ADIADO') : 'RASCUNHO') : saiDaAprovacao ? (atual.retorno_em ? 'ADIADO' : 'ENVIADO') : atual.status,
         validade: this.validade(m.linhas),
         observacao: dto.observacao ?? null,
         ...pag,
@@ -1967,12 +1972,14 @@ export class OrcamentoService {
       // os ajustes da bolsa caem junto com a aprovação: a linha ajustada mudou
       !mesmosItens,
     );
+    if (adiadoVaiAprovar) void this.avisos.orcamentoAprovacao(r);
+    return r;
   }
 
   /** Enviar = fechar a proposta. Item abaixo do piso, ou bolsa estourada, manda para APROVAÇÃO. */
   async enviar(id: string, usuario?: { usuario_id?: string; usuario_nome?: string }) {
     const o = await this.obter(id);
-    if (!['RASCUNHO', 'APROVACAO'].includes(o.status)) {
+    if (!['RASCUNHO', 'APROVACAO', 'ADIADO'].includes(o.status)) {
       throw new BadRequestException(`Orçamento ${o.status} não pode ser enviado.`);
     }
     if (!o.itens?.length) throw new BadRequestException('Orçamento sem itens.');
@@ -1986,7 +1993,8 @@ export class OrcamentoService {
     // Item com pedido de ajuste da bolsa ainda sem ajuste também espera por quem tem a permissão.
     const precisaAprovar = (o.acima_alcada && !o.aprovado_em) || ajustesPendentes(o) > 0;
     const r = await this.db.atualizar(id, {
-      status: precisaAprovar ? 'APROVACAO' : 'ENVIADO',
+      // com data de retorno marcada, a proposta liberada volta a ADIADO (não a ENVIADO)
+      status: precisaAprovar ? 'APROVACAO' : o.retorno_em ? 'ADIADO' : 'ENVIADO',
       enviado_em: precisaAprovar ? null : new Date(),
       usuario_id: usuario?.usuario_id ?? o.usuario_id,
       usuario_nome: usuario?.usuario_nome ?? o.usuario_nome,
@@ -2002,7 +2010,7 @@ export class OrcamentoService {
   /** O cliente RECEBEU a proposta (mensagem + PDF pelo WhatsApp da Estação). */
   async entregue(id: string, canal: string) {
     const o = await this.obter(id);
-    if (!['ENVIADO', 'FECHADO'].includes(o.status)) {
+    if (!['ENVIADO', 'FECHADO', 'ADIADO'].includes(o.status)) {
       throw new BadRequestException(`Orçamento ${o.status}: só proposta ENVIADA pode ser entregue ao cliente.`);
     }
     return this.db.atualizar(id, { entregue_canal: canal, entregue_em: new Date() });
@@ -2191,7 +2199,7 @@ export class OrcamentoService {
     const codigo = Number(u.codigo);
 
     const r = await this.db.atualizarNoStatus(id, o.status, {
-      ...(o.status === 'APROVACAO' ? { status: 'ENVIADO', enviado_em: new Date() } : {}),
+      ...(o.status === 'APROVACAO' ? { status: o.retorno_em ? 'ADIADO' : 'ENVIADO', enviado_em: new Date() } : {}),
       aprovado_por: u.nome,
       aprovado_em: new Date(),
       aprovado_codigo: Number.isFinite(codigo) ? codigo : null,
@@ -2205,6 +2213,7 @@ export class OrcamentoService {
   /**
    * Gerência devolve ao vendedor o orçamento em APROVAÇÃO, com o motivo (volta a RASCUNHO para
    * ajuste). Mesmo gate de quem aprova; aprovado_* fica como estava. O reenvio limpa devolvido_*.
+   * retorno_em fica: o orçamento adiado que passou pela gerência volta a ADIADO no próximo enviar.
    */
   async devolver(id: string, dto: { usuario_id?: string; motivo: string }) {
     const o = await this.obter(id);
@@ -2299,7 +2308,7 @@ export class OrcamentoService {
       },
       {
         ...(aprova ? { aprovado_por: nome, aprovado_em: new Date(), aprovado_codigo: Number.isFinite(codigo) ? codigo : null, aprovado_por_ajuste: true } : {}),
-        ...(libera ? { status: 'ENVIADO', enviado_em: new Date() } : {}),
+        ...(libera ? { status: o.retorno_em ? 'ADIADO' : 'ENVIADO', enviado_em: new Date() } : {}),
         updated_at: new Date(),
       },
     );
@@ -2309,7 +2318,7 @@ export class OrcamentoService {
 
   /**
    * Desfaz o ajuste da linha (mesmas travas de quem ajusta). Sem ajuste restante, a aprovação que
-   * veio do ajuste cai; ENVIADO com pedido de ajuste de novo pendente volta a APROVAÇÃO.
+   * veio do ajuste cai; ENVIADO/ADIADO com pedido de ajuste de novo pendente volta a APROVAÇÃO.
    */
   async removerAjusteBolsa(id: string, proCodigo: number, usuarioId?: string) {
     const o = await this.obter(id);
@@ -2318,7 +2327,7 @@ export class OrcamentoService {
     const restantes = (o.ajustes_bolsa ?? []).filter((a) => a.pro_codigo !== proCodigo);
     const cab: Prisma.ven_orcamentoUncheckedUpdateInput = {};
     if (!restantes.length && o.aprovado_por_ajuste) Object.assign(cab, { aprovado_por: null, aprovado_em: null, aprovado_codigo: null, aprovado_por_ajuste: false });
-    const volta = o.status === 'ENVIADO' && ajustesPendentes({ itens: o.itens, ajustes_bolsa: restantes }) > 0;
+    const volta = ['ENVIADO', 'ADIADO'].includes(o.status) && ajustesPendentes({ itens: o.itens, ajustes_bolsa: restantes }) > 0;
     if (volta) Object.assign(cab, { status: 'APROVACAO', enviado_em: null });
     if (!Object.keys(cab).length) return this.obter(id);
     const r = await this.db.atualizar(id, cab);
@@ -2620,11 +2629,33 @@ export class OrcamentoService {
       throw new BadRequestException(`Orçamento já está ${o.status}.`);
     }
     if (dto.resultado === 'PERDIDO' && !dto.motivo) throw new BadRequestException('Informe o motivo da perda.');
+    // "Cliente adiou" com data marcada não encerra: o orçamento fica ADIADO (vivo, editável)
+    // até o dia do retorno, quando o vendedor é avisado. A data é o dia de Cuiabá.
+    if (dto.retorno_em) {
+      if (dto.resultado !== 'PERDIDO' || dto.motivo !== 'CLIENTE_ADIOU') {
+        throw new BadRequestException('Data de retorno só vale para perda com motivo "Cliente adiou".');
+      }
+      const base = new Date(`${diaCuiaba(new Date())}T00:00:00Z`).getTime();
+      const dia = (n: number) => new Date(base + n * 86_400_000).toISOString().slice(0, 10);
+      // ida e volta pelo Date recusa dia inexistente (2026-11-31 viraria 01/12 calado)
+      const valida = new Date(`${dto.retorno_em}T00:00:00Z`);
+      if (isNaN(valida.getTime()) || valida.toISOString().slice(0, 10) !== dto.retorno_em) {
+        throw new BadRequestException('Data de retorno inválida.');
+      }
+      if (dto.retorno_em < dia(1) || dto.retorno_em > dia(90)) {
+        throw new BadRequestException('A data de retorno deve ficar entre amanhã e 90 dias.');
+      }
+    }
     if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
+    // aviso de retorno pendente sai: reagendado ganha outro no novo dia; encerrado não tem mais retorno
+    if (o.status === 'ADIADO') this.avisos.retornoEncerrado(id);
     return this.db.atualizar(id, {
       ...(dto.resultado === 'FECHADO' ? await this.bolsaNoFechamento(o) : {}),
-      status: dto.resultado,
-      desfecho_em: new Date(),
+      status: dto.retorno_em ? 'ADIADO' : dto.resultado,
+      retorno_em: dto.retorno_em ? new Date(`${dto.retorno_em}T00:00:00Z`) : null,
+      // Perdido/reagendado sobre um ADIADO guarda o desfecho_em de quando o motivo foi apontado
+      // (o CRM o lê como motivo_em): fazer o retorno combinado não vira apontamento fora do prazo.
+      desfecho_em: (o.status === 'ADIADO' && dto.resultado === 'PERDIDO' && o.desfecho_em) || new Date(),
       desfecho_motivo: dto.resultado === 'PERDIDO' ? dto.motivo : null,
       desfecho_ref: dto.referencia ?? null,
       // a devolução da gerência se resolve com o desfecho; reaberto, o orçamento não a mostra de novo
@@ -2799,7 +2830,7 @@ export class OrcamentoService {
     return r;
   }
 
-  /** Reabre um FECHADO que ainda não foi ao Celta: volta a ENVIADO (ou RASCUNHO se nunca foi enviado) e limpa o desfecho. */
+  /** Reabre um FECHADO que ainda não foi ao Celta: volta a ENVIADO (ou RASCUNHO se nunca foi enviado) e limpa o desfecho e o retorno. */
   async reabrir(id: string) {
     const o = await this.obter(id);
     if (o.status !== 'FECHADO') throw new BadRequestException(`Orçamento ${o.status} não pode ser reaberto.`);
@@ -2811,6 +2842,7 @@ export class OrcamentoService {
       desfecho_ref: null,
       piso_bolsa: null,
       bolsa_orcamento: null,
+      retorno_em: null,
     });
   }
 
@@ -2818,7 +2850,8 @@ export class OrcamentoService {
     const o = await this.obter(id);
     if (['FECHADO', 'PERDIDO'].includes(o.status)) throw new BadRequestException(`Orçamento ${o.status} não pode ser cancelado.`);
     if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
-    return this.db.atualizar(id, { status: 'CANCELADO' });
+    if (o.status === 'ADIADO') this.avisos.retornoEncerrado(id);
+    return this.db.atualizar(id, { status: 'CANCELADO', retorno_em: null });
   }
 
   /**

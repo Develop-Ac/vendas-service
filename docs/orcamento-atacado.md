@@ -232,6 +232,18 @@ Sempre **hoje + 7 dias** (`ORCAMENTO_VALIDADE_DIAS`). Com item em promoção, en
 `FECHADO` (com referência do pedido/NF no Celta) | `PERDIDO` (motivo: PRECO, PRAZO_FRETE,
 SEM_ESTOQUE, CONCORRENTE, CLIENTE_ADIOU, CREDITO_BLOQUEADO) | `CANCELADO`.
 
+**ADIADO (cliente adiou com data de retorno).** `POST /:id/desfecho` com `resultado=PERDIDO`,
+`motivo=CLIENTE_ADIOU` e `retorno_em` (YYYY-MM-DD, de amanhã a +90 dias no dia de Cuiabá) grava
+`status = ADIADO` e `retorno_em` em vez de PERDIDO; data com outro resultado/motivo ou fora da faixa → 400.
+ADIADO segue editável e enviável (entra nos ativos do cliente e na bolsa projetada); editar os itens o
+mantém ADIADO, e se o envio levar à `APROVACAO` a aprovação (ou o ajuste da bolsa liberado) o devolve a
+ADIADO, não a ENVIADO.
+Novo desfecho sobre um ADIADO reagenda a data ou o encerra; `retorno_em` é limpo em FECHADO, PERDIDO,
+CANCELADO e reabrir. Na data, o cron `orcamento-retorno` (`ORCAMENTO_RETORNO_CRON`, padrão `0 8 * * *`,
+America/Cuiaba) emite o aviso `vendas.orcamento.retorno` a quem lançou (ou ao vendedor do rep; com cobertura
+da fila valendo, ao substituto). O aviso é resolvido quando o ADIADO recebe novo desfecho ou é cancelado.
+A regra nasce inativa: ligar em `/avisos/config` após o deploy.
+
 Editar um orçamento enviado o devolve a RASCUNHO. Ao salvar, preço de tabela, custo e saldo
 são relidos do ERP — o que a tela mostrou pode ter mudado. A alçada também é recalculada a
 cada salvar com a bolsa de agora: um orçamento em `APROVACAO` salvo com os mesmos itens que
@@ -259,7 +271,7 @@ como hoje e registra o número em "Fechado".
 | GET | `/produtos?q=&tabela=&cli=` | busca já avaliada na régua |
 | GET | `/produtos/:codigo[/equivalentes|/relacionados]` | detalhe, equivalentes, vendem juntos |
 | POST | `/relacionados/recalcular` | reapura os pares no BI |
-| GET/POST | `/` | lista / cria. Lista: `?rep=&cli=&status=&de=&ate=&numero=&produto=&flag=&page=&pageSize=` — `de`/`ate` YYYY-MM-DD sobre a criação, em dias de Cuiabá (`ate` inclusivo); `numero` casa o nº da intranet **ou** o do Celta; `produto` só com dígitos = código do produto, senão trecho da descrição (sem caixa) — orçamentos com ao menos um item assim; `flag` = `SEM_CELTA` (fechado sem nº do Celta), `ACIMA_ALCADA` ou `AGUARDANDO` (em aprovação). Parâmetro inválido é ignorado |
+| GET/POST | `/` | lista / cria. Lista: `?rep=&cli=&status=&de=&ate=&numero=&produto=&flag=&page=&pageSize=` — `de`/`ate` YYYY-MM-DD sobre a criação, em dias de Cuiabá (`ate` inclusivo); `numero` casa o nº da intranet **ou** o do Celta; `produto` só com dígitos = código do produto, senão trecho da descrição (sem caixa) — orçamentos com ao menos um item assim; `flag` = `SEM_CELTA` (fechado sem nº do Celta), `ACIMA_ALCADA`, `AGUARDANDO` (em aprovação) ou `RETORNO_HOJE` (ADIADO com retorno hoje). Sem `flag`, os ADIADOS com retorno hoje vêm no topo da lista (dentro dos demais filtros) e cada item traz `retorno_em` e `retorno_hoje`. Parâmetro inválido é ignorado |
 | GET/PUT/DELETE | `/:id` | obtém / regrava / cancela |
 | POST | `/:id/enviar` · `/:id/aprovar` · `/:id/desfecho` | ciclo |
 
@@ -369,7 +381,7 @@ importado no Celta" (cabeçalho do editor e lista) abre a mesma pergunta depois.
    em `PRODUTOS` (catálogo `produtos.tabela.ts`).
 4. Variáveis (opcionais, com padrão): `ORCAMENTO_BOLSA_MODO`, `ORCAMENTO_BOLSA_DRE_MESES`, `ORCAMENTO_META_RESULTADO`, `ORCAMENTO_BOLSA_DEGRAUS`, `ORCAMENTO_BOLSA_PISO`, `ORCAMENTO_LINHA_4PCT`,
    `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`, `ORCAMENTO_VALIDADE_DIAS`,
-   `ORCAMENTO_RELACIONADOS_CRON`, `ORCAMENTO_RELACIONADOS_MESES`.
+   `ORCAMENTO_RELACIONADOS_CRON`, `ORCAMENTO_RELACIONADOS_MESES`, `ORCAMENTO_RETORNO_CRON`.
 5. Rodar uma vez `POST /orcamento/relacionados/recalcular` (senão "vendem juntos" só aparece
    após o primeiro cron).
 6. Liberar a tela por usuário em `sis_permissoes` (`tela = '/vendas/orcamento'`) — o módulo

@@ -674,6 +674,7 @@ export class CarteirizacaoPrismaRepository {
     return this.prisma.ven_orcamento.findMany({
       where: { status: { not: 'CANCELADO' }, celta_orcamento: null, created_at: { gte: desde, lte: ate } },
       select: {
+        id: true,
         numero: true,
         created_at: true,
         cli_codigo: true,

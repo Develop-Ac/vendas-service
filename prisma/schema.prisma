@@ -2186,6 +2186,7 @@ model ven_orcamento {
   rep_nome            String?
   status              String               @default("RASCUNHO")
   validade            DateTime?            @db.Date
+  retorno_em          DateTime?            @db.Date
   observacao          String?
   subtotal            Decimal              @default(0) @db.Decimal(15, 2)
   desconto_total      Decimal              @default(0) @db.Decimal(15, 2)

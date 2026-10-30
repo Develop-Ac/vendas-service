@@ -35,7 +35,7 @@ import {
 } from './dto/orcamento.dto';
 
 const toNum = (v?: string) => (v == null || v === '' ? undefined : Number(v));
-const FLAGS_LISTA = ['SEM_CELTA', 'ACIMA_ALCADA', 'AGUARDANDO'] as const;
+const FLAGS_LISTA = ['SEM_CELTA', 'ACIMA_ALCADA', 'AGUARDANDO', 'RETORNO_HOJE'] as const;
 
 /* =============================================================================
    ORÇAMENTO DO ATACADO — rotas.
@@ -385,7 +385,7 @@ export class OrcamentoController {
   @ApiQuery({ name: 'ate', required: false, description: 'YYYY-MM-DD — criado até o fim do dia (Cuiabá), inclusive' })
   @ApiQuery({ name: 'numero', required: false, description: 'Nº da intranet ou do Celta' })
   @ApiQuery({ name: 'produto', required: false, description: 'Só dígitos = código do produto; senão parte da descrição. Orçamentos com algum item assim.' })
-  @ApiQuery({ name: 'flag', required: false, enum: ['SEM_CELTA', 'ACIMA_ALCADA', 'AGUARDANDO'] })
+  @ApiQuery({ name: 'flag', required: false, enum: [...FLAGS_LISTA] })
   listar(
     @Query('rep') rep?: string,
     @Query('cli') cli?: string,

@@ -104,6 +104,18 @@ export const CATALOGO_VENDAS: Catalogo = {
     prioridade: 'normal',
     alvo: { tipo: 'usuario' },
   },
+  // Nasce inativa como todas: ligar em /avisos/config após o deploy.
+  'orcamento.retorno': {
+    descricao: 'Cliente adiou e o orçamento ADIADO chegou hoje à data de retorno combinada.',
+    titulo: 'Retorno agendado: {cliente}',
+    corpo: 'Orçamento {numero} · {total} · adiado para hoje',
+    link: '/vendas/orcamento/{id}',
+    canais: ['badge', 'desktop'],
+    prioridade: 'alta',
+    alvo: { tipo: 'usuario' },
+    // agrupar = chave por orçamento: é o que permite tirar o aviso quando ele sai de ADIADO ou é reagendado
+    agrupar: true,
+  },
   'orcamento.sem_desfecho': {
     descricao: 'Orçamento do ERP completou 7 dias sem venda: registrar o motivo.',
     titulo: 'Orçamento {numero} do ERP sem desfecho',

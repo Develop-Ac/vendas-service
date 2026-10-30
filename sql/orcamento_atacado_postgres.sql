@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS ven_orcamento (
   tabela_preco       TEXT,                         -- cópia de CLIENTES.TABELA_PRECO na emissão
   rep_codigo         INTEGER,
   rep_nome           TEXT,
-  status             TEXT NOT NULL DEFAULT 'RASCUNHO', -- RASCUNHO | ENVIADO | APROVACAO | FECHADO | PERDIDO | CANCELADO
+  status             TEXT NOT NULL DEFAULT 'RASCUNHO', -- RASCUNHO | ENVIADO | APROVACAO | FECHADO | PERDIDO | CANCELADO | ADIADO
   validade           DATE,
   observacao         TEXT,
   subtotal           NUMERIC(15,2) NOT NULL DEFAULT 0, -- Σ qtd × preço de tabela

@@ -26,7 +26,7 @@ export type FiltroListaOrcamento = {
   ate?: string;
   numero?: number;
   produto?: string;
-  flag?: 'SEM_CELTA' | 'ACIMA_ALCADA' | 'AGUARDANDO';
+  flag?: 'SEM_CELTA' | 'ACIMA_ALCADA' | 'AGUARDANDO' | 'RETORNO_HOJE';
 };
 
 const n = (v: unknown): number => (v == null ? 0 : Number(v));
@@ -43,6 +43,10 @@ const hojeData = () => {
   const d = new Date();
   return new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
 };
+/** Hoje em Cuiabá como YYYY-MM-DD, independente do fuso do servidor. */
+export const hojeCuiabaYmd = () => new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Cuiaba' });
+/** Hoje em Cuiabá como coluna DATE (meia-noite UTC), para comparar com `retorno_em`. */
+export const hojeRetorno = () => new Date(hojeCuiabaYmd() + 'T00:00:00Z');
 
 /** Linha gravada de produtos do dia: o item calculado mais a apuração e a origem. */
 export interface ItemProdutoDiaRow extends ItemProdutoDia {
@@ -734,6 +738,9 @@ export class OrcamentoPrismaRepository {
       rep_nome: o.rep_nome,
       status: o.status,
       validade: o.validade ? new Date(o.validade).toISOString().slice(0, 10) : null,
+      retorno_em: o.retorno_em ? new Date(o.retorno_em).toISOString().slice(0, 10) : null,
+      // adiado com retorno agendado para hoje: a lista e o editor destacam
+      retorno_hoje: o.status === 'ADIADO' && !!o.retorno_em && new Date(o.retorno_em).toISOString().slice(0, 10) === hojeCuiabaYmd(),
       observacao: o.observacao,
       cp_codigo: o.cp_codigo ?? null,
       cp_descricao: o.cp_descricao ?? null,
@@ -811,19 +818,32 @@ export class OrcamentoPrismaRepository {
     if (f.flag === 'SEM_CELTA') and.push({ status: 'FECHADO', celta_orcamento: null });
     else if (f.flag === 'ACIMA_ALCADA') and.push({ acima_alcada: true });
     else if (f.flag === 'AGUARDANDO') and.push({ status: 'APROVACAO' });
+    else if (f.flag === 'RETORNO_HOJE') and.push({ status: 'ADIADO', retorno_em: hojeRetorno() });
     if (and.length) where.AND = and;
     const page = Math.max(1, f.page ?? 1);
     const pageSize = Math.min(200, Math.max(1, f.pageSize ?? 50));
+    // Sem flag, os adiados com retorno hoje (dentro dos mesmos filtros) abrem a página 1; as demais páginas
+    // seguem a ordem normal sem eles, deslocadas pelo que já foi no topo. `total` é o do filtro (já os inclui).
+    const topo = f.flag
+      ? []
+      : await this.prisma.ven_orcamento.findMany({
+          where: { ...where, AND: [...and, { status: 'ADIADO', retorno_em: hojeRetorno() }] },
+          orderBy: { created_at: 'desc' },
+          // no máximo uma página: o deslocamento das páginas seguintes nunca fica negativo
+          take: pageSize,
+        });
+    const resto = topo.length ? { ...where, AND: [...and, { id: { notIn: topo.map((o) => o.id) } }] } : where;
     const [total, rows] = await this.prisma.$transaction([
       this.prisma.ven_orcamento.count({ where }),
       this.prisma.ven_orcamento.findMany({
-        where,
+        where: resto,
         orderBy: { created_at: 'desc' },
-        skip: (page - 1) * pageSize,
-        take: pageSize,
+        skip: page === 1 ? 0 : (page - 1) * pageSize - topo.length,
+        take: page === 1 ? Math.max(0, pageSize - topo.length) : pageSize,
       }),
     ]);
-    return { total, page, pageSize, itens: rows.map((r) => this.mapOrcamento(r)) };
+    const itens = page === 1 ? [...topo, ...rows] : rows;
+    return { total, page, pageSize, itens: itens.map((r) => this.mapOrcamento(r)) };
   }
 
   /* ----------------------------------------------- usuários (aprovação no Celta) */
@@ -1187,10 +1207,10 @@ export class OrcamentoPrismaRepository {
     );
   }
 
-  /** Orçamentos abertos deste vendedor (ENVIADO/APROVACAO) — para a bolsa projetada. */
+  /** Orçamentos abertos deste vendedor (ENVIADO/APROVACAO/ADIADO) — para a bolsa projetada. */
   async abertosDoVendedor(rep: number) {
     return this.prisma.ven_orcamento.findMany({
-      where: { rep_codigo: rep, status: { in: ['ENVIADO', 'APROVACAO'] } },
+      where: { rep_codigo: rep, status: { in: ['ENVIADO', 'APROVACAO', 'ADIADO'] } },
       select: {
         id: true, numero: true, cli_nome: true, total: true, desconto_total: true, subtotal: true,
         itens: { select: { quantidade: true, custo_ref: true, total: true, preco_tabela: true } },
