@@ -98,7 +98,7 @@ export class WhatsappController {
     return this.service.resolverDivergencia(chave, dto?.acao, usuario);
   }
 
-  // Lê agora a agenda das sessões rep-* (a carga diária também roda). Só gestão.
+  // Lê agora a agenda das sessões com vendedor (a carga diária também roda). Só gestão.
   @Post('contatos/varrer-agendas')
   async varrerAgendas(@Headers('x-user-id') usuario?: string) {
     await this.service.exigirPapel(usuario, { gestao: true });
@@ -127,7 +127,7 @@ export class WhatsappController {
   }
 
   // Importa as conversas de uma sessão desde uma data (padrão 01/09/2026),
-  // em segundo plano. Só sessões em WA_CORPO_SESSOES; repetir não duplica.
+  // em segundo plano. Só sessões com guarda_corpo; repetir não duplica.
   @Post('historico')
   historico(@Body() dto: { sessao: string; desde?: string; so_enviadas?: boolean }) {
     return this.service.importarHistorico(dto?.sessao ?? '', dto?.desde, dto?.so_enviadas === true);

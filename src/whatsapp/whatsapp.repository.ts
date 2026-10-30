@@ -20,7 +20,7 @@ export interface MensagemRow {
   tipo: string | null;
   timestamp: Date;
   ack: number | null;
-  // Conteúdo — só preenchido para sessões em WA_CORPO_SESSOES.
+  // Conteúdo — só preenchido para sessões com guarda_corpo (ven_wa_sessao).
   corpo?: string | null;
   midia_chave?: string | null;
   midia_mime?: string | null;
@@ -111,6 +111,16 @@ export class WhatsappRepository {
     });
   }
 
+  /** Usuário da intranet pelo id (cuid) com a permissão dele numa tela. */
+  permissaoTela(userId: string | null | undefined, tela: string) {
+    const r = (userId ?? '').trim();
+    if (!r) return Promise.resolve(null);
+    return this.prisma.sis_usuarios.findFirst({
+      where: { trash: 0, id: r },
+      select: { id: true, nome: true, sis_permissoes: { where: { tela }, select: { visualizar: true, editar: true } } },
+    });
+  }
+
   /** Vendedor dono do cliente na carteira da intranet (null = sem dono). */
   async donoDaCarteira(cli_codigo: number): Promise<number | null> {
     const c = await this.prisma.ven_carteira_cliente.findFirst({ where: { cli_codigo, trash: 0 }, select: { rep_codigo: true } });
@@ -188,7 +198,7 @@ export class WhatsappRepository {
   async semClientePorVolume() {
     const g = await this.prisma.ven_wa_mensagem.groupBy({
       by: ['chave', 'chat_telefone', 'sessao'],
-      where: { cli_codigo: null, sessao: { startsWith: 'rep-' } },
+      where: { cli_codigo: null, rep_codigo: { not: null } },
       _count: { _all: true },
       _max: { timestamp: true },
     });
@@ -208,7 +218,7 @@ export class WhatsappRepository {
   async textoDasChaves(chaves: string[], desde: Date) {
     if (!chaves.length) return [];
     return this.prisma.ven_wa_mensagem.findMany({
-      where: { chave: { in: chaves }, timestamp: { gte: desde }, sessao: { startsWith: 'rep-' } },
+      where: { chave: { in: chaves }, timestamp: { gte: desde }, rep_codigo: { not: null } },
       select: { sessao: true, chave: true, timestamp: true, corpo: true, transcricao: true },
     });
   }
@@ -228,7 +238,7 @@ export class WhatsappRepository {
         SELECT o.numero, o.rep_codigo, o.cli_codigo, o.cli_nome, o.entregue_em, w.chave,
                row_number() OVER (PARTITION BY o.id ORDER BY abs(extract(epoch FROM w."timestamp" - o.entregue_em))) rk
           FROM o JOIN ven_wa_mensagem w
-            ON w.sessao = 'rep-' || o.rep_codigo AND w.direcao = 'ENVIADA'
+            ON w.rep_codigo = o.rep_codigo AND w.direcao = 'ENVIADA'
            AND w."timestamp" BETWEEN o.entregue_em - interval '3 minutes' AND o.entregue_em + interval '3 minutes'
       )
       SELECT chave, rep_codigo AS rep, cli_codigo AS cli, cli_nome, numero, entregue_em
@@ -335,14 +345,15 @@ export class WhatsappRepository {
   }
 
   /**
-   * A última mensagem (qualquer direção) de uma sessão — é o que faz o
-   * cabeçalho da estação SEGUIR a conversa: quem escreveu ou recebeu por
+   * A última mensagem (qualquer direção) das sessões do vendedor — é o que faz
+   * o cabeçalho da estação SEGUIR a conversa: quem escreveu ou recebeu por
    * último é o cliente em pauta. Traz o nome do vínculo quando existe.
    */
-  async ultimaConversaDaSessao(sessao: string) {
+  async ultimaConversaDaSessao(sessoes: string[]) {
+    if (!sessoes.length) return null;
     try {
       const m = await this.prisma.ven_wa_mensagem.findFirst({
-        where: { sessao },
+        where: { sessao: { in: sessoes } },
         orderBy: { timestamp: 'desc' },
       });
       if (!m) return null;

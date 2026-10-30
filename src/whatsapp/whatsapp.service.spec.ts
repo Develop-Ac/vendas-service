@@ -3,6 +3,22 @@ import { WhatsappService, chaveTelefone } from './whatsapp.service';
 import { WhatsappRepository } from './whatsapp.repository';
 import { ErpApiService } from '../common/erp-api/erp-api.service';
 import { S3Service } from '../storage/s3.service';
+import { SessoesService } from './sessoes.service';
+
+/** Cache de ven_wa_sessao (SessoesService) falso: tabela sessão → vendedor/guarda/status e a URL do WAHA. */
+type LinhaSessao = { rep: number | null; corpo?: boolean; status?: string };
+function sessoesFalsas(tabela: () => Record<string, LinhaSessao>, waha: () => string) {
+  const nomes = () => Object.keys(tabela());
+  return {
+    repDaSessao: (s: string) => tabela()[s]?.rep ?? null,
+    guardaCorpo: (s: string) => !!tabela()[s]?.corpo,
+    ignorada: (s: string) => tabela()[s]?.rep == null && !tabela()[s]?.corpo,
+    sessoesDoRep: (rep: number) => nomes().filter((s) => tabela()[s].rep === rep),
+    sessoesComVendedor: () => nomes().filter((s) => tabela()[s].rep != null),
+    sessoesComCorpo: () => nomes().filter((s) => tabela()[s].corpo),
+    wahaDe: () => ({ url: waha(), key: 'chave' }),
+  } as unknown as SessoesService;
+}
 
 describe('chaveTelefone', () => {
   it('normaliza para DDD + últimos 8 dígitos, sobrevivendo ao 9º dígito', () => {
@@ -30,6 +46,9 @@ describe('WhatsappService', () => {
   let gravadas: any[];
   let acks: any[];
   let vinculos: Map<string, number>;
+  let tabela: Record<string, LinhaSessao>;
+  let wahaUrl: string;
+  const sessoes = sessoesFalsas(() => tabela, () => wahaUrl);
 
   const repo = {
     resolverChave: jest.fn(async (chave: string) => vinculos.get(chave) ?? null),
@@ -78,13 +97,19 @@ describe('WhatsappService', () => {
     getObjectBuffer: jest.fn(async () => Buffer.from('OggS-audio')),
   } as unknown as S3Service;
 
-  const service = new WhatsappService(repo, erp, s3);
+  const service = new WhatsappService(repo, erp, s3, sessoes);
 
   beforeEach(() => {
     gravadas = [];
     acks = [];
     vinculos = new Map([['6588887777', 1]]);
-    delete process.env.WA_CORPO_SESSOES;
+    tabela = {
+      'rep-316': { rep: 316, status: 'WORKING' },
+      'rep-163': { rep: 163, status: 'STOPPED' },
+      'rep-999': { rep: 999, status: 'WORKING' },
+      assistente: { rep: null, status: 'WORKING' },
+    };
+    wahaUrl = '';
     jest.clearAllMocks();
   });
 
@@ -149,7 +174,7 @@ describe('WhatsappService', () => {
     expect(gravadas[0].cli_codigo).toBeNull();
   });
 
-  it('sessão da lista WA_SESSOES_IGNORADAS (padrão: assistente) não é gravada', async () => {
+  it('sessão sem vendedor e sem guarda_corpo é ignorada', async () => {
     const r = await service.processarWebhook({
       event: 'message',
       session: 'assistente',
@@ -159,17 +184,18 @@ describe('WhatsappService', () => {
     expect(gravadas).toHaveLength(0);
   });
 
-  it('sessão fora da convenção rep-<codigo> registra sem vendedor', async () => {
+  it('sessão com vendedor na tabela grava rep_codigo mesmo sem nome rep-', async () => {
+    tabela['wa-joao'] = { rep: 316 };
     await service.processarWebhook({
       event: 'message',
-      session: 'default',
+      session: 'wa-joao',
       payload: { id: 'm4', from: '556588887777@c.us', fromMe: false },
     });
-    expect(gravadas[0].rep_codigo).toBeNull();
+    expect(gravadas[0]).toMatchObject({ sessao: 'wa-joao', rep_codigo: 316 });
   });
 
   it('contato atrás de LID: resolve o número real no WAHA e casa normalmente', async () => {
-    process.env.WA_API_URL = 'http://waha.local';
+    wahaUrl = 'http://waha.local';
     const fetchMock: jest.Mock = jest.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ lid: '25099822457032@lid', pn: '556588887777@c.us' }),
@@ -194,13 +220,12 @@ describe('WhatsappService', () => {
         'http://waha.local/api/rep-999/lids/25099822457032',
       );
     } finally {
-      delete process.env.WA_API_URL;
       delete (global as any).fetch;
     }
   });
 
   it('LID sem resolução (WAHA fora ou pn nulo) grava com os dígitos do LID como chave', async () => {
-    process.env.WA_API_URL = 'http://waha.local';
+    wahaUrl = 'http://waha.local';
     (global as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({ pn: null }) }));
     try {
       const r = await service.processarWebhook({
@@ -211,7 +236,6 @@ describe('WhatsappService', () => {
       expect(r).toMatchObject({ casada: false });
       expect(gravadas[0]).toMatchObject({ chave: '91753520574651', cli_codigo: null });
     } finally {
-      delete process.env.WA_API_URL;
       delete (global as any).fetch;
     }
   });
@@ -236,11 +260,10 @@ describe('WhatsappService', () => {
       }));
 
     beforeEach(() => {
-      process.env.WA_CORPO_SESSOES = 'rep-316';
-      process.env.WA_API_URL = 'http://waha.local:3000';
+      tabela['rep-316'].corpo = true;
+      wahaUrl = 'http://waha.local:3000';
     });
     afterEach(() => {
-      delete process.env.WA_API_URL;
       delete (global as any).fetch;
     });
 
@@ -315,12 +338,11 @@ describe('WhatsappService', () => {
     const atacado = [{ CLI_CODIGO: 40289, CLI_NOME: 'AUTO VIDROS' }];
 
     beforeEach(() => {
-      svc = new WhatsappService(repo, erp, s3);
-      process.env.WA_API_URL = 'http://waha.local';
+      svc = new WhatsappService(repo, erp, s3, sessoes);
+      wahaUrl = 'http://waha.local';
       (erp.consultar as jest.Mock).mockResolvedValueOnce(atacado);
     });
     afterEach(() => {
-      delete process.env.WA_API_URL;
       delete (global as any).fetch;
     });
 
@@ -351,29 +373,29 @@ describe('WhatsappService', () => {
       await (erp.consultar as jest.Mock)(); // consome a lista do beforeEach
       const fora = { consultar: jest.fn(async () => Promise.reject(new Error('erp fora'))) } as unknown as ErpApiService;
       (global as any).fetch = jest.fn(async () => ({ ok: true, json: async () => ({ name: '40289 João' }) }));
-      const r = await new WhatsappService(repo, fora, s3).processarWebhook({ event: 'message', session: 'rep-316', payload: { id: 'ag4', from: '556511112222@c.us' } });
+      const r = await new WhatsappService(repo, fora, s3, sessoes).processarWebhook({ event: 'message', session: 'rep-316', payload: { id: 'ag4', from: '556511112222@c.us' } });
       expect(r).toMatchObject({ casada: false });
       expect(gravadas).toHaveLength(1);
     });
 
-    it('varredura: chave nova vincula; chave vinculada a outro cliente vira divergência sem alterar o vínculo', async () => {
-      (global as any).fetch = jest.fn(async (url: string) => ({
-        ok: true,
-        json: async () =>
-          url.endsWith('/api/sessions')
-            ? [
-                { name: 'rep-316', status: 'WORKING' },
-                { name: 'rep-163', status: 'STOPPED' },
-                { name: 'assistente', status: 'WORKING' },
-              ]
-            : [
-                { id: '556588887777@c.us', name: '40289 Maria' },
-                { id: '556511112222@c.us', name: '40289 João' },
-                { id: '556500001111@c.us', name: 'Fulano' },
-              ],
+    it('varredura: sessões com vendedor; a que o WAHA recusa não para as outras; chave nova vincula; chave de outro cliente vira divergência', async () => {
+      delete tabela['rep-999'];
+      const fetchMock = jest.fn(async (url: string) => ({
+        ok: !url.includes('rep-163'),
+        status: 422,
+        json: async () => [
+          { id: '556588887777@c.us', name: '40289 Maria' },
+          { id: '556511112222@c.us', name: '40289 João' },
+          { id: '556500001111@c.us', name: 'Fulano' },
+        ],
       }));
+      (global as any).fetch = fetchMock;
       const r = await svc.varrerAgendas();
       expect(r).toEqual({ sessoes: 1, contatos_lidos: 3, vinculados: 1, divergencias: 1 });
+      expect(fetchMock.mock.calls.map((c) => c[0])).toEqual([
+        'http://waha.local/api/contacts/all?session=rep-316',
+        'http://waha.local/api/contacts/all?session=rep-163',
+      ]);
       expect(repo.upsertDivergencia).toHaveBeenCalledWith({
         chave: '6588887777',
         sessao: 'rep-316',

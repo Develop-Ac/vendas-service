@@ -185,4 +185,25 @@ export const CATALOGO_VENDAS: Catalogo = {
     prioridade: 'normal',
     alvo: { tipo: 'usuario' },
   },
+  // Primeiras regras com alvo `tela`: chegam a quem tem a tela /sistema/whatsapp liberada em sis_permissoes.
+  'whatsapp.sessao_caiu': {
+    descricao: 'Sessão do WhatsApp (WAHA) em duas leituras seguidas fora de WORKING.',
+    titulo: 'WhatsApp caiu: {apelido} ({vendedor})',
+    corpo: '{status} desde {desde} · {instancia}',
+    link: '/sistema/whatsapp',
+    canais: ['badge', 'mural', 'desktop'],
+    prioridade: 'alta',
+    alvo: { tipo: 'tela', valor: '/sistema/whatsapp' },
+    // agrupar = chave por sessão: é o que permite tirar o aviso quando ela volta a WORKING
+    agrupar: true,
+  },
+  'whatsapp.instancia_fora': {
+    descricao: 'Instância do WAHA sem responder em duas leituras seguidas do monitor.',
+    titulo: 'WAHA fora do ar: {instancia}',
+    link: '/sistema/whatsapp',
+    canais: ['badge', 'mural', 'desktop'],
+    prioridade: 'alta',
+    alvo: { tipo: 'tela', valor: '/sistema/whatsapp' },
+    agrupar: true,
+  },
 };

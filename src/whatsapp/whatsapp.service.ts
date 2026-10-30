@@ -4,6 +4,7 @@ import { Cron } from '@nestjs/schedule';
 import { ErpApiService } from '../common/erp-api/erp-api.service';
 import { S3Service } from '../storage/s3.service';
 import { WhatsappRepository, MensagemRow } from './whatsapp.repository';
+import { SessoesService } from './sessoes.service';
 import { ClienteCadastro, ConversaSemCliente, OrcamentoJanela, sugerirVinculos } from './sugestao-vinculo';
 import { codigoDaAgenda } from './agenda';
 
@@ -15,19 +16,20 @@ import { codigoDaAgenda } from './agenda';
  * contato (sessão/vendedor, interlocutor, direção, hora, tipo) e resolve o
  * cliente pela chave DDD + últimos 8 dígitos.
  *
- * CONTEÚDO (corpo, mídia no MinIO, áudio em texto) só para as sessões listadas
- * em WA_CORPO_SESSOES — os números são corporativos, a equipe foi comunicada e
- * a guarda é por prazo indefinido (decisão da diretoria). Sessão fora da lista
- * continua só com metadados. O webhook nunca transcreve: o áudio entra
+ * CONTEÚDO (corpo, mídia no MinIO, áudio em texto) só para as sessões com
+ * `guarda_corpo` na tabela ven_wa_sessao — os números são corporativos, a equipe
+ * foi comunicada e a guarda é por prazo indefinido (decisão da diretoria). As
+ * demais ficam só com metadados. O webhook nunca transcreve: o áudio entra
  * PENDENTE e um cron manda ao transcritor do runner do assistente (.146).
  *
- * Convenção de sessão: `rep-<codigo>` (ex.: rep-316). É dela que sai o vendedor
- * dono do contato; sessão fora do padrão é registrada sem rep.
+ * Sessão → vendedor e instância do WAHA vêm de ven_wa_sessao (SessoesService,
+ * cache em memória); o nome da sessão não significa nada. Sessão sem vendedor e
+ * sem guarda de conteúdo (ex.: `assistente`) fica fora do sensor.
  *
  * VÍNCULO PELA AGENDA: o vendedor salva o contato no celular corporativo com o
  * código do cliente no nome ("40289 João"). Número sem vínculo que conversa é
  * lido na agenda na hora (webhook) e a varredura diária lê a agenda inteira de
- * cada sessão `rep-*`. A agenda nunca sobrescreve: chave já vinculada a outro
+ * cada sessão com vendedor. A agenda nunca sobrescreve: chave já vinculada a outro
  * cliente vira divergência para a gestão decidir.
  *
  * A mensagem ENVIADA é o terceiro sinal de auto-conclusão da fila do dia
@@ -36,16 +38,6 @@ import { codigoDaAgenda } from './agenda';
 
 /** Os grupos e listas de transmissão ficam FORA do sensor (decisão do plano). */
 const CHATS_IGNORADOS = ['@g.us', '@broadcast', '@newsletter'];
-
-/** Sessões cujo conteúdo é guardado (env WA_CORPO_SESSOES, vírgula; vazia = ninguém). */
-function sessoesComCorpo(): Set<string> {
-  return new Set(
-    (process.env.WA_CORPO_SESSOES ?? '')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
-}
 
 /** Mídia que vale guardar: foto do vidro/chassi, áudio, PDF e documentos. Vídeo, sticker e contato ficam fora. */
 const MIDIA_ACEITA =
@@ -88,21 +80,6 @@ export interface HistoricoEstado {
   erro: string | null;
   /** true = pede ao WAHA só as mensagens fromMe (recarga leve de uma lacuna de enviadas). */
   so_enviadas?: boolean;
-}
-
-/**
- * Sessões do mesmo WAHA que NÃO são de vendedor e não devem entrar no sensor
- * (ex.: `assistente`, o assistente da gestão no WhatsApp). O WAHA manda o webhook
- * global para todas as sessões; o filtro fica aqui. Lista por env
- * WA_SESSOES_IGNORADAS (separada por vírgula); padrão = assistente.
- */
-function sessoesIgnoradas(): Set<string> {
-  return new Set(
-    (process.env.WA_SESSOES_IGNORADAS ?? 'assistente')
-      .split(',')
-      .map((s) => s.trim())
-      .filter(Boolean),
-  );
 }
 
 const TABELAS_ATACADO = ['2', '5'];
@@ -155,7 +132,7 @@ export class WhatsappService {
    * atrás de um Linked ID (`...@lid`) — foi o que o piloto pegou no primeiro
    * teste: 100% das mensagens chegando com LID e casamento zero. O WAHA resolve
    * pelo endpoint `GET /api/{sessao}/lids/{lid}`; o cache evita uma chamada por
-   * mensagem. Precisa de WA_API_URL (e WA_API_KEY, se a API tiver chave).
+   * mensagem. URL e chave são as da instância da sessão.
    */
   private lidCache = new Map<string, string>();
   private agendaCache = new Map<string, string | null>();
@@ -169,22 +146,15 @@ export class WhatsappService {
     private readonly repo: WhatsappRepository,
     private readonly erp: ErpApiService,
     private readonly s3: S3Service,
+    private readonly sessoes: SessoesService,
   ) {}
 
-  private get wahaBase(): string {
-    return (process.env.WA_API_URL ?? '').replace(/\/+$/, '');
-  }
-  private wahaHeaders() {
-    return { 'X-Api-Key': process.env.WA_API_KEY ?? '' };
-  }
-
   private repDaSessao(sessao: string): number | null {
-    const m = /^rep-(\d+)$/.exec(sessao.trim());
-    return m ? Number(m[1]) : null;
+    return this.sessoes.repDaSessao(sessao);
   }
 
   private async resolverLid(sessao: string, lid: string): Promise<string | null> {
-    const base = this.wahaBase;
+    const { url: base, key } = this.sessoes.wahaDe(sessao);
     if (!base) return null;
     const conhecido = this.lidCache.get(lid);
     if (conhecido) return conhecido;
@@ -192,7 +162,7 @@ export class WhatsappService {
       const r = await fetch(
         `${base}/api/${encodeURIComponent(sessao)}/lids/${encodeURIComponent(lid)}`,
         {
-          headers: { 'X-Api-Key': process.env.WA_API_KEY ?? '' },
+          headers: { 'X-Api-Key': key },
           signal: AbortSignal.timeout(10_000),
         },
       );
@@ -222,7 +192,7 @@ export class WhatsappService {
     const p = body.payload ?? {};
 
     if (!sessao || !p.id) return { ok: true, ignorado: 'sem sessão ou id' };
-    if (sessoesIgnoradas().has(sessao)) return { ok: true, ignorado: 'sessão fora do sensor' };
+    if (this.sessoes.ignorada(sessao)) return { ok: true, ignorado: 'sessão fora do sensor' };
 
     if (evento === 'message.ack') {
       const r = await this.repo.atualizarAck(sessao, String(p.id), Number(p.ack ?? 0));
@@ -292,7 +262,7 @@ export class WhatsappService {
     }
 
     let conteudo: Pick<MensagemRow, 'corpo' | 'midia_chave' | 'midia_mime' | 'transcricao_status'> = {};
-    if (sessoesComCorpo().has(sessao)) {
+    if (this.sessoes.guardaCorpo(sessao)) {
       const corpo = (typeof p.body === 'string' && p.body) || p._data?.caption || null;
       const midia = await this.guardarMidia(sessao, String(p.id), timestamp, p);
       conteudo = {
@@ -324,7 +294,8 @@ export class WhatsappService {
   /**
    * Baixa a mídia do WAHA e guarda no MinIO. A URL do payload vem com o host
    * interno do container do WAHA (localhost:3000); vista daqui não abre, então
-   * o começo é trocado pelo WA_API_URL (mesma armadilha medida no recebimento).
+   * o começo é trocado pela URL da instância da sessão (mesma armadilha medida
+   * no recebimento).
    * Nunca lança: mídia que falha não impede gravar a mensagem.
    */
   private async guardarMidia(
@@ -339,11 +310,12 @@ export class WhatsappService {
     const tamanho = Number(p._data?.size);
     if (Number.isFinite(tamanho) && tamanho > MIDIA_MAX_BYTES) return null;
 
+    const waha = this.sessoes.wahaDe(sessao);
     const candidatas = [url];
-    if (this.wahaBase) {
+    if (waha.url) {
       try {
         const u = new URL(url);
-        const alvo = new URL(this.wahaBase);
+        const alvo = new URL(waha.url);
         u.protocol = alvo.protocol;
         u.host = alvo.host;
         if (u.toString() !== url) candidatas.unshift(u.toString());
@@ -355,7 +327,7 @@ export class WhatsappService {
     let ultimoErro = '';
     for (const c of candidatas) {
       try {
-        const r = await fetch(c, { headers: this.wahaHeaders(), signal: AbortSignal.timeout(60_000) });
+        const r = await fetch(c, { headers: { 'X-Api-Key': waha.key }, signal: AbortSignal.timeout(60_000) });
         if (!r.ok) {
           ultimoErro = `HTTP ${r.status}`;
           continue;
@@ -480,9 +452,9 @@ export class WhatsappService {
    */
   importarHistorico(sessao: string, desde?: string, soEnviadas = false) {
     if (!sessao) throw new BadRequestException('sessao é obrigatória.');
-    if (!this.wahaBase) throw new BadRequestException('WA_API_URL não configurada.');
-    if (!sessoesComCorpo().has(sessao)) {
-      throw new BadRequestException(`Sessão ${sessao} não está em WA_CORPO_SESSOES.`);
+    if (!this.sessoes.wahaDe(sessao).url) throw new BadRequestException('URL do WAHA não configurada.');
+    if (!this.sessoes.guardaCorpo(sessao)) {
+      throw new BadRequestException(`Sessão ${sessao} não guarda conteúdo (guarda_corpo).`);
     }
     const d = new Date(desde ?? '2026-09-01T00:00:00-04:00');
     if (Number.isNaN(d.getTime())) throw new BadRequestException('desde inválida.');
@@ -512,14 +484,15 @@ export class WhatsappService {
 
   /** O laço em si (público para o teste esperar por ele). */
   async executarHistorico(estado: HistoricoEstado, desde: Date) {
-    const base = this.wahaBase;
+    const { url: base, key } = this.sessoes.wahaDe(estado.sessao);
+    const headers = { 'X-Api-Key': key };
     const s = encodeURIComponent(estado.sessao);
     const epoch = Math.floor(desde.getTime() / 1000);
     try {
       const chats: string[] = [];
       for (let offset = 0; ; offset += 200) {
         const r = await fetch(`${base}/api/${s}/chats?limit=200&offset=${offset}`, {
-          headers: this.wahaHeaders(),
+          headers,
           signal: AbortSignal.timeout(90_000),
         });
         if (!r.ok) throw new Error(`WAHA chats HTTP ${r.status}`);
@@ -542,7 +515,7 @@ export class WhatsappService {
               // filter.fromMe=true: o WAHA devolve (e baixa mídia) só das enviadas —
               // recarga da lacuna de 29/09→deploy sem repassar milhares de recebidas.
               (estado.so_enviadas ? '&filter.fromMe=true' : ''),
-            { headers: this.wahaHeaders(), signal: AbortSignal.timeout(180_000) },
+            { headers, signal: AbortSignal.timeout(180_000) },
           );
           if (!r.ok) throw new Error(`HTTP ${r.status}`);
           msgs = (await r.json()) as PayloadWaha[];
@@ -760,12 +733,13 @@ export class WhatsappService {
   private async nomeAgenda(sessao: string, chave: string, telefone: string, soAgenda = false): Promise<string | null> {
     const k = `${sessao}|${chave}`;
     if (!soAgenda && this.agendaCache.has(k)) return this.agendaCache.get(k) ?? null;
-    if (!this.wahaBase) return null;
+    const waha = this.sessoes.wahaDe(sessao);
+    if (!waha.url) return null;
     const contato = chave.length > 11 ? `${telefone}@lid` : telefone;
     try {
       const r = await fetch(
-        `${this.wahaBase}/api/contacts?contactId=${encodeURIComponent(contato)}&session=${encodeURIComponent(sessao)}`,
-        { headers: this.wahaHeaders(), signal: AbortSignal.timeout(10_000) },
+        `${waha.url}/api/contacts?contactId=${encodeURIComponent(contato)}&session=${encodeURIComponent(sessao)}`,
+        { headers: { 'X-Api-Key': waha.key }, signal: AbortSignal.timeout(10_000) },
       );
       const j = r.ok ? ((await r.json()) as { name?: string | null; pushname?: string | null }) : null;
       const salvo = (j?.name || '').trim() || null;
@@ -883,23 +857,21 @@ export class WhatsappService {
   }
 
   /**
-   * Varredura das agendas: lê os contatos salvos de cada sessão `rep-*`
-   * conectada no WAHA e vincula pelo código no nome. Roda na carga diária e por
-   * POST /whatsapp/contatos/varrer-agendas; sessão que falha não para as outras.
+   * Varredura das agendas: lê os contatos salvos de cada sessão com vendedor,
+   * cada uma na sua instância do WAHA, e vincula pelo código no nome. Roda na
+   * carga diária e por POST /whatsapp/contatos/varrer-agendas; sessão que falha
+   * (desconectada no WAHA, por exemplo) não para as outras.
    */
   async varrerAgendas() {
     const r = { sessoes: 0, contatos_lidos: 0, vinculados: 0, divergencias: 0 };
-    if (!this.wahaBase) return r;
-    const s = await fetch(`${this.wahaBase}/api/sessions`, { headers: this.wahaHeaders(), signal: AbortSignal.timeout(10_000) });
-    if (!s.ok) throw new Error(`WAHA /api/sessions respondeu ${s.status}`);
-    const sessoes = ((await s.json()) as Array<{ name?: string; status?: string }>)
-      .filter((x) => x.name?.startsWith('rep-') && x.status === 'WORKING')
-      .map((x) => x.name as string);
+    const sessoes = this.sessoes.sessoesComVendedor();
+    if (!sessoes.length) return r;
     const ignoradas = await this.repo.chavesIgnoradas();
     for (const sessao of sessoes) {
       try {
-        const c = await fetch(`${this.wahaBase}/api/contacts/all?session=${encodeURIComponent(sessao)}`, {
-          headers: this.wahaHeaders(),
+        const waha = this.sessoes.wahaDe(sessao);
+        const c = await fetch(`${waha.url}/api/contacts/all?session=${encodeURIComponent(sessao)}`, {
+          headers: { 'X-Api-Key': waha.key },
           signal: AbortSignal.timeout(60_000),
         });
         if (!c.ok) throw new Error(`HTTP ${c.status}`);
@@ -1051,7 +1023,7 @@ export class WhatsappService {
    * atualiza quando há mensagem, não no mero clique de leitura).
    */
   conversaAtiva(rep_codigo: number) {
-    return this.repo.ultimaConversaDaSessao(`rep-${rep_codigo}`);
+    return this.repo.ultimaConversaDaSessao(this.sessoes.sessoesDoRep(rep_codigo));
   }
 
   // ------------------------------------------------- medições do piloto
@@ -1092,7 +1064,7 @@ export class WhatsappService {
       chaves_pendentes: pendentes.length,
       sessoes: [...sessoes.entries()].map(([sessao, v]) => ({ sessao, ...v })),
       conteudo: {
-        sessoes_liberadas: [...sessoesComCorpo()],
+        sessoes_liberadas: this.sessoes.sessoesComCorpo(),
         com_corpo: m.comCorpo ?? 0,
         com_midia: m.comMidia ?? 0,
         audios,

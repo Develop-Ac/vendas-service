@@ -2523,6 +2523,47 @@ model ven_wa_mensagem {
   @@index([updated_at], map: "idx_ven_wa_msg_updated")
 }
 
+/// sessão do WAHA: instância onde vive, vendedor dono e estado lido pelo monitor
+model ven_wa_sessao {
+  sessao        String    @id
+  instancia     String
+  apelido       String
+  rep_codigo    Int?
+  rep_nome      String?
+  /// grava corpo/mídia das mensagens desta sessão
+  guarda_corpo  Boolean   @default(false)
+  status        String?
+  status_desde  DateTime? @db.Timestamptz(6)
+  telefone      String?
+  push_name     String?
+  visto_em      DateTime? @db.Timestamptz(6)
+  /// leituras seguidas fora de WORKING
+  leituras_fora Int       @default(0)
+  /// aviso de queda já emitido nesta queda
+  avisada       Boolean   @default(false)
+  /// restart automático já tentado nesta queda
+  restart_em    DateTime? @db.Timestamptz(6)
+  created_at    DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at    DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([instancia], map: "idx_ven_wa_sessao_inst")
+  @@index([rep_codigo], map: "idx_ven_wa_sessao_rep")
+}
+
+/// histórico da sessão: status | restart | logout | criada | vendedor | instancia
+model ven_wa_sessao_evento {
+  id      String   @id @default(cuid())
+  sessao  String
+  tipo    String
+  de      String?
+  para    String?
+  quando  DateTime @default(now()) @db.Timestamptz(6)
+  usuario String?
+  detalhe String?
+
+  @@index([sessao, quando(sort: Desc)], map: "idx_ven_wa_sessao_evt")
+}
+
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
 model api_idempotencia {
   empresa      Int       @db.SmallInt

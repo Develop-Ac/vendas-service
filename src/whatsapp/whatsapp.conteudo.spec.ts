@@ -2,6 +2,22 @@ import { HistoricoEstado, WhatsappService } from './whatsapp.service';
 import { WhatsappRepository } from './whatsapp.repository';
 import { ErpApiService } from '../common/erp-api/erp-api.service';
 import { S3Service } from '../storage/s3.service';
+import { SessoesService } from './sessoes.service';
+
+/** Cache de ven_wa_sessao (SessoesService) falso: tabela sessão → vendedor/guarda/status e a URL do WAHA. */
+type LinhaSessao = { rep: number | null; corpo?: boolean; status?: string };
+function sessoesFalsas(tabela: () => Record<string, LinhaSessao>, waha: () => string) {
+  const nomes = () => Object.keys(tabela());
+  return {
+    repDaSessao: (s: string) => tabela()[s]?.rep ?? null,
+    guardaCorpo: (s: string) => !!tabela()[s]?.corpo,
+    ignorada: (s: string) => tabela()[s]?.rep == null && !tabela()[s]?.corpo,
+    sessoesDoRep: (rep: number) => nomes().filter((s) => tabela()[s].rep === rep),
+    sessoesComVendedor: () => nomes().filter((s) => tabela()[s].rep != null),
+    sessoesComCorpo: () => nomes().filter((s) => tabela()[s].corpo),
+    wahaDe: () => ({ url: waha(), key: 'chave' }),
+  } as unknown as SessoesService;
+}
 
 /**
  * Conteúdo das conversas (corpo, mídia no MinIO, áudio em texto, histórico).
@@ -14,6 +30,9 @@ describe('WhatsappService — conteúdo', () => {
   let falhas: any[];
   let pendentes: any[];
   let vinculos: Map<string, number>;
+  let tabela: Record<string, LinhaSessao>;
+  let wahaUrl: string;
+  const sessoes = sessoesFalsas(() => tabela, () => wahaUrl);
 
   const repo = {
     resolverChave: jest.fn(async (chave: string) => vinculos.get(chave) ?? null),
@@ -42,7 +61,7 @@ describe('WhatsappService — conteúdo', () => {
     putObject: jest.fn(async () => undefined),
     getObjectBuffer: jest.fn(async () => Buffer.from('OggS-audio')),
   } as unknown as S3Service;
-  const service = new WhatsappService(repo, erp, s3);
+  const service = new WhatsappService(repo, erp, s3, sessoes);
 
   const audioPayload = {
     id: 'true_556588887777@c.us_AAA',
@@ -63,16 +82,18 @@ describe('WhatsappService — conteúdo', () => {
     falhas = [];
     pendentes = [];
     vinculos = new Map([['6588887777', 1]]);
-    process.env.WA_CORPO_SESSOES = 'rep-163, rep-200';
-    process.env.WA_API_URL = 'http://waha.local:3000';
+    tabela = {
+      'rep-163': { rep: 163, corpo: true },
+      'rep-200': { rep: 200, corpo: true },
+      'rep-349': { rep: 349 },
+    };
+    wahaUrl = 'http://waha.local:3000';
     delete process.env.WA_TRANSCRICAO_URL;
     delete process.env.WA_TRANSCRICAO_TOKEN;
     delete process.env.WA_TRANSCRICAO_SO_RECEBIDAS;
     jest.clearAllMocks();
   });
   afterEach(() => {
-    delete process.env.WA_CORPO_SESSOES;
-    delete process.env.WA_API_URL;
     delete (global as any).fetch;
   });
 
@@ -122,7 +143,7 @@ describe('WhatsappService — conteúdo', () => {
     expect(s3.putObject).not.toHaveBeenCalled();
   });
 
-  it('sessão fora de WA_CORPO_SESSOES continua só com metadados (nem baixa a mídia)', async () => {
+  it('sessão sem guarda_corpo continua só com metadados (nem baixa a mídia)', async () => {
     (global as any).fetch = jest.fn();
     await service.processarWebhook({
       event: 'message',
@@ -285,8 +306,8 @@ describe('WhatsappService — conteúdo', () => {
     });
   });
 
-  it('histórico recusa sessão fora da lista e em andamento', () => {
-    expect(() => service.importarHistorico('rep-349')).toThrow(/WA_CORPO_SESSOES/);
+  it('histórico recusa sessão sem guarda_corpo e em andamento', () => {
+    expect(() => service.importarHistorico('rep-349')).toThrow(/guarda_corpo/);
     (global as any).fetch = jest.fn(() => new Promise(() => undefined)); // nunca responde
     service.importarHistorico('rep-200');
     expect(() => service.importarHistorico('rep-200')).toThrow(/em andamento/);
