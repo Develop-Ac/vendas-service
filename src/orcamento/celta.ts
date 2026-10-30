@@ -168,7 +168,8 @@ export interface CorpoCelta {
   desp_acessorias?: number;
   /** comprovante de aprovação de desconto (JWT EdDSA assinado pela intranet) — só quando algum item passa do teto do ERP */
   comprovante?: string;
-  itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; valor_descto: number; difal?: number; icms_st?: number }>;
+  /** `promocao`: item vendido pelo preço de promoção — a API grava ORCAMENTOS_ITENS.PROMOCAO = S e o Celta leva a flag à NF (BI e bolsa leem dela). Só vai quando true. */
+  itens: Array<{ pro_codigo: number; quantidade: number; unitario: number; valor_descto: number; difal?: number; icms_st?: number; promocao?: boolean }>;
 }
 
 const OBSERVACAO_MAX = 2000;
@@ -202,6 +203,7 @@ export function corpoParaCelta(o: OrcamentoParaCelta, comTributacao = false): Co
     const valor_descto = Math.min(round2(bruto - 0.01), Math.max(0, round2(bruto - total)));
     return {
       pro_codigo: i.pro_codigo, quantidade, unitario, valor_descto,
+      ...(i.promocao_codigo != null && !i.fora_promocao ? { promocao: true } : {}),
       ...(regime === 'difal' ? { difal: round2(Number(i.difal ?? 0)) } : {}),
       ...(regime === 'st' ? { icms_st: round2(Number(i.icms_st ?? 0)) } : {}),
     };

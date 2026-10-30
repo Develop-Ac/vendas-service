@@ -34,6 +34,13 @@ describe('corpoParaCelta', () => {
     );
   });
 
+  it('item em promoção vai com promocao: true; fora da promoção, sem a flag', () => {
+    const [a, b] = base.itens ?? [];
+    const c = corpoParaCelta({ ...base, itens: [{ ...a, promocao_codigo: 418 }, { ...b, promocao_codigo: 418, fora_promocao: true }] });
+    expect(c.itens[0]).toMatchObject({ pro_codigo: 40381, promocao: true });
+    expect(c.itens[1]).not.toHaveProperty('promocao');
+  });
+
   it('ajuste da bolsa: motivo e justificativa na observação, antes dos itens e só em ASCII', () => {
     const c = corpoParaCelta({
       ...base,
