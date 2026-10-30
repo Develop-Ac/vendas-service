@@ -223,11 +223,12 @@ export class AjusteBolsaDto extends AcaoOrcamentoDto {
   justificativa!: string;
 }
 
+// PRECO cobre 'perdeu no preço' e 'fechou com concorrente' (unidos em 30/10/2026: a
+// equipe não distinguia os dois; o SQL 2026-10-30_motivo_preco_concorrente migra o histórico).
 export const MOTIVOS_PERDA = [
   'PRECO',
   'PRAZO_FRETE',
   'SEM_ESTOQUE',
-  'CONCORRENTE',
   'CLIENTE_ADIOU',
   'CREDITO_BLOQUEADO',
 ] as const;

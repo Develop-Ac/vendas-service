@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS ven_orcamento (
   aprovado_em        TIMESTAMPTZ,
   enviado_em         TIMESTAMPTZ,
   desfecho_em        TIMESTAMPTZ,
-  desfecho_motivo    TEXT,                             -- PERDIDO: PRECO | PRAZO_FRETE | SEM_ESTOQUE | CONCORRENTE | CLIENTE_ADIOU | CREDITO_BLOQUEADO
+  desfecho_motivo    TEXT,                             -- PERDIDO: PRECO (preço/concorrente) | PRAZO_FRETE | SEM_ESTOQUE | CLIENTE_ADIOU | CREDITO_BLOQUEADO
   desfecho_ref       TEXT,                             -- FECHADO: nº do pedido/NF no Celta
   usuario_id         TEXT,
   usuario_nome       TEXT,

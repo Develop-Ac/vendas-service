@@ -230,7 +230,7 @@ Sempre **hoje + 7 dias** (`ORCAMENTO_VALIDADE_DIAS`). Com item em promoção, en
 
 `RASCUNHO` → `ENVIADO` (ou `APROVACAO`, se algum item ficou abaixo do mínimo) →
 `FECHADO` (com referência do pedido/NF no Celta) | `PERDIDO` (motivo: PRECO, PRAZO_FRETE,
-SEM_ESTOQUE, CONCORRENTE, CLIENTE_ADIOU, CREDITO_BLOQUEADO) | `CANCELADO`.
+SEM_ESTOQUE, CLIENTE_ADIOU, CREDITO_BLOQUEADO; PRECO cobre preço e concorrente desde 30/10/2026) | `CANCELADO`.
 
 **ADIADO (cliente adiou com data de retorno).** `POST /:id/desfecho` com `resultado=PERDIDO`,
 `motivo=CLIENTE_ADIOU` e `retorno_em` (YYYY-MM-DD, de amanhã a +90 dias no dia de Cuiabá) grava

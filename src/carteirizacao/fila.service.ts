@@ -69,11 +69,11 @@ const fmtCobertura = (c: Cobertura) => ({
   fim: c.fim.toISOString().slice(0, 10),
 });
 
+// PRECO = preço ou concorrente (unidos em 30/10/2026; histórico migrado por SQL manual).
 export const MOTIVOS_DESFECHO = [
   'PRECO',
   'PRAZO_FRETE',
   'SEM_ESTOQUE',
-  'CONCORRENTE',
   'CLIENTE_ADIOU',
   'CREDITO_BLOQUEADO',
 ] as const;

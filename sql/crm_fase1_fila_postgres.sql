@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS ven_orcamento_desfecho (
   rep_codigo   INTEGER,
   rep_nome     TEXT,
   total        NUMERIC(15,2) NOT NULL DEFAULT 0,
-  motivo       TEXT NOT NULL,                          -- PRECO | PRAZO_FRETE | SEM_ESTOQUE | CONCORRENTE | CLIENTE_ADIOU | CREDITO_BLOQUEADO
+  motivo       TEXT NOT NULL,                          -- PRECO (preço/concorrente) | PRAZO_FRETE | SEM_ESTOQUE | CLIENTE_ADIOU | CREDITO_BLOQUEADO
   observacao   TEXT,
   usuario_id   TEXT,
   usuario_nome TEXT,

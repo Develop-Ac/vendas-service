@@ -98,7 +98,7 @@ export class RemoverDto {
  * (cópia do ERP na hora do clique); o motivo é validado no FilaService.
  */
 export class DesfechoOrcamentoDto {
-  motivo: string; // PRECO | PRAZO_FRETE | SEM_ESTOQUE | CONCORRENTE | CLIENTE_ADIOU | CREDITO_BLOQUEADO
+  motivo: string; // PRECO (preço/concorrente) | PRAZO_FRETE | SEM_ESTOQUE | CLIENTE_ADIOU | CREDITO_BLOQUEADO
   cli_codigo: number;
   cli_nome?: string;
   rep_codigo?: number;
