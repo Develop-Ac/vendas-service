@@ -570,55 +570,6 @@ export class OrcamentoErpRepository {
   /* ------------------------------------------------- orçamentos do Celta */
 
   /**
-   * Orçamentos lançados NO CELTA nos últimos `dias`, ainda sem venda do cliente
-   * desde a emissão (a mesma inferência da carteirização: o vínculo NFS quase
-   * nunca é preenchido). Todos os clientes, não só o atacado — o vendedor de
-   * balcão também orça. Nomes atuais de cliente e representante vêm em lote.
-   */
-  async orcamentosCeltaPendentes(dias = 7, rep?: number): Promise<OrcamentoCelta[]> {
-    const hoje = new Date(`${hojeYmd()}T00:00:00`);
-    const desde = new Date(hoje);
-    desde.setDate(desde.getDate() - dias);
-    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-    const filtrosOrc: FiltroErp[] = [{ campo: 'EMISSAO', op: 'entre', valor: [ymd(desde), ymd(hoje)] }];
-    if (rep != null) filtrosOrc.push({ campo: 'REP_CODIGO', op: 'igual', valor: rep });
-
-    const [orcs, vendas] = await Promise.all([
-      this.erp.consultar<Record<string, any>>('orcamentos', {
-        empresa: EMPRESA,
-        campos: ['ORCAMENTO', 'EMISSAO', 'DT_VALIDADE', 'CLI_CODIGO', 'CLI_NOME', 'REP_CODIGO', 'TOTAL', 'NFS'],
-        filtros: filtrosOrc,
-        ordenar: [{ campo: 'EMISSAO', dir: 'desc' }, { campo: 'ORCAMENTO', dir: 'desc' }],
-        limite: 5000,
-        semCache: true,
-      }),
-      this.erp.consultar<{ CLI_CODIGO: number; DT_EMISSAO: string }>('nf-saida', {
-        empresa: EMPRESA,
-        filtros: [
-          { campo: 'DT_EMISSAO', op: 'maior_igual', valor: ymd(desde) },
-          { campo: 'DT_CANCELAMENTO', op: 'nulo' },
-          { campo: 'OPF_CODIGO', op: 'em', valor: OPERACOES_VENDA },
-        ],
-        agrupar: ['CLI_CODIGO', 'DT_EMISSAO'],
-        agregar: [{ fn: 'contar', campo: 'NFS', como: 'N' }],
-        limite: 20_000,
-      }),
-    ]);
-    const diasComVenda = new Map<number, string[]>();
-    for (const v of vendas) {
-      const cli = Number(v.CLI_CODIGO);
-      const dia = String(v.DT_EMISSAO).slice(0, 10);
-      (diasComVenda.get(cli) ?? diasComVenda.set(cli, []).get(cli)!).push(dia);
-    }
-    const pendentes = orcs.filter((o) => {
-      if (o.NFS != null && Number(o.NFS) > 0) return false;
-      const emissao = String(o.EMISSAO).slice(0, 10);
-      return !(diasComVenda.get(Number(o.CLI_CODIGO)) ?? []).some((dia) => dia >= emissao);
-    });
-    return this.enriquecerOrcamentosCelta(pendentes);
-  }
-
-  /**
    * Orçamentos do Celta do CLIENTE ainda dentro da validade, sem venda
    * vinculada (NFS) — o que a Estação lista ao apertar Orçar, junto com os da
    * intranet. Janela de 90 dias de emissão só para não varrer a tabela inteira.

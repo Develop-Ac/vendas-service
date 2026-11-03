@@ -1254,24 +1254,6 @@ export class OrcamentoService {
   }
 
   /**
-   * Orçamentos do Celta dos últimos `dias` ainda pendentes (sem venda do
-   * cliente e sem motivo de perda registrado) — a lista de trabalho do dia,
-   * na tela inicial. O vendedor vê os seus; gestão vê todos.
-   */
-  async celtaPendentes(rep: number | undefined, dias = 7) {
-    const d = Math.max(1, Math.min(60, dias));
-    const itens = await this.erp.orcamentosCeltaPendentes(d, rep);
-    const comDesfecho = await this.db.celtaComDesfecho(itens.map((o) => o.orcamento)).catch(() => new Set<number>());
-    const abertos = itens.filter((o) => !comDesfecho.has(o.orcamento));
-    return {
-      dias: d,
-      total: abertos.length,
-      valor_total: round2(abertos.reduce((s, o) => s + o.total, 0)),
-      itens: abertos,
-    };
-  }
-
-  /**
    * Orçamentos ATIVOS do cliente — o que o vendedor vê ao apertar Orçar na
    * Estação: os da intranet em aberto (rascunho/enviado/aprovação, dentro da
    * validade) e os do Celta ainda vigentes (sem venda e sem motivo de perda).
@@ -1484,9 +1466,13 @@ export class OrcamentoService {
 
   /* ----------------------------------------------------------- orçamento */
 
-  async listar(f: FiltroListaOrcamento) {
+  /**
+   * `comNf = false` pula o casamento com as NFs (segundos por vendedor sem cache): a tela
+   * mostra a página na hora e pede de novo com a bolsa das NFs; `bolsa_nf` sai ausente.
+   */
+  async listar(f: FiltroListaOrcamento, comNf = true) {
     const r = await this.db.listar(f);
-    return { ...r, itens: await this.comBolsa(await this.comRepNome(r.itens)) };
+    return { ...r, itens: await this.comBolsa(await this.comRepNome(r.itens), comNf) };
   }
 
   async obter(id: string) {
@@ -1506,7 +1492,7 @@ export class OrcamentoService {
    * (`bolsa_nf`, null = nenhuma NF casada, fora do horizonte ou BI indisponível). Falha aqui
    * nunca derruba a lista: os campos saem nulos.
    */
-  private async comBolsa<T extends { id: string; status: string; rep_codigo: number | null; piso_bolsa: number | null; bolsa_orcamento: number | null; desfecho_em?: Date | null }>(rows: T[]) {
+  private async comBolsa<T extends { id: string; status: string; rep_codigo: number | null; piso_bolsa: number | null; bolsa_orcamento: number | null; desfecho_em?: Date | null }>(rows: T[], comNf = true) {
     const vazio = (o: T) => ({ ...o, bolsa_aprox: false, bolsa_nf: null as number | null });
     const fechados = rows.filter((o) => o.status === 'FECHADO');
     if (!fechados.length) return rows.map(vazio);
@@ -1515,7 +1501,7 @@ export class OrcamentoService {
       const servicos = new Set(codigos);
       const { teto } = this.tetoVigente();
       const semValor = fechados.filter((o) => o.bolsa_orcamento == null).map((o) => o.id);
-      const reps = [...new Set(fechados.map((o) => o.rep_codigo).filter((r): r is number => r != null))];
+      const reps = comNf ? [...new Set(fechados.map((o) => o.rep_codigo).filter((r): r is number => r != null))] : [];
       const [itens, porRep] = await Promise.all([
         semValor.length ? this.db.itensParaBolsa(semValor) : Promise.resolve(new Map<string, never>()),
         Promise.all(reps.map((rep) => this.bolsaNfDoRep(rep, piso, servicos).catch((e) => {
@@ -1534,7 +1520,7 @@ export class OrcamentoService {
           bolsa_orcamento: o.bolsa_orcamento ?? aprox,
           piso_bolsa: o.piso_bolsa ?? (aprox != null ? piso : null),
           bolsa_aprox: aprox != null,
-          bolsa_nf: bolsaNf.get(o.id) ?? null,
+          bolsa_nf: comNf ? bolsaNf.get(o.id) ?? null : undefined,
         };
       });
     } catch (e) {

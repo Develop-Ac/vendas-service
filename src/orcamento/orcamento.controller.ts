@@ -239,14 +239,6 @@ export class OrcamentoController {
 
   /* -------------------------------------------------- orçamentos do Celta */
 
-  @Get('celta/pendentes')
-  @ApiOperation({ summary: 'Orçamentos lançados no Celta nos últimos N dias (padrão 7) ainda sem venda do cliente e sem motivo de perda.' })
-  @ApiQuery({ name: 'rep', required: false })
-  @ApiQuery({ name: 'dias', required: false, example: 7 })
-  celtaPendentes(@Query('rep') rep?: string, @Query('dias') dias?: string) {
-    return this.service.celtaPendentes(toNum(rep), toNum(dias) ?? 7);
-  }
-
   @Get('ativos')
   @ApiOperation({ summary: 'Orçamentos ativos do cliente: intranet em aberto + Celta dentro da validade (o "Orçar" da Estação).' })
   @ApiQuery({ name: 'cli', required: true })
@@ -386,6 +378,7 @@ export class OrcamentoController {
   @ApiQuery({ name: 'numero', required: false, description: 'Nº da intranet ou do Celta' })
   @ApiQuery({ name: 'produto', required: false, description: 'Só dígitos = código do produto; senão parte da descrição. Orçamentos com algum item assim.' })
   @ApiQuery({ name: 'flag', required: false, enum: [...FLAGS_LISTA] })
+  @ApiQuery({ name: 'bolsaNf', required: false, description: '0 = sem a bolsa das NFs nos fechados (resposta rápida; bolsa_nf ausente)' })
   listar(
     @Query('rep') rep?: string,
     @Query('cli') cli?: string,
@@ -397,6 +390,7 @@ export class OrcamentoController {
     @Query('numero') numero?: string,
     @Query('produto') produto?: string,
     @Query('flag') flag?: string,
+    @Query('bolsaNf') bolsaNf?: string,
   ) {
     // Filtro de lista: parâmetro malformado é ignorado (a tela segue listando), nunca vira erro.
     const dia = (v?: string) => (v && /^\d{4}-\d{2}-\d{2}$/.test(v) && !Number.isNaN(Date.parse(v)) ? v : undefined);
@@ -413,7 +407,7 @@ export class OrcamentoController {
       numero: num != null && Number.isInteger(num) && num > 0 && num <= 2_147_483_647 ? num : undefined,
       produto: produto?.trim() || undefined,
       flag: FLAGS_LISTA.find((x) => x === flag),
-    });
+    }, bolsaNf !== '0');
   }
 
   @Post()
