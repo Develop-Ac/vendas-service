@@ -253,8 +253,9 @@ export class ResgateService {
     const clientes = await this.carteirizacao.snapshotCarteira();
     await this.reconciliar(clientes);
 
-    const [vendedores, orcs, orcsIntranet, msgs, concluidas, escaladas, sla, fechadosJanela, desfechos, motivos] =
+    const [ativos, vendedores, orcs, orcsIntranet, msgs, concluidas, escaladas, sla, fechadosJanela, desfechos, motivos] =
       await Promise.all([
+        this.carteirizacao.vendedoresAtivosAtacado(),
         this.carteirizacao.listarVendedores(),
         this.erp.orcamentosPorRep(desdeYmd).catch(() => []),
         // Orçamento salvo na intranet é esforço como o do Celta; os já enviados
@@ -270,8 +271,10 @@ export class ResgateService {
       ]);
 
     const linhas = new Map<number, LinhaEsforco>();
+    // Só vendedor ativo do atacado: orçamento de balcão para cliente atacado,
+    // sessão do supervisor/número geral e o pool de disponíveis não entram.
     const linha = (rep: number | null): LinhaEsforco | null => {
-      if (rep == null) return null;
+      if (rep == null || !ativos.has(rep)) return null;
       if (!linhas.has(rep)) {
         linhas.set(rep, {
           rep_codigo: rep,
@@ -296,7 +299,8 @@ export class ResgateService {
     };
 
     for (const v of vendedores) {
-      const l = linha(v.rep_codigo)!;
+      const l = linha(v.rep_codigo);
+      if (!l) continue;
       l.rep_nome = v.rep_nome;
       l.clientes_carteira = v.clientes_carteira;
     }

@@ -93,17 +93,24 @@ describe('ResgateService', () => {
 
   const carteirizacao = {
     snapshotCarteira: jest.fn(async () => clientes),
+    vendedoresAtivosAtacado: jest.fn(async () => new Set([10])),
     listarVendedores: jest.fn(async () => [
       { rep_codigo: 10, rep_nome: 'VENDEDOR', clientes_carteira: 5 },
+      { rep_codigo: 356, rep_nome: 'CARTEIRA DO ATACADO - DISPONÍVEL', clientes_carteira: 793 },
     ]),
   } as unknown as CarteirizacaoService;
 
   const erp = {
-    orcamentosPorRep: jest.fn(async () => [{ rep_codigo: 10, qtd: 12, valor: 30_000 }]),
+    orcamentosPorRep: jest.fn(async () => [
+      { rep_codigo: 10, qtd: 12, valor: 30_000 },
+      { rep_codigo: 340, qtd: 4, valor: 9_000 }, // balcão orçando para cliente atacado
+    ]),
   } as unknown as CarteirizacaoErpRepository;
 
   const wa = {
-    mensagensPorRepDesde: jest.fn(async () => []),
+    mensagensPorRepDesde: jest.fn(async () => [
+      { rep_codigo: 316, direcao: 'ENVIADA', _count: { _all: 50 } }, // sessão do supervisor
+    ]),
   } as unknown as WhatsappRepository;
 
   const avisosVendas = { filaDia: jest.fn(async () => undefined), filaEscalada: jest.fn(async () => undefined), resgateSla: jest.fn(async () => undefined), orcamentoVencendo: jest.fn(async () => undefined) } as unknown as AvisosVendasService;
@@ -202,7 +209,7 @@ describe('ResgateService', () => {
     expect(porId.get('r2')).toMatchObject({ sla_cumprido: false });
   });
 
-  it('painel esforço×resultado agrega por vendedor', async () => {
+  it('painel esforço×resultado agrega por vendedor — só vendedor ativo do atacado', async () => {
     clientes = [];
     const p = await service.painelEsforco(7);
     expect(p.vendedores).toHaveLength(1);

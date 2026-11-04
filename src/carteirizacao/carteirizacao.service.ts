@@ -658,10 +658,12 @@ export class CarteirizacaoService {
   }
 
   /**
-   * Vendedores ATIVOS do atacado: a equipe do canal atacado hoje (BI) menos
-   * quem está inativo no cadastro de comissão, e sem o pool de disponíveis.
-   * BI fora: cai para quem tem carteira — sempre disponível e quase o mesmo
-   * conjunto (quem saiu tem a carteira movida para o pool).
+   * Vendedores ATIVOS do atacado: a equipe do canal atacado hoje (BI) que está
+   * ATIVA e cadastrada como VENDEDOR no cadastro de comissão, sem o pool de
+   * disponíveis. Supervisor, técnico e quem nem tem cadastro (só venda antiga
+   * no canal) ficam fora — as telas da carteirização mostram só vendedor do
+   * atacado. BI fora: cai para quem tem carteira — sempre disponível e quase o
+   * mesmo conjunto (quem saiu tem a carteira movida para o pool).
    */
   async vendedoresAtivosAtacado(): Promise<Set<number>> {
     const now = Date.now();
@@ -669,8 +671,13 @@ export class CarteirizacaoService {
     let reps: Set<number>;
     try {
       const [equipe, papeis] = await Promise.all([this.sql.equipeAtacadoReps(hojeYmd()), this.sql.papeisPorRep()]);
-      const inativos = new Set(papeis.filter((p) => !!p.inativo).map((p) => Number(p.rep_codigo)));
-      reps = new Set(equipe.filter((r) => !inativos.has(r) && r !== REP_DISPONIVEL));
+      // VENDEDOR_ATACADO, ou VENDEDOR que mudou para o atacado pelo histórico de canal.
+      const vendedores = new Set(
+        papeis
+          .filter((p) => !p.inativo && (p.papel ?? '').toUpperCase().startsWith('VENDEDOR'))
+          .map((p) => Number(p.rep_codigo)),
+      );
+      reps = new Set(equipe.filter((r) => vendedores.has(r) && r !== REP_DISPONIVEL));
     } catch (e) {
       this.logger.warn(`Equipe do atacado indisponível (BI): vale quem tem carteira. ${(e as Error).message}`);
       const carteira = await this.overlay.listarCarteira();
