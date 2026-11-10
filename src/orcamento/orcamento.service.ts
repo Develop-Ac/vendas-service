@@ -518,7 +518,7 @@ export class OrcamentoService {
     const [{ piso, linha, pisoDre, degrau, vol }, servicos] = await Promise.all([this.pisoVigente(periodo), this.servicosDoErp()]);
     // compra de oportunidade: lotes que cobrem vendas do mês (vigentes ou encerrados há pouco)
     const lotes = await this.oportunidadesParaBolsa(2);
-    const [{ v, ajustes, entrada }, clientes, celulas, cfgComissao, canalMtd] = await Promise.all([
+    const [{ v, ajustes, entrada }, clientes, celulas, cfgComissao, canalSaldo] = await Promise.all([
       this.entradaDoMes(rep, periodo, { piso, linha, servicos, lotes, mesesAjuste: 2, teto }),
       this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes, piso, teto).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
@@ -532,18 +532,12 @@ export class OrcamentoService {
         this.logger.warn(`Parâmetros da comissão indisponíveis: ${(e as Error).message}`);
         return null;
       }),
-      this.canalMtd(periodo, piso, servicos, lotes, teto).catch((e) => {
-        this.logger.warn(`Bolsa do canal indisponível: ${(e as Error).message}`);
-        return null;
-      }),
+      this.saldoCanal(periodo, piso, linha, servicos, lotes, teto),
     ]);
     const ajustePorCliente = new Map<number, number>();
     for (const l of ajustes) ajustePorCliente.set(l.cli_codigo, (ajustePorCliente.get(l.cli_codigo) ?? 0) + l.efetivo);
-    // Bolsa do CANAL atacado (todos os vendedores) no mês. Com este orçamento conta só o desconto
-    // em R$ que ele dá: preço de tabela abaixo do piso é preço da empresa, não entra na regra.
-    const canalSaldo = canalMtd
-      ? calcularBolsa({ receita_mtd: canalMtd.venda_liquida, custo_mtd: canalMtd.custo, desconto_mtd: canalMtd.desconto, absorvido_mtd: canalMtd.absorvido, excedente_mtd: canalMtd.excedente, piso, linha }).saldo
-      : null;
+    // Bolsa do CANAL atacado no mês. Com este orçamento conta só o desconto em R$ que ele dá:
+    // preço de tabela abaixo do piso é preço da empresa, não entra na regra.
     const canal = canalSaldo == null ? null : { saldo: canalSaldo, saldo_apos: round2(canalSaldo - Math.max(0, orc?.desconto ?? 0)) };
     // promoção: metade do que o item tira da bolsa é da empresa — no mês vem do BI (flag PROMOCAO da venda); aqui, o orçamento em edição
     const absorvidoOrc = orc?.absorvido ?? (orc?.promos ? orc.promos.reduce((s, x) => s + absorcaoPromocao(x.preco, x.custo, piso, x.qtd), 0) : 0);
@@ -822,6 +816,24 @@ export class OrcamentoService {
     const v = await this.bi.bolsaVendedor(null, periodo.ano, periodo.mes, piso, servicos, lotes, teto);
     this.canalCache = { chave, em: Date.now(), v };
     return v;
+  }
+
+  /** Saldo da bolsa do CANAL atacado (todos os vendedores) no mês; leitura do BI indisponível → null. */
+  private saldoCanal(periodo: { ano: number; mes: number }, piso: number, linha: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], teto: TetoBolsa): Promise<number | null> {
+    return this.canalMtd(periodo, piso, servicos, lotes, teto).then(
+      (c) => calcularBolsa({ receita_mtd: c.venda_liquida, custo_mtd: c.custo, desconto_mtd: c.desconto, absorvido_mtd: c.absorvido, excedente_mtd: c.excedente, piso, linha }).saldo,
+      (e) => {
+        this.logger.warn(`Bolsa do canal indisponível: ${(e as Error).message}`);
+        return null;
+      },
+    );
+  }
+
+  /** Bolsa do canal atacado no mês comissional, a mesma da tela do orçamento (sem orçamento em edição). */
+  async bolsaCanal(periodo: { ano: number; mes: number }): Promise<number | null> {
+    const { teto } = this.tetoVigente();
+    const [{ piso, linha }, servicos, lotes] = await Promise.all([this.pisoVigente(periodo), this.servicosDoErp(), this.oportunidadesParaBolsa(2)]);
+    return this.saldoCanal(periodo, piso, linha, servicos, lotes, teto);
   }
 
   /**
@@ -2394,10 +2406,10 @@ export class OrcamentoService {
 
   /**
    * Orçamentos FECHADOS do vendedor (desfecho nos últimos CASAMENTO_MESES) casados com as NFs do
-   * atacado — a mesma leitura serve a lista, o orçamento e o extrato, para os três baterem.
-   * Cache de 5 minutos por vendedor; erro não fica em cache.
+   * atacado — a mesma leitura serve a lista, o orçamento, o extrato e as vendas dos auxiliares
+   * na gestão do atacado, para todos baterem. Cache de 5 minutos por vendedor; erro não fica em cache.
    */
-  private casamentoDoRep(rep: number) {
+  casamentoDoRep(rep: number) {
     const c = this.casamentoCache.get(rep);
     if (c && Date.now() - c.em < 5 * 60_000) return c.v;
     const v = this.casarFechados(rep);

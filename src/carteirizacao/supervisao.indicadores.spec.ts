@@ -38,17 +38,17 @@ describe('semáforo', () => {
 
 describe('meta vigente', () => {
   const linhas = [
-    { indicador: 'RECEITA_MES', valor: 500_000, faixa_amarela: 10, vigente_desde: '2026-08-26', created_at: '2026-08-20' },
-    { indicador: 'RECEITA_MES', valor: 550_000, faixa_amarela: 5, vigente_desde: '2026-09-26', created_at: '2026-09-20' },
-    { indicador: 'RECEITA_MES', valor: 560_000, faixa_amarela: 5, vigente_desde: '2026-09-26', created_at: '2026-09-25' },
+    { indicador: 'CUSTO_DEPARTAMENTO', valor: 500_000, faixa_amarela: 10, vigente_desde: '2026-08-26', created_at: '2026-08-20' },
+    { indicador: 'CUSTO_DEPARTAMENTO', valor: 550_000, faixa_amarela: 5, vigente_desde: '2026-09-26', created_at: '2026-09-20' },
+    { indicador: 'CUSTO_DEPARTAMENTO', valor: 560_000, faixa_amarela: 5, vigente_desde: '2026-09-26', created_at: '2026-09-25' },
   ];
 
   it('mês passado é avaliado pela meta que valia nele', () => {
-    expect(metaVigente(linhas, 'RECEITA_MES', '2026-09-01').valor).toBe(500_000);
+    expect(metaVigente(linhas, 'CUSTO_DEPARTAMENTO', '2026-09-01').valor).toBe(500_000);
   });
 
   it('mesma vigência: vale a gravada por último', () => {
-    expect(metaVigente(linhas, 'RECEITA_MES', '2026-10-01')).toMatchObject({ valor: 560_000, faixa_amarela: 5 });
+    expect(metaVigente(linhas, 'CUSTO_DEPARTAMENTO', '2026-10-01')).toMatchObject({ valor: 560_000, faixa_amarela: 5 });
   });
 
   it('sem linha gravada, vale o padrão do catálogo', () => {

@@ -1979,6 +1979,22 @@ model ven_atacado_meta {
   @@index([indicador, vigente_desde(sort: Desc), created_at(sort: Desc)], map: "idx_ven_atacado_meta_ind_vig")
 }
 
+/// Fechamento mensal da gestão do atacado: foto completa de visão geral e equipe (com o bloco de gerência), uma linha por mês comissional.
+model ven_atacado_fechamento {
+  id          String   @id @default(cuid())
+  ano         Int
+  mes         Int
+  nivel       Int
+  pontos      Decimal  @db.Decimal(5, 2)
+  venda       Decimal  @db.Decimal(15, 2)
+  meta        Decimal  @db.Decimal(15, 2)
+  foto        Json
+  fechado_em  DateTime @db.Timestamptz(6)
+  fechado_por String
+
+  @@unique([ano, mes], map: "uq_ven_atacado_fechamento_periodo")
+}
+
 model ven_carteira_cliente {
   id             String    @id @default(cuid())
   cli_codigo     Int       @unique(map: "uq_ven_carteira_cliente_cli")

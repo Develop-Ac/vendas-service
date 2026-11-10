@@ -9,7 +9,9 @@ import {
   Put,
   Query,
   Res,
+  UseGuards,
 } from '@nestjs/common';
+import { SoPeloProxy } from '../common/so-pelo-proxy.guard';
 import type { FastifyReply } from 'fastify';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
@@ -17,6 +19,7 @@ import { ResgateService } from './resgate.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { TrocaVendedorService } from './troca-vendedor.service';
 import { SupervisaoService } from './supervisao.service';
+import { GestaoService } from './gestao.service';
 import {
   ConfigVendedorDto,
   ConfirmarCarteirizacaoDto,
@@ -47,6 +50,7 @@ export class CarteirizacaoController {
     private readonly whatsapp: WhatsappService,
     private readonly troca: TrocaVendedorService,
     private readonly supervisao: SupervisaoService,
+    private readonly gestao: GestaoService,
   ) {}
 
   @Get('clientes')
@@ -234,15 +238,60 @@ export class CarteirizacaoController {
     return this.supervisao.esforco({ rep_codigo: toNum(rep), desde, ate });
   }
 
-  // Metas do departamento: vigentes + histórico. Gravar é só da gerência.
+  // Metas do departamento: vigentes + histórico (os parâmetros do prêmio só para a
+  // gerência). Gravar é só da gerência. Papel pelo x-user-id: só pelo proxy.
   @Get('supervisao/metas')
-  metasSupervisao() {
-    return this.supervisao.metas();
+  @UseGuards(SoPeloProxy)
+  metasSupervisao(@Headers('x-user-id') usuario?: string) {
+    return this.supervisao.metas(usuario);
   }
 
   @Post('supervisao/metas')
-  gravarMetaSupervisao(@Body() dto: GravarMetaAtacadoDto) {
-    return this.supervisao.gravarMeta(dto);
+  @UseGuards(SoPeloProxy)
+  gravarMetaSupervisao(@Body() dto: GravarMetaAtacadoDto, @Headers('x-user-id') usuario?: string) {
+    return this.supervisao.gravarMeta({ ...dto, usuario_id: usuario });
+  }
+
+  // -------------------------------------------------- Gestão do atacado (/vendas/atacado)
+  // O bloco `gerencia` e o reapurar dependem do papel do x-user-id: só pelo proxy.
+  @Get('gestao/periodo')
+  @UseGuards(SoPeloProxy)
+  gestaoPeriodo(@Query('ano') ano?: string, @Query('mes') mes?: string) {
+    return this.gestao.periodo(toNum(ano), toNum(mes));
+  }
+
+  @Get('gestao/visao-geral')
+  @UseGuards(SoPeloProxy)
+  gestaoVisaoGeral(@Query('ano') ano?: string, @Query('mes') mes?: string, @Headers('x-user-id') usuario?: string) {
+    return this.gestao.visaoGeral(toNum(ano), toNum(mes), usuario);
+  }
+
+  @Get('gestao/equipe')
+  @UseGuards(SoPeloProxy)
+  gestaoEquipe(
+    @Query('ano') ano?: string,
+    @Query('mes') mes?: string,
+    @Query('semanaDesde') semanaDesde?: string,
+    @Query('semanaAte') semanaAte?: string,
+    @Headers('x-user-id') usuario?: string,
+  ) {
+    return this.gestao.equipe(toNum(ano), toNum(mes), semanaDesde, semanaAte, usuario);
+  }
+
+  /** Sem ano/mês: lista dos meses fechados. Com ano/mês: a foto do mês (sem `gerencia` para quem não é gerência). */
+  @Get('gestao/fechamento')
+  @UseGuards(SoPeloProxy)
+  gestaoFechamento(@Query('ano') ano?: string, @Query('mes') mes?: string, @Headers('x-user-id') usuario?: string) {
+    if (ano == null && mes == null) return this.gestao.fechamentos();
+    return this.gestao.fechamento(Number(ano), Number(mes), usuario);
+  }
+
+  /** Reapura e regrava a foto do mês. Só gerência (x-user-id). */
+  @Post('gestao/fechamento')
+  @UseGuards(SoPeloProxy)
+  async gestaoReapurar(@Query('ano') ano: string, @Query('mes') mes: string, @Headers('x-user-id') usuario?: string) {
+    const por = await this.gestao.gerenteDoFechamento(usuario);
+    return this.gestao.fechar(Number(ano), Number(mes), por);
   }
 
   // -------------------------------------------------- Fase 2: acompanhamento

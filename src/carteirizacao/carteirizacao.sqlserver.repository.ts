@@ -599,4 +599,97 @@ export class CarteirizacaoSqlServerRepository {
     `;
     return this.mssql.query<VendedorRow>(query);
   }
+
+  // ============================ Gestão do atacado (/vendas/atacado) =====
+  /** Início, fim e dias úteis (aaaa-mm-dd) do mês comissional, de d_calendario. */
+  async diasUteisPeriodo(ano: number, mes: number): Promise<{ inicio: string; fim: string; dias: string[] } | null> {
+    const rows = await this.mssql.query<{ data: string; util: number }>(
+      `
+      SELECT CONVERT(varchar(10), data, 23) AS data, CAST(is_dia_util AS int) AS util
+      FROM dbo.d_calendario
+      WHERE ano_comissional = @ano AND mes_comissional = @mes
+      ORDER BY data
+      `,
+      { ano, mes },
+    );
+    if (!rows.length) return null;
+    return {
+      inicio: rows[0].data,
+      fim: rows[rows.length - 1].data,
+      dias: rows.filter((r) => Number(r.util) === 1).map((r) => r.data),
+    };
+  }
+
+  /** Faturado oficial do canal atacado no mês comissional, por dia de emissão (venda, custo e mix 1). */
+  async faturadoCanalPorDia(
+    ano: number,
+    mes: number,
+  ): Promise<Array<{ dia: string; venda: number; custo: number; mix1: number }>> {
+    const rows = await this.mssql.query<{ dia: string; venda: number; custo: number; mix1: number }>(
+      `
+      SELECT CONVERT(varchar(10), v.dt_emissao_convertida, 23) AS dia,
+             COALESCE(SUM(v.liquido_produto), 0) AS venda,
+             COALESCE(SUM(v.custo_produto), 0) AS custo,
+             COALESCE(SUM(CASE WHEN v.MIX_CUSTO = 1 THEN v.liquido_produto ELSE 0 END), 0) AS mix1
+      FROM dbo.vw_analise_vendas v
+      WHERE v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+        AND v.ano_comissional = @ano AND v.mes_comissional = @mes
+      GROUP BY CONVERT(varchar(10), v.dt_emissao_convertida, 23)
+      ORDER BY dia
+      `,
+      { ano, mes },
+    );
+    return rows.map((r) => ({ dia: r.dia, venda: Number(r.venda), custo: Number(r.custo), mix1: Number(r.mix1) }));
+  }
+
+  /** Faturado oficial do canal atacado por mês comissional, de `de` a `ate` (inclusive). */
+  async faturadoCanalMeses(
+    de: { ano: number; mes: number },
+    ate: { ano: number; mes: number },
+  ): Promise<Array<{ ano: number; mes: number; faturado: number }>> {
+    const rows = await this.mssql.query<{ ano: number; mes: number; faturado: number }>(
+      `
+      SELECT v.ano_comissional AS ano, v.mes_comissional AS mes, COALESCE(SUM(v.liquido_produto), 0) AS faturado
+      FROM dbo.vw_analise_vendas v
+      WHERE v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+        AND v.ano_comissional * 100 + v.mes_comissional BETWEEN @de AND @ate
+      GROUP BY v.ano_comissional, v.mes_comissional
+      `,
+      { de: de.ano * 100 + de.mes, ate: ate.ano * 100 + ate.mes },
+    );
+    return rows.map((r) => ({ ano: Number(r.ano), mes: Number(r.mes), faturado: Number(r.faturado) }));
+  }
+
+  /**
+   * Faturado oficial do canal atacado no mês comissional por código em que a nota
+   * saiu (`vendedor_venda`): total e só o que foi emitido antes de `hoje` (base do ritmo).
+   */
+  async faturadoCanalPorVendedor(
+    ano: number,
+    mes: number,
+    hoje: string,
+  ): Promise<Array<{ rep_codigo: number; rep_nome: string | null; total: number; ate_ontem: number }>> {
+    const rows = await this.mssql.query<{ rep_codigo: number; rep_nome: string | null; total: number; ate_ontem: number }>(
+      `
+      SELECT v.vendedor_venda AS rep_codigo,
+             MAX(v.nome_representante) AS rep_nome,
+             COALESCE(SUM(v.liquido_produto), 0) AS total,
+             COALESCE(SUM(CASE WHEN CAST(v.dt_emissao_convertida AS date) < CAST(@hoje AS date) THEN v.liquido_produto ELSE 0 END), 0) AS ate_ontem
+      FROM dbo.vw_analise_vendas v
+      WHERE v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+        AND v.ano_comissional = @ano AND v.mes_comissional = @mes
+      GROUP BY v.vendedor_venda
+      `,
+      { ano, mes, hoje },
+    );
+    return rows.map((r) => ({
+      rep_codigo: Number(r.rep_codigo),
+      rep_nome: r.rep_nome,
+      total: Number(r.total),
+      ate_ontem: Number(r.ate_ontem),
+    }));
+  }
 }

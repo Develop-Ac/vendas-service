@@ -28,7 +28,7 @@ import {
 
 const DIA_MS = 86_400_000;
 
-const envNum = (nome: string, padrao: number): number => {
+export const envNum = (nome: string, padrao: number): number => {
   const n = Number(process.env[nome]);
   return Number.isFinite(n) && n > 0 ? n : padrao;
 };
@@ -92,13 +92,14 @@ interface Contexto {
 }
 
 /**
- * Tela do supervisor do atacado: os 9 KPIs do departamento no mês comissional
+ * Tela do supervisor do atacado: os 10 KPIs do departamento no mês comissional
  * e os 4 critérios de esforço mínimo do vendedor na semana, cada um contra a
  * meta da gerência (com vigência) e com o semáforo de `supervisao.indicadores`.
  *
  * Tudo é sinal observado — nada aqui depende de o vendedor preencher algo além
  * do motivo do orçamento perdido. Antes de medir, fila e resgate reconciliam:
- * os números refletem o constatado agora, igual à fila e à esteira.
+ * os números refletem o constatado agora, igual à fila e à esteira — exceto em
+ * `indicadoresDoMes`, que só lê (a visão geral da gestão abre sem reconciliar).
  */
 @Injectable()
 export class SupervisaoService {
@@ -122,11 +123,16 @@ export class SupervisaoService {
   }
 
   // ------------------------------------------------------------------ metas
-  async metas() {
-    const linhas = await this.repo.metasAtacado();
+  /** Vigentes + histórico. Custo do departamento e valores do prêmio (grupo PREMIO) só saem para a gerência. */
+  async metas(usuarioId?: string) {
+    const [todas, usuario] = await Promise.all([this.repo.metasAtacado(), this.repo.usuarioVendas(usuarioId)]);
+    const gerencia = ehGerenciaVendas(usuario);
+    const defs = INDICADORES.filter((d) => gerencia || d.grupo !== 'PREMIO');
+    const visivel = new Set(defs.map((d) => d.chave));
+    const linhas = todas.filter((l) => visivel.has(l.indicador));
     const hoje = hojeYmd();
     return {
-      indicadores: INDICADORES.map((d) => ({ ...d, ...metaVigente(linhas, d.chave, hoje) })),
+      indicadores: defs.map((d) => ({ ...d, ...metaVigente(linhas, d.chave, hoje) })),
       historico: linhas,
     };
   }
@@ -158,14 +164,14 @@ export class SupervisaoService {
       criado_por: u.id,
       criado_por_nome: dto.usuario_nome ?? u.nome,
     });
-    return this.metas();
+    return this.metas(u.id);
   }
 
   // ---------------------------------------------------------------- contexto
-  private async contexto(): Promise<Contexto> {
+  private async contexto(reconciliar = true): Promise<Contexto> {
     const clientes = await this.carteirizacao.snapshotCarteira();
     // Reconciliar antes de medir: tarefas e resgates no estado constatado agora.
-    await Promise.all([
+    if (reconciliar) await Promise.all([
       this.fila.reconciliar(clientes).catch((e) => this.logger.warn(`Fila não reconciliou: ${(e as Error).message}`)),
       this.resgate.reconciliar(clientes).catch((e) => this.logger.warn(`Resgate não reconciliou: ${(e as Error).message}`)),
     ]);
@@ -185,9 +191,12 @@ export class SupervisaoService {
   }
 
   // ----------------------------------------------------------------- esforço
-  /** Esforço mínimo de um vendedor (bloco da tela de orçamento) ou de todos. */
-  async esforco(params: { rep_codigo?: number; desde?: string; ate?: string }) {
-    const ctx = await this.contexto();
+  /**
+   * Esforço mínimo de um vendedor (bloco da tela de orçamento) ou de todos.
+   * `reconciliar=false` só lê (fechamento do mês e semana de mês já fechado).
+   */
+  async esforco(params: { rep_codigo?: number; desde?: string; ate?: string }, reconciliar = true) {
+    const ctx = await this.contexto(reconciliar);
     return this.medirEsforco(ctx, params);
   }
 
@@ -342,6 +351,7 @@ export class SupervisaoService {
 
     return {
       periodo: { ano: periodo.ano, mes: periodo.mes, inicio: periodo.inicio, fim: periodo.fim, corrente },
+      pool_rep: REP_DISPONIVEL,
       kpis,
       esforco,
       resgates_abertos: resgatesAbertos.length,
@@ -351,6 +361,19 @@ export class SupervisaoService {
         .map((e) => ({ rep_codigo: e.rep_codigo, rep_nome: this.nome(ctx, e.rep_codigo), quantidade: e._count._all })),
       gerado_em: new Date().toISOString(),
     };
+  }
+
+  /**
+   * KPIs de um mês comissional sem reconciliar fila nem resgate (só leitura), com a
+   * carteira que os mediu — quem precisa da carteira não monta o snapshot de novo.
+   */
+  async indicadoresDoMes(ano: number, mes: number): Promise<{ kpis: Kpi[]; clientes: ClienteCarteira[] }> {
+    const periodo = periodoComissional(ano, mes);
+    const anterior = mes === 1 ? periodoComissional(ano - 1, 12) : periodoComissional(ano, mes - 1);
+    const hoje = hojeYmd();
+    const ctx = await this.contexto(false);
+    const kpis = await this.kpis(ctx, periodo, anterior, periodo.inicio <= hoje && hoje <= periodo.fim);
+    return { kpis, clientes: ctx.clientes };
   }
 
   private async kpis(
@@ -376,7 +399,7 @@ export class SupervisaoService {
       this.repo.tarefasDaJanela(inicioDia(anterior.inicio), fimDia(anterior.fim)),
       this.repo.resgatesComSlaNaJanela(inicioDia(periodo.inicio), fimJanela(periodo)),
       this.repo.resgatesComSlaNaJanela(inicioDia(anterior.inicio), fimDia(anterior.fim)),
-      this.repo.resgatesFechadosDesde(inicioDia(periodo.inicio)),
+      this.repo.resgatesFechadosDesde(inicioDia(anterior.inicio)),
     ]);
 
     const metaDe = (chave: string) => metaVigente(ctx.metas, chave, periodo.inicio);
@@ -434,11 +457,9 @@ export class SupervisaoService {
     const kpis: Kpi[] = [];
     const semErp = 'Leitura do ERP indisponível agora.';
 
-    // 1 e 2 — clientes ativos e receita no mês (base do atacado).
+    // 1 — clientes ativos no mês (base do atacado).
     const ativos = (fat: Map<number, number> | null) =>
       fat == null ? null : base.filter((c) => (fat.get(c.cli_codigo) ?? 0) > 0).length;
-    const receita = (fat: Map<number, number> | null) =>
-      fat == null ? null : base.reduce((s, c) => s + (fat.get(c.cli_codigo) ?? 0), 0);
     const porRepFat = (fat: Map<number, number> | null, soContagem: boolean) =>
       fat == null
         ? []
@@ -453,10 +474,25 @@ export class SupervisaoService {
         nota: fatAtual == null ? semErp : null,
       }),
     );
+
+    // 2 — curva A comprando: clientes curva A (com ou sem vendedor) com compra no mês.
+    const curvaA = base.filter((c) => c.curva_abc === 'A');
+    const comprou = (fat: Map<number, number>, c: ClienteCarteira) => ((fat.get(c.cli_codigo) ?? 0) > 0 ? 1 : 0);
+    const pctCurvaA = (fat: Map<number, number> | null) =>
+      fat == null ? null : pct(curvaA.reduce((s, c) => s + comprou(fat, c), 0), curvaA.length);
     kpis.push(
-      montar('RECEITA_MES', receita(fatAtual), receita(fatAnt), porRepFat(fatAtual, false), {
-        nota: fatAtual == null ? semErp : null,
-      }),
+      montar(
+        'CURVA_A_COMPRANDO_PCT',
+        pctCurvaA(fatAtual),
+        pctCurvaA(fatAnt),
+        fatAtual == null
+          ? []
+          : linhasPct(agrupar(curvaA, (c) => repDoCliente.get(c.cli_codigo) ?? null, (c) => ({ num: comprou(fatAtual, c), den: 1 }))),
+        {
+          nota: fatAtual == null ? semErp : null,
+          detalhe: fatAtual == null ? null : { curva_a: curvaA.length, comprando: curvaA.reduce((s, c) => s + comprou(fatAtual, c), 0) },
+        },
+      ),
     );
 
     // 3, 4 e 5 — posição de hoje (trimestre móvel), só no mês corrente.
@@ -569,8 +605,9 @@ export class SupervisaoService {
 
     // 8 — resgates: SLA de 48h da curva A + recuperados/perdidos do mês.
     const avaliados = (l: typeof slaAtual) => l.filter((r) => r.sla_cumprido != null);
-    const fimPeriodo = fimDia(periodo.fim);
-    const fechadosMes = fechados.filter((f) => f.fechado_em && f.fechado_em <= fimPeriodo);
+    const fechadosNo = (p: { inicio: string; fim: string }) =>
+      fechados.filter((f) => f.fechado_em && f.fechado_em >= inicioDia(p.inicio) && f.fechado_em <= fimDia(p.fim));
+    const fechadosMes = fechadosNo(periodo);
     kpis.push(
       montar(
         'RESGATE_SLA_PCT',
@@ -587,7 +624,22 @@ export class SupervisaoService {
       ),
     );
 
-    // 9 — fila no prazo.
+    // 9 — recuperação curva A e B: resgates encerrados no mês que terminaram recuperados.
+    const ab = (l: typeof fechados) => l.filter((f) => f.curva === 'A' || f.curva === 'B');
+    const abMes = ab(fechadosMes);
+    const recuperado = (f: (typeof fechados)[number]) => (f.estagio === 'RECUPERADO' ? 1 : 0);
+    const pctRecuperacao = (l: typeof fechados) => pct(l.reduce((s, f) => s + recuperado(f), 0), l.length);
+    kpis.push(
+      montar(
+        'RECUPERACAO_AB_PCT',
+        pctRecuperacao(abMes),
+        pctRecuperacao(ab(fechadosNo(anterior))),
+        linhasPct(agrupar(abMes, (f) => f.rep_codigo, (f) => ({ num: recuperado(f), den: 1 }))),
+        { detalhe: { fechados: abMes.length, recuperados: abMes.reduce((s, f) => s + recuperado(f), 0) } },
+      ),
+    );
+
+    // 10 — fila no prazo.
     const noPrazo = (t: (typeof filaAtual)[number]) =>
       t.status === 'CONCLUIDA' && !!t.concluida_em && t.concluida_em <= t.prazo_em;
     kpis.push(

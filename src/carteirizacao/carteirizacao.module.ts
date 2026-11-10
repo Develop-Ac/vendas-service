@@ -13,10 +13,13 @@ import { ResgateService } from './resgate.service';
 import { TrocaVendedorService } from './troca-vendedor.service';
 import { CarteirizacaoCeltaClient } from './carteirizacao.celta.client';
 import { SupervisaoService } from './supervisao.service';
+import { GestaoService } from './gestao.service';
+import { GestaoFechamentoScheduler } from './gestao-fechamento.scheduler';
+import { OrcamentoModule } from '../orcamento/orcamento.module';
 import { MssqlService } from 'src/common/mssql/mssql.service';
  
 @Module({
-  imports: [ScheduleModule.forRoot(), WhatsappModule],
+  imports: [ScheduleModule.forRoot(), WhatsappModule, OrcamentoModule],
   controllers: [CarteirizacaoController],
   providers: [
     CarteirizacaoService,
@@ -30,6 +33,8 @@ import { MssqlService } from 'src/common/mssql/mssql.service';
     TrocaVendedorService,
     CarteirizacaoCeltaClient,
     SupervisaoService,
+    GestaoService,
+    GestaoFechamentoScheduler,
     MssqlService
   ],
   exports: [CarteirizacaoService],

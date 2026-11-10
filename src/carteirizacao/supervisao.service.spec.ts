@@ -5,7 +5,7 @@ import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository
 import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
 import { FilaService } from './fila.service';
 import { ResgateService } from './resgate.service';
-import { hojeYmd } from './supervisao.indicadores';
+import { hojeYmd, mesComissionalDe, periodoComissional } from './supervisao.indicadores';
 
 const DIA_MS = 86_400_000;
 const diasAtras = (n: number) => new Date(Date.now() - n * DIA_MS);
@@ -97,6 +97,8 @@ describe('SupervisaoService', () => {
     usuario = { id: 'g1', nome: 'Gerente', vendas_hub_inicial: 'GERENCIA', setor: 'VENDAS' };
     inseridas = [];
     jest.clearAllMocks();
+    erp.faturamentoPorClientePeriodo.mockImplementation(async () => new Map<number, number>([[1, 1000], [2, 0]]));
+    repo.resgatesFechadosDesde.mockImplementation(async () => []);
   });
 
   it('mede os 4 critérios de esforço por vendedor, sem o pool', async () => {
@@ -139,14 +141,63 @@ describe('SupervisaoService', () => {
     expect(ativos).toMatchObject({ valor: 1, meta: 290, semaforo: 'vermelho' });
     const fila = r.kpis.find((k) => k.chave === 'FILA_NO_PRAZO_PCT')!;
     expect(fila.valor).toBe(50);
-    expect(r.kpis).toHaveLength(9);
+    expect(r.kpis).toHaveLength(10);
+    expect(r.kpis.some((k) => k.chave.startsWith('PREMIO') || k.chave === 'CUSTO_DEPARTAMENTO')).toBe(false);
+    expect(r.pool_rep).toBe(356);
+  });
+
+  it('curva A comprando conta curva A com ou sem vendedor, pool em linha própria', async () => {
+    clientes.push(cli({ cli_codigo: 5, curva_abc: 'B' }));
+    erp.faturamentoPorClientePeriodo.mockResolvedValue(new Map([[1, 1000], [4, 50], [5, 70]]));
+    const r = await svc.painel({});
+    const k = r.kpis.find((x) => x.chave === 'CURVA_A_COMPRANDO_PCT')!;
+    expect(k).toMatchObject({ valor: 50, detalhe: { curva_a: 4, comprando: 2 } });
+    expect(k.por_vendedor.find((v) => v.rep_codigo === 10)).toMatchObject({ num: 1, den: 3 });
+    expect(k.por_vendedor.find((v) => v.rep_codigo === 356)).toMatchObject({ valor: 100, num: 1, den: 1 });
+  });
+
+  it('recuperação curva A e B: recuperados ÷ encerrados no mês, sem curva C nem mês anterior', async () => {
+    const agora = new Date();
+    repo.resgatesFechadosDesde.mockResolvedValue([
+      { rep_codigo: 10, curva: 'A', estagio: 'RECUPERADO', fechado_em: agora },
+      { rep_codigo: 10, curva: 'B', estagio: 'PERDIDO', fechado_em: agora },
+      { rep_codigo: 356, curva: 'A', estagio: 'RECUPERADO', fechado_em: agora },
+      { rep_codigo: 10, curva: 'C', estagio: 'PERDIDO', fechado_em: agora },
+      { rep_codigo: 10, curva: 'A', estagio: 'PERDIDO', fechado_em: new Date(Date.now() - 70 * DIA_MS) },
+    ] as any);
+    const r = await svc.painel({});
+    const k = r.kpis.find((x) => x.chave === 'RECUPERACAO_AB_PCT')!;
+    expect(k).toMatchObject({ valor: 66.7, detalhe: { fechados: 3, recuperados: 2 } });
+    expect(k.por_vendedor.find((v) => v.rep_codigo === 10)).toMatchObject({ valor: 50, num: 1, den: 2 });
+    expect(k.por_vendedor.find((v) => v.rep_codigo === 356)).toMatchObject({ valor: 100, den: 1 });
+  });
+
+  it('indicadoresDoMes mede sem reconciliar fila nem resgate', async () => {
+    const atual = periodoComissional(mesComissionalDe(hojeYmd()).ano, mesComissionalDe(hojeYmd()).mes);
+    const { kpis, clientes } = await svc.indicadoresDoMes(atual.ano, atual.mes);
+    expect(kpis).toHaveLength(10);
+    expect(clientes.length).toBeGreaterThan(0);
+    expect(fila.reconciliar).not.toHaveBeenCalled();
+    expect(resgate.reconciliar).not.toHaveBeenCalled();
+    await svc.painel({});
+    expect(fila.reconciliar).toHaveBeenCalled();
   });
 
   it('só a gerência grava meta; o supervisor só observa', async () => {
     usuario = { id: 's1', nome: 'Supervisor', vendas_hub_inicial: 'SUPERVISAO_ATACADO', setor: 'VENDAS' };
-    await expect(svc.gravarMeta({ indicador: 'RECEITA_MES', valor: 600_000, usuario_id: 's1' })).rejects.toThrow(ForbiddenException);
+    await expect(svc.gravarMeta({ indicador: 'CUSTO_DEPARTAMENTO', valor: 600_000, usuario_id: 's1' })).rejects.toThrow(ForbiddenException);
     usuario = { id: 'g1', nome: 'Gerente', vendas_hub_inicial: 'GERENCIA', setor: 'VENDAS' };
-    await svc.gravarMeta({ indicador: 'RECEITA_MES', valor: 600_000, faixa_amarela: 5, vigente_desde: '2026-10-26', usuario_id: 'g1' });
-    expect(inseridas[0]).toMatchObject({ indicador: 'RECEITA_MES', valor: 600_000, faixa_amarela: 5, criado_por: 'g1' });
+    await svc.gravarMeta({ indicador: 'CUSTO_DEPARTAMENTO', valor: 600_000, faixa_amarela: 5, vigente_desde: '2026-10-26', usuario_id: 'g1' });
+    expect(inseridas[0]).toMatchObject({ indicador: 'CUSTO_DEPARTAMENTO', valor: 600_000, faixa_amarela: 5, criado_por: 'g1' });
+  });
+
+  it('custo do departamento e valores do prêmio só saem nas metas para a gerência', async () => {
+    usuario = { id: 's1', nome: 'Supervisor', vendas_hub_inicial: 'SUPERVISAO_ATACADO', setor: 'VENDAS' };
+    const sup = await svc.metas('s1');
+    expect(sup.indicadores.some((d) => d.grupo === 'PREMIO')).toBe(false);
+    expect(sup.historico.some((l) => ['CUSTO_DEPARTAMENTO', 'PREMIO_N1', 'PREMIO_N2', 'PREMIO_N3'].includes(l.indicador))).toBe(false);
+    usuario = { id: 'g1', nome: 'Gerente', vendas_hub_inicial: 'GERENCIA', setor: 'VENDAS' };
+    const ger = await svc.metas('g1');
+    expect(ger.indicadores.map((d) => d.chave)).toEqual(expect.arrayContaining(['CUSTO_DEPARTAMENTO', 'PREMIO_N3']));
   });
 });

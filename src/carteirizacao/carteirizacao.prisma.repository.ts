@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
 export interface RegistrarHistoricoInput {
@@ -153,6 +154,29 @@ export class CarteirizacaoPrismaRepository {
   // --------------------------------------------------------- metas vendedor
   async listarMetasPeriodo(ano: number, mes: number) {
     return this.prisma.ven_meta_vendedor.findMany({ where: { ano, mes } });
+  }
+
+  /** Orçamentos em negociação (ENVIADO dentro da validade) somados por vendedor do orçamento. */
+  async emNegociacaoPorRep(hoje: string): Promise<Array<{ rep_codigo: number | null; valor: number; quantidade: number }>> {
+    const rows = await this.prisma.ven_orcamento.groupBy({
+      by: ['rep_codigo'],
+      where: { status: 'ENVIADO', validade: { gte: new Date(`${hoje}T00:00:00Z`) } },
+      _sum: { total: true },
+      _count: { _all: true },
+    });
+    return rows.map((r) => ({ rep_codigo: r.rep_codigo, valor: Number(r._sum.total ?? 0), quantidade: r._count._all }));
+  }
+
+  /** Orçamentos FECHADOS com desfecho entre `inicio` e `fim` (o mês comissional) — base do quadro dos auxiliares. */
+  async orcamentosFechadosNoMes(
+    inicio: Date,
+    fim: Date,
+  ): Promise<Array<{ id: string; numero: number; rep_codigo: number; cli_codigo: number; desfecho_em: Date; total: number }>> {
+    const rows = await this.prisma.ven_orcamento.findMany({
+      where: { status: 'FECHADO', rep_codigo: { not: null }, desfecho_em: { gte: inicio, lte: fim } },
+      select: { id: true, numero: true, rep_codigo: true, cli_codigo: true, desfecho_em: true, total: true },
+    });
+    return rows.map((r) => ({ ...r, rep_codigo: r.rep_codigo!, desfecho_em: r.desfecho_em!, total: Number(r.total) }));
   }
 
   /** Feriados de um mês (sis_feriados). Retorna os dias do mês (1-31) que são feriado. */
@@ -548,6 +572,38 @@ export class CarteirizacaoPrismaRepository {
     criado_por_nome?: string | null;
   }) {
     return this.prisma.ven_atacado_meta.create({ data });
+  }
+
+  // ================================ fechamento mensal da gestão do atacado
+  /** Meses fechados (sem a foto), do mais recente ao mais antigo. */
+  fechamentosAtacado() {
+    return this.prisma.ven_atacado_fechamento.findMany({
+      select: { ano: true, mes: true, nivel: true, pontos: true, venda: true, meta: true, fechado_em: true, fechado_por: true },
+      orderBy: [{ ano: 'desc' }, { mes: 'desc' }],
+    });
+  }
+
+  fechamentoAtacado(ano: number, mes: number) {
+    return this.prisma.ven_atacado_fechamento.findUnique({ where: { ano_mes: { ano, mes } } });
+  }
+
+  /** Grava a foto do mês; reapurar regrava a mesma linha (única por ano/mês). */
+  gravarFechamentoAtacado(d: {
+    ano: number;
+    mes: number;
+    nivel: number;
+    pontos: number;
+    venda: number;
+    meta: number;
+    foto: Prisma.InputJsonValue;
+    fechado_por: string;
+  }) {
+    const dados = { ...d, fechado_em: new Date() };
+    return this.prisma.ven_atacado_fechamento.upsert({
+      where: { ano_mes: { ano: d.ano, mes: d.mes } },
+      create: dados,
+      update: dados,
+    });
   }
 
   /**

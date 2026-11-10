@@ -1,32 +1,6 @@
-import {
-  Body,
-  CanActivate,
-  Controller,
-  ExecutionContext,
-  ForbiddenException,
-  Get,
-  Headers,
-  Param,
-  Post,
-  Put,
-  Query,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Get, Headers, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
 import { SessoesService } from './sessoes.service';
-
-/**
- * Só aceita chamada que passou pelo proxy da intranet: header `x-app-token` igual ao
- * APP_TOKEN deste serviço (o proxy manda o VENDAS_SERVICE_TOKEN). Sem isso o
- * `x-user-id` seria de quem chamasse o serviço direto. APP_TOKEN vazio = tudo recusado.
- */
-class SoPeloProxy implements CanActivate {
-  canActivate(ctx: ExecutionContext): boolean {
-    const esperado = process.env.APP_TOKEN;
-    const token = ctx.switchToHttp().getRequest<{ headers: Record<string, unknown> }>().headers['x-app-token'];
-    if (!esperado || token !== esperado) throw new ForbiddenException('Sessões do WhatsApp só pela intranet.');
-    return true;
-  }
-}
+import { SoPeloProxy } from '../common/so-pelo-proxy.guard';
 
 /**
  * Tela /sistema/whatsapp: sessões do WAHA por instância, eventos, QR de pareamento,

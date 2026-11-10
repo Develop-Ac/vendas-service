@@ -3,8 +3,10 @@
  * semáforo. Funções puras — o SupervisaoService só mede; quem decide a cor é
  * daqui, e a mesma regra vale na tela do supervisor e no bloco do vendedor.
  *
- * KPI = os 9 indicadores do departamento (o supervisor é cobrado por eles).
+ * KPI = os 10 indicadores do departamento (o supervisor é cobrado por eles).
  * ESFORCO = os 4 critérios de esforço mínimo do vendedor (sinal observado).
+ * PREMIO = parâmetros do prêmio do departamento (custo e valor de cada nível):
+ * não são medidos, só têm valor vigente.
  * A meta de cada um é da gerência, com vigência (tabela ven_atacado_meta);
  * `padrao` só vale enquanto não houver linha gravada.
  */
@@ -15,7 +17,7 @@ export type Cor = 'verde' | 'amarelo' | 'vermelho';
 
 export interface DefIndicador {
   chave: string;
-  grupo: 'KPI' | 'ESFORCO';
+  grupo: 'KPI' | 'ESFORCO' | 'PREMIO';
   nome: string;
   descricao: string;
   unidade: Unidade;
@@ -34,15 +36,6 @@ export const INDICADORES: DefIndicador[] = [
     unidade: 'qtd',
     sentido: 'MAIOR',
     padrao: 290,
-  },
-  {
-    chave: 'RECEITA_MES',
-    grupo: 'KPI',
-    nome: 'Receita do atacado no mês',
-    descricao: 'Vendas menos devoluções dos clientes do atacado no mês comissional.',
-    unidade: 'brl',
-    sentido: 'MAIOR',
-    padrao: 550_000,
   },
   {
     chave: 'VAZAMENTO_TRIMESTRE',
@@ -112,6 +105,24 @@ export const INDICADORES: DefIndicador[] = [
     padrao: 80,
   },
   {
+    chave: 'RECUPERACAO_AB_PCT',
+    grupo: 'KPI',
+    nome: 'Recuperação curva A e B',
+    descricao: '% dos resgates de curva A e B encerrados no mês comissional que terminaram recuperados.',
+    unidade: 'pct',
+    sentido: 'MAIOR',
+    padrao: 30,
+  },
+  {
+    chave: 'CURVA_A_COMPRANDO_PCT',
+    grupo: 'KPI',
+    nome: 'Curva A comprando',
+    descricao: '% dos clientes curva A do atacado (com ou sem vendedor) com compra no mês comissional.',
+    unidade: 'pct',
+    sentido: 'MAIOR',
+    padrao: 65,
+  },
+  {
     chave: 'ESF_CURVA_A_FORA_REGUA',
     grupo: 'ESFORCO',
     nome: 'Curva A fora da régua',
@@ -147,6 +158,42 @@ export const INDICADORES: DefIndicador[] = [
     unidade: 'pct',
     sentido: 'MAIOR',
     padrao: 100,
+  },
+  {
+    chave: 'CUSTO_DEPARTAMENTO',
+    grupo: 'PREMIO',
+    nome: 'Custo do departamento',
+    descricao: 'Custo mensal do departamento de atacado, base do piso de venda.',
+    unidade: 'brl',
+    sentido: 'MENOR',
+    padrao: 157_000,
+  },
+  {
+    chave: 'PREMIO_N1',
+    grupo: 'PREMIO',
+    nome: 'Prêmio nível 1',
+    descricao: 'Valor do prêmio do supervisor ao atingir o nível 1.',
+    unidade: 'brl',
+    sentido: 'MAIOR',
+    padrao: 800,
+  },
+  {
+    chave: 'PREMIO_N2',
+    grupo: 'PREMIO',
+    nome: 'Prêmio nível 2',
+    descricao: 'Valor do prêmio do supervisor ao atingir o nível 2.',
+    unidade: 'brl',
+    sentido: 'MAIOR',
+    padrao: 1_500,
+  },
+  {
+    chave: 'PREMIO_N3',
+    grupo: 'PREMIO',
+    nome: 'Prêmio nível 3',
+    descricao: 'Valor do prêmio do supervisor ao atingir o nível 3.',
+    unidade: 'brl',
+    sentido: 'MAIOR',
+    padrao: 2_000,
   },
 ];
 
