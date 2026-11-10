@@ -31,6 +31,7 @@ import {
   pontosIndicador,
   premio,
   resumirAuxiliares,
+  resumirMotivosPerda,
   ritmoNecessario,
   ritmoPrevisao,
   serieAcumulada,
@@ -508,6 +509,22 @@ export class GestaoService {
       },
       esforco,
     };
+  }
+
+  /**
+   * Motivos de perda da aba Canal: orçamentos emitidos no mês calendário (o mesmo corte do
+   * funil da foto mensal) com motivo apontado, o placar por motivo e a lista por trás dele.
+   * "Cliente adiou" com retorno marcado entra: é motivo apontado, mesmo com o orçamento vivo.
+   */
+  async motivosPerda(mes?: string) {
+    if (!mes || !/^\d{4}-(0[1-9]|1[0-2])$/.test(mes)) throw new BadRequestException('Mês inválido (AAAA-MM).');
+    const inicio = `${mes}-01`;
+    const proximo = new Date(Date.UTC(Number(mes.slice(0, 4)), Number(mes.slice(5)), 1)).toISOString().slice(0, 10);
+    const orcamentos = await this.repo.motivosPerdaEmitidos(
+      { de: inicioDia(inicio), ate: inicioDia(proximo) },
+      { de: new Date(inicio), ate: new Date(proximo) },
+    );
+    return { mes, ...resumirMotivosPerda(orcamentos), orcamentos: orcamentos.sort((a, b) => b.total - a.total) };
   }
 
   /** Quem reapura o fechamento: só a gerência de vendas. Devolve o nome para `fechado_por`. */

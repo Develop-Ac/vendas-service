@@ -13,6 +13,7 @@ import {
   serieAcumulada,
   veredito,
   resumirAuxiliares,
+  resumirMotivosPerda,
 } from './gestao';
 import { diaDaSemana, somarDias } from './supervisao.indicadores';
 
@@ -215,5 +216,27 @@ describe('notasDoOrcamento + resumirAuxiliares', () => {
       { rep_codigo: 5, valor: 130 },
       { rep_codigo: 6, valor: 50 },
     ]);
+  });
+});
+
+describe('resumirMotivosPerda', () => {
+  it('soma por motivo, ordena pelo valor e dá a parte de cada um no valor perdido', () => {
+    const r = resumirMotivosPerda([
+      { motivo: 'PRECO', total: 600 },
+      { motivo: 'CLIENTE_ADIOU', total: 100 },
+      { motivo: 'PRECO', total: 300 },
+    ]);
+    expect(r).toEqual({
+      quantidade: 3,
+      valor: 1000,
+      motivos: [
+        { motivo: 'PRECO', quantidade: 2, valor: 900, pct: 90 },
+        { motivo: 'CLIENTE_ADIOU', quantidade: 1, valor: 100, pct: 10 },
+      ],
+    });
+  });
+
+  it('mês sem motivo apontado devolve placar vazio', () => {
+    expect(resumirMotivosPerda([])).toEqual({ quantidade: 0, valor: 0, motivos: [] });
   });
 });

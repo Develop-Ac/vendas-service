@@ -284,6 +284,13 @@ export class CarteirizacaoController {
     return this.gestao.equipe(toNum(ano), toNum(mes), semanaDesde, semanaAte, usuario);
   }
 
+  /** Motivos de perda dos orçamentos emitidos no mês calendário `mes` (AAAA-MM), para a aba Canal. */
+  @Get('gestao/motivos-perda')
+  @UseGuards(SoPeloProxy)
+  gestaoMotivosPerda(@Query('mes') mes?: string) {
+    return this.gestao.motivosPerda(mes);
+  }
+
   /** Sem ano/mês: lista dos meses fechados. Com ano/mês: a foto do mês (sem `gerencia` para quem não é gerência). */
   @Get('gestao/fechamento')
   @UseGuards(SoPeloProxy)

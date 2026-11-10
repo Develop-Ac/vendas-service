@@ -1,6 +1,7 @@
 import { Logger } from '@nestjs/common';
 
 const logger = new Logger('AnalyticsAtacado');
+let semUrlAvisado = false;
 
 /**
  * Leitura do analytics-atacado-service (perfis calculados toda noite). É sempre
@@ -10,7 +11,12 @@ const logger = new Logger('AnalyticsAtacado');
  */
 export async function analyticsAtacadoGet<T>(rota: string): Promise<T | null> {
   const base = process.env.ANALYTICS_ATACADO_URL;
-  if (!base) return null;
+  if (!base) {
+    // uma vez por processo: sem isto a falta da env não aparece em lugar nenhum
+    if (!semUrlAvisado) logger.warn('ANALYTICS_ATACADO_URL vazio: sugestões do cliente e alerta de ciclo na fila desligados.');
+    semUrlAvisado = true;
+    return null;
+  }
   const ms = Number(process.env.ANALYTICS_ATACADO_TIMEOUT_MS);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), Number.isFinite(ms) && ms > 0 ? ms : 3000);

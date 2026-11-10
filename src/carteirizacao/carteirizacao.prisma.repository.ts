@@ -179,6 +179,45 @@ export class CarteirizacaoPrismaRepository {
     return rows.map((r) => ({ ...r, rep_codigo: r.rep_codigo!, desfecho_em: r.desfecho_em!, total: Number(r.total) }));
   }
 
+  /**
+   * Orçamentos emitidos no intervalo com motivo de perda apontado, das duas origens: o
+   * Perdido/Adiado do editor (`ven_orcamento`) e a fila "Sem desfecho"
+   * (`ven_orcamento_desfecho`; nº negativo = orçamento da intranet). Motivo da fila sobre
+   * orçamento da intranet que depois fechou ou ganhou motivo pelo editor não entra: vale o
+   * do próprio orçamento. `criado` são instantes; `emissao`, datas (coluna DATE).
+   */
+  async motivosPerdaEmitidos(criado: { de: Date; ate: Date }, emissao: { de: Date; ate: Date }) {
+    const [editor, fila] = await Promise.all([
+      this.prisma.ven_orcamento.findMany({
+        where: { desfecho_motivo: { not: null }, created_at: { gte: criado.de, lt: criado.ate } },
+        select: { numero: true, cli_codigo: true, cli_nome: true, rep_codigo: true, rep_nome: true, total: true, desfecho_motivo: true },
+      }),
+      this.prisma.ven_orcamento_desfecho.findMany({
+        where: { emissao: { gte: emissao.de, lt: emissao.ate } },
+        select: { orcamento: true, cli_codigo: true, cli_nome: true, rep_codigo: true, rep_nome: true, total: true, motivo: true },
+      }),
+    ]);
+    const daIntranet = fila.filter((f) => f.orcamento < 0).map((f) => -f.orcamento);
+    const resolvidos = daIntranet.length
+      ? await this.prisma.ven_orcamento.findMany({
+          where: { numero: { in: daIntranet }, OR: [{ status: 'FECHADO' }, { desfecho_motivo: { not: null } }] },
+          select: { numero: true },
+        })
+      : [];
+    const fora = new Set(resolvidos.map((r) => -r.numero));
+    return [
+      ...editor.map(({ desfecho_motivo, total, ...o }) => ({ ...o, origem: 'INTRANET' as const, total: Number(total), motivo: desfecho_motivo! })),
+      ...fila
+        .filter((f) => !fora.has(f.orcamento))
+        .map(({ orcamento, total, ...f }) => ({
+          ...f,
+          numero: Math.abs(orcamento),
+          origem: orcamento < 0 ? ('INTRANET' as const) : ('CELTA' as const),
+          total: Number(total),
+        })),
+    ];
+  }
+
   /** Feriados de um mês (sis_feriados). Retorna os dias do mês (1-31) que são feriado. */
   async diasFeriadosDoMes(ano: number, mes: number): Promise<number[]> {
     const inicio = new Date(Date.UTC(ano, mes - 1, 1));

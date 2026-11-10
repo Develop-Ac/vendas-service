@@ -248,3 +248,35 @@ export function resumirAuxiliares(casados: Casado[]): {
     veio_dos_auxiliares: lista(veio),
   };
 }
+
+/** Orçamento com motivo de perda apontado, do editor (intranet) ou da fila "Sem desfecho". */
+export interface OrcamentoPerdido {
+  /** Nº do orçamento na origem (intranet ou Celta). */
+  numero: number;
+  origem: 'INTRANET' | 'CELTA';
+  cli_codigo: number;
+  cli_nome: string | null;
+  rep_codigo: number | null;
+  rep_nome: string | null;
+  total: number;
+  motivo: string;
+}
+
+/** Placar dos motivos de perda de um mês: quantidade, valor e a parte de cada motivo no valor perdido. */
+export function resumirMotivosPerda(orcamentos: Array<Pick<OrcamentoPerdido, 'motivo' | 'total'>>) {
+  const por = new Map<string, { quantidade: number; valor: number }>();
+  for (const o of orcamentos) {
+    const m = por.get(o.motivo) ?? { quantidade: 0, valor: 0 };
+    m.quantidade++;
+    m.valor += o.total;
+    por.set(o.motivo, m);
+  }
+  const valor = orcamentos.reduce((s, o) => s + o.total, 0);
+  return {
+    quantidade: orcamentos.length,
+    valor,
+    motivos: [...por]
+      .map(([motivo, m]) => ({ motivo, ...m, pct: pct(m.valor, valor) }))
+      .sort((a, b) => b.valor - a.valor),
+  };
+}
