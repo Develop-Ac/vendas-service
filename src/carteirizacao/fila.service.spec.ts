@@ -73,12 +73,14 @@ describe('FilaService', () => {
   let escaladas: string[];
   let canceladas: Array<{ id: string; obs: string }>;
   let msgEnviadaPorCliente: Map<number, Date>;
+  let msgDoVendedor: Map<string, Date>;
   let usuario: any;
   let delegadas: Array<{ id: string; data: any }>;
 
   const repo = {
     tarefasEmAndamento: jest.fn(async () => tarefasEmAndamento),
     ultimaMensagemEnviadaPorCliente: jest.fn(async () => msgEnviadaPorCliente),
+    ultimaMensagemEnviadaDoVendedor: jest.fn(async () => msgDoVendedor),
     tarefasConcluidasDesde: jest.fn(async () => []),
     escaladasDesde: jest.fn(async () => [{ rep_codigo: 10, rep_nome: 'ANA' }, { rep_codigo: 10, rep_nome: 'ANA' }, { rep_codigo: 10, rep_nome: 'ANA' }]),
 
@@ -153,6 +155,7 @@ describe('FilaService', () => {
     escaladas = [];
     canceladas = [];
     msgEnviadaPorCliente = new Map();
+    msgDoVendedor = new Map();
     usuario = { id: 'u1', nome: 'SUPERVISOR', vendas_hub_inicial: 'SUPERVISAO_ATACADO', setor: null };
     delegadas = [];
     vencidas = [];
@@ -413,6 +416,32 @@ describe('FilaService', () => {
     ];
     await service.listar({});
     expect(concluidas).toHaveLength(0);
+  });
+
+  it('cliente novo na carteira: mensagem do próprio vendedor no dia da troca conclui, mesmo anterior ao lançamento', async () => {
+    // Troca lançada em 05/11 às 15h47 de Cuiabá (19h47 UTC).
+    const gerada = new Date('2026-11-05T19:47:00Z');
+    const motivo_geracao = 'Cliente novo na sua carteira (designado até 25/11)';
+    const tarefa = (id: string, cli_codigo: number, over: any = {}) => ({
+      id, cli_codigo, rep_codigo: 10, status: 'ESCALADA', gerada_em: gerada, prazo_em: new Date(Date.now() + DIA_MS), motivo_geracao, ...over,
+    });
+    clientes = [1, 2, 3, 4].map((cli_codigo) => cliente({ cli_codigo }));
+    tarefasEmAndamento = [
+      tarefa('mesmoDia', 1), // falou às 9h de Cuiabá, antes do lançamento
+      tarefa('vespera', 2), // falou na véspera às 18h: não vale
+      tarefa('outroVendedor', 3), // quem falou no dia foi o vendedor 20
+      tarefa('regua', 4, { motivo_geracao: 'Curva A: 40d sem compra (régua 15d)' }), // tarefa da régua não tem a exceção
+    ];
+    msgDoVendedor = new Map([
+      ['1|10', new Date('2026-11-05T13:00:00Z')],
+      ['2|10', new Date('2026-11-04T22:00:00Z')],
+      ['3|20', new Date('2026-11-05T13:00:00Z')],
+      ['4|10', new Date('2026-11-05T13:00:00Z')],
+    ]);
+    await service.listar({});
+    expect(concluidas).toEqual([{ id: 'mesmoDia', sinal: 'MENSAGEM' }]);
+    // a busca parte da meia-noite de Cuiabá do dia da troca
+    expect((repo as any).ultimaMensagemEnviadaDoVendedor).toHaveBeenCalledWith(new Date('2026-11-05T04:00:00Z'));
   });
 
   // --------------------------------------------------------------- desfecho

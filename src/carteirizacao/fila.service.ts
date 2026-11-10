@@ -56,6 +56,16 @@ type Cobertura = NonNullable<Awaited<ReturnType<CarteirizacaoPrismaRepository['o
 const hojeCuiaba = (): Date =>
   new Date(`${new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Cuiaba' })}T00:00:00Z`);
 
+/** Meia-noite de Cuiabá (UTC-4, sem horário de verão) do dia em que `d` cai. */
+const inicioDoDiaCuiaba = (d: Date): Date =>
+  new Date(`${new Date(d).toLocaleDateString('sv-SE', { timeZone: 'America/Cuiaba' })}T00:00:00-04:00`);
+
+/**
+ * Início do `motivo_geracao` da tarefa criada na troca de vendedor. A reconciliação
+ * reconhece a tarefa por ele: é o único tipo em que contato anterior à geração vale.
+ */
+export const MOTIVO_CLIENTE_NOVO = 'Cliente novo na sua carteira';
+
 /** 'yyyy-mm-dd' válido -> Date da coluna @db.Date; qualquer outra coisa -> null. */
 const diaDe = (s: unknown): Date | null => {
   if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
@@ -288,6 +298,12 @@ export class FilaService {
    *  - sinal depois da geração (venda ou orçamento do cliente) -> CONCLUIDA,
    *    com `concluida_em` = a data do próprio sinal;
    *  - prazo estourado sem sinal -> ESCALADA (vira pauta do supervisor).
+   *
+   * Exceção da tarefa de cliente novo na carteira: a troca de vendedor costuma
+   * ser lançada depois de o vendedor já ter falado com o cliente. Para ela,
+   * mensagem enviada PELO DONO DA TAREFA no mesmo dia da geração (dia de
+   * Cuiabá) também conclui, mesmo anterior ao lançamento. Venda e orçamento do
+   * dia não entram: não dá para saber de qual vendedor foram.
    */
   private reconciliando: Promise<void> | null = null;
 
@@ -311,6 +327,11 @@ export class FilaService {
       this.repo.tarefasEmAndamento(),
       this.repo.ultimaMensagemEnviadaPorCliente(),
     ]);
+    const ehClienteNovo = (t: Tarefa) => !!t.motivo_geracao?.startsWith(MOTIVO_CLIENTE_NOVO);
+    const diasDasNovas = emAndamento.filter(ehClienteNovo).map((t) => inicioDoDiaCuiaba(t.gerada_em).getTime());
+    const msgDoDono = diasDasNovas.length
+      ? await this.repo.ultimaMensagemEnviadaDoVendedor(new Date(Math.min(...diasDasNovas)))
+      : new Map<string, Date>();
     const agora = new Date();
     let escalouAgora = false;
 
@@ -322,7 +343,11 @@ export class FilaService {
           d && new Date(d).getTime() > gerada ? new Date(d) : null;
         const compra = depois(cli.data_ult_compra);
         const orc = depois(cli.ult_orcamento);
-        const msg = depois(msgEnviada.get(t.cli_codigo));
+        // A mais recente do dono é anterior à geração (senão `msgEnviada` já teria
+        // concluído acima): vale se caiu no mesmo dia.
+        const doDono = ehClienteNovo(t) ? msgDoDono.get(`${t.cli_codigo}|${t.rep_codigo}`) : undefined;
+        const noDia = doDono && doDono.getTime() >= inicioDoDiaCuiaba(t.gerada_em).getTime() ? doDono : null;
+        const msg = depois(msgEnviada.get(t.cli_codigo)) ?? noDia;
         if (compra || orc || msg) {
           // No rótulo, o sinal mais forte vence: venda (resultado) > orçamento
           // (proposta) > mensagem (contato, via sensor WAHA).

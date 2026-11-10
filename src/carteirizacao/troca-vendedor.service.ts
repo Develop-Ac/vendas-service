@@ -3,6 +3,7 @@ import { CarteirizacaoService, ClienteCarteira, REP_DISPONIVEL } from './carteir
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { CarteirizacaoCeltaClient } from './carteirizacao.celta.client';
 import { ehGestaoVendas } from './papel';
+import { MOTIVO_CLIENTE_NOVO } from './fila.service';
 import { ConfirmarCarteirizacaoDto, TransferirCarteiraDto, TrocarVendedorDto } from './dto/carteirizacao.dto';
 
 /** Observação gravada no histórico de quem sai do pool pela tela "Para carteirizar". */
@@ -233,7 +234,7 @@ export class TrocaVendedorService {
         rep_codigo: rep,
         rep_nome,
         curva: snap?.curva_abc ?? resgate?.curva ?? null,
-        motivo_geracao: `Cliente novo na sua carteira (${motivo})`,
+        motivo_geracao: `${MOTIVO_CLIENTE_NOVO} (${motivo})`,
         prazo_em: new Date(
           agora +
             (resgate && resgate.curva === 'A' ? this.prazoResgateHoras * 3_600_000 : this.prazoContatoDias * DIA_MS),
