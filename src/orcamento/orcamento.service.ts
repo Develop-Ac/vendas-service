@@ -2627,8 +2627,12 @@ export class OrcamentoService {
       throw new BadRequestException(`Orçamento já está ${o.status}.`);
     }
     if (dto.resultado === 'PERDIDO' && !dto.motivo) throw new BadRequestException('Informe o motivo da perda.');
-    // "Cliente adiou" com data marcada não encerra: o orçamento fica ADIADO (vivo, editável)
-    // até o dia do retorno, quando o vendedor é avisado. A data é o dia de Cuiabá.
+    // "Cliente adiou" só existe com data de retorno: sem ela o motivo virava saída fácil para
+    // qualquer orçamento. O orçamento não encerra: fica ADIADO (vivo, editável) até o dia do
+    // retorno, quando o vendedor é avisado. A data é o dia de Cuiabá.
+    if (dto.resultado === 'PERDIDO' && dto.motivo === 'CLIENTE_ADIOU' && !dto.retorno_em) {
+      throw new BadRequestException('Cliente adiou: informe a data de retorno ao cliente.');
+    }
     if (dto.retorno_em) {
       if (dto.resultado !== 'PERDIDO' || dto.motivo !== 'CLIENTE_ADIOU') {
         throw new BadRequestException('Data de retorno só vale para perda com motivo "Cliente adiou".');

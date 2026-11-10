@@ -68,11 +68,17 @@ describe('desfecho com data de retorno', () => {
     expect(avisos.retornoEncerrado).toHaveBeenCalledWith('o1');
   });
 
-  it('PERDIDO sem data segue encerrando, sem mexer em aviso de retorno', async () => {
+  it('PERDIDO por outro motivo segue encerrando sem data, sem mexer em aviso de retorno', async () => {
     const { service, db, avisos } = montar();
-    await service.desfecho('o1', { resultado: 'PERDIDO', motivo: 'CLIENTE_ADIOU' });
+    await service.desfecho('o1', { resultado: 'PERDIDO', motivo: 'PRECO' });
     expect(db.atualizar).toHaveBeenCalledWith('o1', expect.objectContaining({ status: 'PERDIDO', retorno_em: null }));
     expect(avisos.retornoEncerrado).not.toHaveBeenCalled();
+  });
+
+  it('CLIENTE_ADIOU sem data de retorno é recusado', async () => {
+    const { service, db } = montar();
+    await expect(service.desfecho('o1', { resultado: 'PERDIDO', motivo: 'CLIENTE_ADIOU' })).rejects.toBeInstanceOf(BadRequestException);
+    expect(db.atualizar).not.toHaveBeenCalled();
   });
 
   it('atualizar com itens trocados mantém ADIADO', async () => {

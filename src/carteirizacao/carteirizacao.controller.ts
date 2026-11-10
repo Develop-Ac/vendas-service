@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Get,
@@ -199,6 +200,11 @@ export class CarteirizacaoController {
     @Param('orcamento', ParseIntPipe) orcamento: number,
     @Body() dto: DesfechoOrcamentoDto,
   ) {
+    // Orçamento da intranet chega aqui com o número negativo. "Cliente adiou" nele exige a
+    // data de retorno, que só o desfecho do próprio orçamento grava (POST /orcamento/:id/desfecho).
+    if (orcamento < 0 && dto.motivo === 'CLIENTE_ADIOU') {
+      throw new BadRequestException('Cliente adiou exige a data de retorno: marque pelo orçamento, com a data.');
+    }
     return this.fila.registrarDesfecho(orcamento, dto);
   }
 
