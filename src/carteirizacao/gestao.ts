@@ -108,23 +108,41 @@ export function pontosIndicador(cor: Cor | null, peso: number): number {
   return cor === 'amarelo' ? peso / 2 : 0;
 }
 
+/** Pontos percentuais somados ao resgate na disciplina quando a fila de contatos bate a meta. */
+export const BONUS_CONTATOS_PP = 10;
+
 /**
  * Disciplina da equipe = média do atingimento do SLA de resgate e dos motivos
  * apontados. Verde: os dois batem; amarelo: os dois até 10 p.p. abaixo; resto vermelho.
+ *
+ * Bônus dos contatos (decisão de 12/11/2026): quando a fila de contatos fecha no
+ * prazo na meta (`fila` ≥ `metaFila`), o resgate ganha BONUS_CONTATOS_PP pontos
+ * percentuais SÓ aqui na disciplina (teto 100) — reconhece a equipe que está
+ * tentando. O indicador "Resgates no prazo" em si continua com a regra das 48h.
  */
-export function disciplina(p: { sla: number | null; metaSla: number; motivos: number | null; metaMotivos: number }): {
+export function disciplina(p: {
+  sla: number | null;
+  metaSla: number;
+  motivos: number | null;
+  metaMotivos: number;
+  fila?: number | null;
+  metaFila?: number;
+}): {
   valor: number | null;
   cor: Cor | null;
+  bonus: number;
 } {
-  if (p.sla == null || p.motivos == null) return { valor: null, cor: null };
-  const a = pct(p.sla, p.metaSla);
+  const bonus = p.fila != null && !!p.metaFila && p.fila >= p.metaFila ? BONUS_CONTATOS_PP : 0;
+  if (p.sla == null || p.motivos == null) return { valor: null, cor: null, bonus };
+  const sla = Math.min(100, p.sla + bonus);
+  const a = pct(sla, p.metaSla);
   const b = pct(p.motivos, p.metaMotivos);
   const valor = a == null || b == null ? null : Math.round(((a + b) / 2) * 10) / 10;
   const cor = piorCor([
-    semaforo(p.sla, p.metaSla, 10, 'pct', 'MAIOR'),
+    semaforo(sla, p.metaSla, 10, 'pct', 'MAIOR'),
     semaforo(p.motivos, p.metaMotivos, 10, 'pct', 'MAIOR'),
   ]);
-  return { valor, cor };
+  return { valor, cor, bonus };
 }
 
 /** Valor do nível × pontos ÷ 100; bolsa do canal negativa zera. Sem proporcional entre níveis. */

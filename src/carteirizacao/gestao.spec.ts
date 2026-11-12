@@ -144,7 +144,19 @@ describe('pontos e disciplina', () => {
     expect(disciplina({ sla: 85, motivos: 72, ...metas }).cor).toBe('amarelo');
     expect(disciplina({ sla: 95, motivos: 69, ...metas }).cor).toBe('vermelho');
     expect(disciplina({ sla: 90, motivos: 72, ...metas }).valor).toBe(95);
-    expect(disciplina({ sla: null, motivos: 80, ...metas })).toEqual({ valor: null, cor: null });
+    expect(disciplina({ sla: null, motivos: 80, ...metas })).toEqual({ valor: null, cor: null, bonus: 0 });
+  });
+
+  it('disciplina: fila de contatos na meta soma 10 p.p. ao resgate (só na disciplina, teto 100)', () => {
+    const metas = { metaSla: 90, metaMotivos: 80, metaFila: 80 };
+    // 72,7% de resgate é vermelho (< 80); com o bônus vira 82,7% = amarelo
+    expect(disciplina({ sla: 72.7, motivos: 86, fila: 91.9, ...metas })).toMatchObject({ cor: 'amarelo', bonus: 10 });
+    expect(disciplina({ sla: 72.7, motivos: 86, fila: 79.9, ...metas })).toMatchObject({ cor: 'vermelho', bonus: 0 });
+    expect(disciplina({ sla: 72.7, motivos: 86, fila: null, ...metas })).toMatchObject({ cor: 'vermelho', bonus: 0 });
+    // longe da faixa o bônus não muda a cor: 36,4 + 10 continua vermelho
+    expect(disciplina({ sla: 36.4, motivos: 86, fila: 91.9, ...metas })).toMatchObject({ cor: 'vermelho', bonus: 10 });
+    // teto: 95 + 10 conta como 100 → (111,1 + 100) / 2
+    expect(disciplina({ sla: 95, motivos: 80, fila: 80, ...metas }).valor).toBe(105.6);
   });
 });
 

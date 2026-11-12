@@ -93,6 +93,24 @@ export class ResgateService {
       this.repo.ultimaMensagemEnviadaPorCliente(),
     ]);
 
+    // Mensagens aos clientes com episódio aberto, desde a abertura mais antiga: o
+    // prazo de 48h compara a PRIMEIRA mensagem depois da abertura, não a última.
+    // ponytail: varre a lista por episódio; trocar por índice por cliente se a esteira passar de centenas.
+    const msgsDosAbertos = abertos.length
+      ? await this.repo.mensagensEnviadasAosClientes(
+          abertos.map((r) => r.cli_codigo),
+          new Date(Math.min(...abertos.map((r) => new Date(r.aberto_em).getTime()))),
+        )
+      : [];
+    const primeiraMsgApos = (cli_codigo: number, aberto: number): Date | null => {
+      let primeira = Infinity;
+      for (const m of msgsDosAbertos) {
+        const ts = new Date(m.timestamp).getTime();
+        if (m.cli_codigo === cli_codigo && ts > aberto && ts < primeira) primeira = ts;
+      }
+      return Number.isFinite(primeira) ? new Date(primeira) : null;
+    };
+
     const agora = new Date();
     const comEpisodio = new Set<number>();
 
@@ -111,7 +129,7 @@ export class ResgateService {
         d && new Date(d).getTime() > aberto ? new Date(d) : null;
       const venda = depois(cli.data_ult_compra);
       const orc = depois(cli.ult_orcamento);
-      const msg = depois(msgEnviada.get(r.cli_codigo));
+      const msg = primeiraMsgApos(r.cli_codigo, aberto);
       const primeiroSinal = [venda, orc, msg]
         .filter((d): d is Date => d != null)
         .sort((a, b) => a.getTime() - b.getTime())[0];
@@ -128,16 +146,18 @@ export class ResgateService {
       if (!r.contatado_em && primeiroSinal) data.contatado_em = primeiroSinal;
       if (!r.proposta_em && orc) data.proposta_em = orc;
 
-      // SLA avaliado uma única vez: cumpriu se o 1º sinal veio dentro do prazo;
-      // falhou quando o prazo passou sem sinal nenhum.
-      if (r.sla_em && r.sla_cumprido == null) {
+      // SLA: cumpriu se o 1º sinal veio dentro do prazo; falhou quando o prazo
+      // passou sem sinal nenhum. A reprovação é revista enquanto o episódio está
+      // aberto: a mensagem enviada no prazo pode chegar ao sistema depois (sessão
+      // do WhatsApp fora do ar e recarregada, número vinculado ao cliente mais tarde).
+      if (r.sla_em && r.sla_cumprido !== true) {
         const prazo = new Date(r.sla_em).getTime();
         if (primeiroSinal && primeiroSinal.getTime() <= prazo) data.sla_cumprido = true;
-        else if (!primeiroSinal && agora.getTime() > prazo) {
+        else if (r.sla_cumprido == null && !primeiroSinal && agora.getTime() > prazo) {
           data.sla_cumprido = false;
           void this.avisosVendas.resgateSla(cli, r.id, Math.round((agora.getTime() - prazo) / 3_600_000), this.slaHoras);
         }
-        else if (primeiroSinal && primeiroSinal.getTime() > prazo) data.sla_cumprido = false;
+        else if (r.sla_cumprido == null && primeiroSinal) data.sla_cumprido = false;
       }
 
       // Estágio = o mais avançado que os sinais sustentam.

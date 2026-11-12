@@ -71,6 +71,7 @@ describe('ResgateService', () => {
   let abertosNovos: any[];
   let atualizados: Array<{ id: string; data: any }>;
   let msgEnviada: Map<number, Date>;
+  let mensagens: Array<{ cli_codigo: number; rep_codigo: number; timestamp: Date }>;
 
   const repo = {
     resgatesAbertos: jest.fn(async () => abertos),
@@ -83,6 +84,11 @@ describe('ResgateService', () => {
     }),
     resgatesFechadosDesde: jest.fn(async () => []),
     ultimaMensagemEnviadaPorCliente: jest.fn(async () => msgEnviada),
+    // A última de cada cliente (msgEnviada) também existe na lista de mensagens.
+    mensagensEnviadasAosClientes: jest.fn(async () => [
+      ...[...msgEnviada].map(([cli_codigo, timestamp]) => ({ cli_codigo, rep_codigo: 10, timestamp })),
+      ...mensagens,
+    ]),
     tarefasConcluidasPorRepDesde: jest.fn(async () => []),
     escaladasPorRep: jest.fn(async () => []),
     slaResgatePorRepDesde: jest.fn(async () => []),
@@ -122,6 +128,7 @@ describe('ResgateService', () => {
     abertosNovos = [];
     atualizados = [];
     msgEnviada = new Map();
+    mensagens = [];
     jest.clearAllMocks();
   });
 
@@ -207,6 +214,31 @@ describe('ResgateService', () => {
     const porId = new Map(atualizados.map((a) => [a.id, a.data]));
     expect(porId.get('r1')).toMatchObject({ sla_cumprido: true, estagio: 'CONTATADO' });
     expect(porId.get('r2')).toMatchObject({ sla_cumprido: false });
+  });
+
+  it('SLA: vale a PRIMEIRA mensagem depois da abertura e a reprovação é revista quando ela chega atrasada', async () => {
+    const aberto_em = new Date(Date.now() - 5 * DIA_MS);
+    const sla_em = new Date(aberto_em.getTime() + 48 * 3_600_000);
+    const h = (n: number) => new Date(aberto_em.getTime() + n * 3_600_000);
+    clientes = [1, 2, 3].map((cli_codigo) => cliente({ cli_codigo }));
+    const base = { rep_codigo: 10, estagio: 'CONTATADO', aberto_em, sla_em, contatado_em: h(72), proposta_em: null };
+    abertos = [
+      { id: 'recarga', cli_codigo: 1, ...base, sla_cumprido: false }, // falou com 24h; a mensagem só entrou depois da reprovação
+      { id: 'atrasado', cli_codigo: 2, ...base, sla_cumprido: false }, // só falou com 72h: continua reprovado
+      { id: 'duasMsgs', cli_codigo: 3, ...base, estagio: 'A_CONTATAR', contatado_em: null, sla_cumprido: null }, // 24h e 72h: vale a de 24h
+    ];
+    mensagens = [
+      { cli_codigo: 1, rep_codigo: 10, timestamp: h(24) },
+      { cli_codigo: 1, rep_codigo: 10, timestamp: h(72) },
+      { cli_codigo: 2, rep_codigo: 10, timestamp: h(72) },
+      { cli_codigo: 3, rep_codigo: 10, timestamp: h(72) },
+      { cli_codigo: 3, rep_codigo: 10, timestamp: h(24) },
+    ];
+    await service.reconciliar();
+    const porId = new Map(atualizados.map((a) => [a.id, a.data]));
+    expect(porId.get('recarga')).toEqual({ sla_cumprido: true });
+    expect(porId.has('atrasado')).toBe(false);
+    expect(porId.get('duasMsgs')).toMatchObject({ sla_cumprido: true, contatado_em: h(24), estagio: 'CONTATADO' });
   });
 
   it('painel esforço×resultado agrega por vendedor — só vendedor ativo do atacado', async () => {

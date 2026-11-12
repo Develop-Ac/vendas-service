@@ -147,7 +147,15 @@ export class GestaoService {
     };
     const sla = kpi('RESGATE_SLA_PCT');
     const motivos = kpi('MOTIVOS_APONTADOS_PCT');
-    const d = disciplina({ sla: sla?.valor ?? null, metaSla: sla?.meta ?? 0, motivos: motivos?.valor ?? null, metaMotivos: motivos?.meta ?? 0 });
+    const fila = kpi('FILA_NO_PRAZO_PCT');
+    const d = disciplina({
+      sla: sla?.valor ?? null,
+      metaSla: sla?.meta ?? 0,
+      motivos: motivos?.valor ?? null,
+      metaMotivos: motivos?.meta ?? 0,
+      fila: fila?.valor ?? null,
+      metaFila: fila?.meta ?? 0,
+    });
     const indicadores = [
       medido('CLIENTES_ATIVOS_MES'),
       medido('RECUPERACAO_AB_PCT', 'recuperados', 'fechados'),
@@ -167,6 +175,8 @@ export class GestaoService {
           valor: k?.valor ?? null,
           meta: k?.meta ?? 0,
         })),
+        // Fila de contatos no prazo: não é componente, só dá o bônus ao resgate.
+        bonus_contatos: { pp: d.bonus, valor: fila?.valor ?? null, meta: fila?.meta ?? 0 },
       },
     ];
     return {
