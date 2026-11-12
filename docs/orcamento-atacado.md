@@ -138,6 +138,15 @@ A tela projeta o saldo "depois" com o orçamento em edição (`total`, `desconto
 amarelo = dentro da bolsa, vermelho = bolsa estourada), o rateio por cliente (`por_cliente`,
 quem gerou o saldo) e a participação MIX1 com o degrau da escada (22/26/30% → ×1,25/×1,5/×2,0).
 
+**Leitura sem espera.** O casamento dos orçamentos fechados com as NFs e os ajustes de cada
+vendedor ficam prontos em memória: 5 min valem como novos, e até 30 min o último valor segue
+servido enquanto recalcula por trás. Um agendamento (`bolsa-aquecimento.scheduler.ts`,
+`ORCAMENTO_BOLSA_AQUECIMENTO_CRON`) os recalcula a cada 4 minutos das 7h às 19h, segunda a
+sábado, um vendedor por vez (quem tem orçamento FECHADO nos últimos 8 meses). Fora desse
+horário a primeira leitura calcula na hora. O mês do vendedor, o rateio por cliente e as células
+da comissão valem 1 minuto por vendedor: o editor chama a bolsa a cada item alterado e só a parte
+do orçamento em edição é recalculada.
+
 ### Compra de oportunidade: reserva da empresa (25/09/2026)
 
 Num lote comprado muito abaixo do custo normal, com o preço mantido perto do mercado, a sobra
@@ -381,7 +390,11 @@ importado no Celta" (cabeçalho do editor e lista) abre a mesma pergunta depois.
    em `PRODUTOS` (catálogo `produtos.tabela.ts`).
 4. Variáveis (opcionais, com padrão): `ORCAMENTO_BOLSA_MODO`, `ORCAMENTO_BOLSA_DRE_MESES`, `ORCAMENTO_META_RESULTADO`, `ORCAMENTO_BOLSA_DEGRAUS`, `ORCAMENTO_BOLSA_PISO`, `ORCAMENTO_LINHA_4PCT`,
    `ORCAMENTO_PREMIO_PCT`, `ORCAMENTO_ITEM_PISO`, `ORCAMENTO_VALIDADE_DIAS`,
-   `ORCAMENTO_RELACIONADOS_CRON`, `ORCAMENTO_RELACIONADOS_MESES`, `ORCAMENTO_RETORNO_CRON`.
+   `ORCAMENTO_RELACIONADOS_CRON`, `ORCAMENTO_RELACIONADOS_MESES`, `ORCAMENTO_RETORNO_CRON`,
+   `ORCAMENTO_BOLSA_AQUECIMENTO_CRON` (padrão `*/4 7-19 * * 1-6`; `off` desliga),
+   `ORCAMENTO_LOG_LENTO_MS` (padrão `2000`; `0` desliga): lista, card da bolsa, extrato e casamento
+   que passarem do limite saem no log numa linha com o tempo total e o de cada etapa (só código de
+   vendedor, contagens, mês e milissegundos); o aquecimento loga o resumo de cada rodada e os vendedores lentos.
 5. Rodar uma vez `POST /orcamento/relacionados/recalcular` (senão "vendem juntos" só aparece
    após o primeiro cron).
 6. Liberar a tela por usuário em `sis_permissoes` (`tela = '/vendas/orcamento'`) — o módulo

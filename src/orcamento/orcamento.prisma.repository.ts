@@ -1168,6 +1168,16 @@ export class OrcamentoPrismaRepository {
     });
   }
 
+  /** Vendedores com orçamento FECHADO desde `desde` — os que o aquecimento da bolsa prepara. */
+  async repsComFechados(desde: Date): Promise<number[]> {
+    const rows = await this.prisma.ven_orcamento.findMany({
+      where: { status: 'FECHADO', desfecho_em: { gte: desde }, rep_codigo: { not: null } },
+      distinct: ['rep_codigo'],
+      select: { rep_codigo: true },
+    });
+    return rows.map((r) => r.rep_codigo!);
+  }
+
   /** FECHADOS do vendedor com desfecho desde `desde`, com os itens — o que o extrato casa com as NFs. */
   async fechadosParaCasar(rep: number, desde: Date) {
     const rows = await this.prisma.ven_orcamento.findMany({
@@ -1207,10 +1217,19 @@ export class OrcamentoPrismaRepository {
     );
   }
 
-  /** Orçamentos abertos deste vendedor (ENVIADO/APROVACAO/ADIADO) — para a bolsa projetada. */
+  /**
+   * Orçamentos abertos deste vendedor (ENVIADO/APROVACAO/ADIADO) que ainda são venda possível — para a bolsa projetada.
+   * Vencido (validade antes de hoje em Cuiabá) não conta; adiado conta enquanto o retorno for de hoje em diante.
+   * Validade nula sem retorno futuro fica fora.
+   */
   async abertosDoVendedor(rep: number) {
+    const hoje = hojeRetorno();
     return this.prisma.ven_orcamento.findMany({
-      where: { rep_codigo: rep, status: { in: ['ENVIADO', 'APROVACAO', 'ADIADO'] } },
+      where: {
+        rep_codigo: rep,
+        status: { in: ['ENVIADO', 'APROVACAO', 'ADIADO'] },
+        OR: [{ validade: { gte: hoje } }, { status: 'ADIADO', retorno_em: { gte: hoje } }],
+      },
       select: {
         id: true, numero: true, cli_nome: true, total: true, desconto_total: true, subtotal: true,
         itens: { select: { quantidade: true, custo_ref: true, total: true, preco_tabela: true } },

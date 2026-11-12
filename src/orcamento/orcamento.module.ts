@@ -13,6 +13,7 @@ import { OrcamentoVencendoScheduler } from './vencendo.scheduler';
 import { OrcamentoRetornoScheduler } from './retorno.scheduler';
 import { OrcamentoComparativoScheduler } from './comparativo.scheduler';
 import { BolsaFechamentoScheduler } from './bolsa-fechamento.scheduler';
+import { BolsaAquecimentoScheduler } from './bolsa-aquecimento.scheduler';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 
 /**
@@ -28,6 +29,7 @@ import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
     OrcamentoRetornoScheduler,
     OrcamentoComparativoScheduler,
     BolsaFechamentoScheduler,
+    BolsaAquecimentoScheduler,
     AvisosVendasService,
     OrcamentoService,
     ProdutosDiaService,

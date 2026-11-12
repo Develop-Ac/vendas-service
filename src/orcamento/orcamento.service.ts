@@ -56,6 +56,8 @@ export const PERMISSOES_APROVACAO = ['/vendas/orcamento/liberar-bloqueio', '/ven
 /** Permissão (sis_permissoes.tela, com editar ou criar) de quem ajusta a bolsa negativa de uma linha. */
 export const PERMISSAO_AJUSTE_BOLSA = '/vendas/orcamento/ajustar-bolsa';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
+import { CacheVelho } from './cache-velho';
+import { cronometro } from './leitura-lenta';
 import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
 
 /* =============================================================================
@@ -255,6 +257,8 @@ export class OrcamentoService {
       celta_tributacao: ['1', 'true', 'sim'].includes((process.env.ORCAMENTO_CELTA_TRIBUTACAO ?? '').replace(/#.*$/, '').replace(/["']/g, '').trim().toLowerCase()),
       /** USUARIOS.USU_CODIGO do Celta (INTRANET-ORÇ) que libera o bloqueio de orçamento dentro da alçada do vendedor */
       celta_usuario_alcada: num('ORCAMENTO_CELTA_USUARIO_ALCADA', 258),
+      // leitura da tela (lista, card, extrato, casamento) acima disto em ms sai no log com o tempo de cada etapa; 0 desliga
+      log_lento_ms: numOuZero('ORCAMENTO_LOG_LENTO_MS', 2000),
     };
   }
 
@@ -514,25 +518,28 @@ export class OrcamentoService {
   ) {
     const { teto, ativo } = this.tetoVigente();
     const periodo = mesComissional();
+    const t = cronometro(this.parametros().log_lento_ms);
     // o piso entra na leitura do mês (metade da promoção) — por isso vem antes; serviços ficam fora da bolsa
-    const [{ piso, linha, pisoDre, degrau, vol }, servicos] = await Promise.all([this.pisoVigente(periodo), this.servicosDoErp()]);
+    const [{ piso, linha, pisoDre, degrau, vol }, servicos] = await t.etapa('piso', Promise.all([this.pisoVigente(periodo), this.servicosDoErp()]));
     // compra de oportunidade: lotes que cobrem vendas do mês (vigentes ou encerrados há pouco)
-    const lotes = await this.oportunidadesParaBolsa(2);
+    const lotes = await t.etapa('lotes', this.oportunidadesParaBolsa(2));
     const [{ v, ajustes, entrada }, clientes, celulas, cfgComissao, canalSaldo] = await Promise.all([
-      this.entradaDoMes(rep, periodo, { piso, linha, servicos, lotes, mesesAjuste: 2, teto }),
-      this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes, piso, teto).catch((e) => {
+      t.etapa('mes', this.entradaDoMes(rep, periodo, { piso, linha, servicos, lotes, mesesAjuste: 2, teto })),
+      // rateio por cliente e células da comissão: 1 minuto por vendedor, como o mês — o editor chama a
+      // bolsa a cada alteração de item e só a parte do orçamento em edição muda; a falha fica fora do cache
+      t.etapa('clientes', this.clientesCache.ler(`${rep}|${periodo.ano}-${periodo.mes}|${piso}|${teto.corte}-${teto.pct}-${teto.desde}`, () => this.bi.bolsaPorCliente(rep, periodo.ano, periodo.mes, lotes, piso, teto)).catch((e) => {
         this.logger.warn(`Bolsa por cliente indisponível (rep ${rep}): ${(e as Error).message}`);
         return [];
-      }),
-      this.bi.celulasComissao(rep, periodo.ano, periodo.mes).catch((e) => {
+      })),
+      t.etapa('comissao', this.celulasCache.ler(`${rep}|${periodo.ano}-${periodo.mes}`, () => this.bi.celulasComissao(rep, periodo.ano, periodo.mes)).catch((e) => {
         this.logger.warn(`Células da comissão indisponíveis (rep ${rep}): ${(e as Error).message}`);
         return null;
-      }),
-      this.bi.parametrosComissao().catch((e) => {
+      })),
+      t.etapa('comissao_param', this.bi.parametrosComissao().catch((e) => {
         this.logger.warn(`Parâmetros da comissão indisponíveis: ${(e as Error).message}`);
         return null;
-      }),
-      this.saldoCanal(periodo, piso, linha, servicos, lotes, teto),
+      })),
+      t.etapa('canal', this.saldoCanal(periodo, piso, linha, servicos, lotes, teto)),
     ]);
     const ajustePorCliente = new Map<number, number>();
     for (const l of ajustes) ajustePorCliente.set(l.cli_codigo, (ajustePorCliente.get(l.cli_codigo) ?? 0) + l.efetivo);
@@ -561,7 +568,8 @@ export class OrcamentoService {
       teto_desde: teto.desde,
     });
     const part = v.venda_liquida > 0 ? v.mix1_liquido / v.venda_liquida : 0;
-    const abertos = await this.db.abertosDoVendedor(rep);
+    const abertos = await t.etapa('abertos', this.db.abertosDoVendedor(rep));
+    t.fim(`bolsa rep ${rep}`, (m) => this.logger.warn(m));
     // Se todos os enviados fecharem, é isto que entra na bolsa (item sem custo é neutro; teto por linha em vigor).
     let saldoAbertos = 0;
     for (const o of abertos) {
@@ -621,11 +629,11 @@ export class OrcamentoService {
   private async entradaDoMes(
     rep: number,
     periodo: { ano: number; mes: number },
-    c: { piso: number; linha: number; servicos: number[]; lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5]; mesesAjuste: number; teto: TetoBolsa },
+    c: { piso: number; linha: number; servicos: number[]; lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5]; mesesAjuste: number; teto: TetoBolsa; direto?: boolean },
   ) {
     const p = this.parametros();
     const [[v, ajustes], meta, inicial] = await Promise.all([
-      this.mesDaBolsa(rep, periodo, c.piso, c.servicos, c.lotes, c.mesesAjuste, c.teto),
+      this.mesDaBolsa(rep, periodo, c.piso, c.servicos, c.lotes, c.mesesAjuste, c.teto, c.direto),
       // sem meta (ou leitura falhou) o prêmio cai no degrau mais baixo
       this.db.metaVendedor(rep, periodo.ano, periodo.mes).catch((e) => {
         this.logger.warn(`Meta do vendedor indisponível (rep ${rep}): ${(e as Error).message}`);
@@ -696,7 +704,8 @@ export class OrcamentoService {
     const p = this.parametros();
     const { teto } = this.tetoVigente();
     const periodo = periodoComissional(ano, mes);
-    const [{ piso, linha }, servicos] = await Promise.all([this.pisoVigente(periodo), this.servicosDoErp()]);
+    // o fechamento grava valor definitivo: lê sempre direto, sem cache
+    const [{ piso, linha }, servicos] = await Promise.all([this.pisoVigente(periodo, true), this.servicosDoErp()]);
     // lotes e ajustes que cobrem vendas desde o início do mês fechado, com folga
     const lotes = await this.oportunidadesParaBolsa(atrasados + 2);
     const linhas: Array<ReturnType<typeof fechamentoDaBolsa> & { rep_codigo: number }> = [];
@@ -704,7 +713,7 @@ export class OrcamentoService {
     // um vendedor por vez: cada leitura já faz várias consultas ao BI
     for (const r of vendedores) {
       try {
-        const { entrada } = await this.entradaDoMes(r, periodo, { piso, linha, servicos, lotes, mesesAjuste: atrasados + 2, teto });
+        const { entrada } = await this.entradaDoMes(r, periodo, { piso, linha, servicos, lotes, mesesAjuste: atrasados + 2, teto, direto: true });
         const f = fechamentoDaBolsa(calcularBolsa(entrada), p.reserva_pct, p.reserva_teto);
         await this.db.gravarFechamentoBolsa({ rep_codigo: r, ano, mes, ...f, piso, fechado_por: por }, seguinte);
         linhas.push({ rep_codigo: r, ...f });
@@ -763,30 +772,46 @@ export class OrcamentoService {
   /**
    * O mês da bolsa do vendedor como o card lê: venda do BI (sem serviço, custo da bolsa, metade
    * da promoção) e o efetivo dos ajustes da bolsa negativa com NF no mês (orçamentos importados
-   * nos últimos `mesesAjuste` meses). O extrato usa a mesma leitura para conferir com o card.
+   * nos últimos `mesesAjuste` meses). O extrato usa a mesma leitura para conferir com o card e
+   * recebe junto o casamento usado (null se indisponível), para as linhas baterem com o card.
+   * Só a venda do BI tem cache próprio aqui (1 minuto por vendedor, mês, piso e teto); casamento
+   * e ajustes vêm dos seus caches. `direto` lê tudo sem cache.
    */
-  private mesDaBolsa(rep: number, periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], mesesAjuste: number, teto: TetoBolsa) {
-    return Promise.all([
-      // O BI só conhece a promoção do Celta: a do portal B2B (venda normal no
-      // Celta) entra pela NF casada com o orçamento. O excedente do teto por linha vem do BI.
-      Promise.all([
-        this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes, teto),
-        this.absorvidoPromoPortalNoMes(rep, periodo, piso, servicos),
-      ]).then(([v, portal]) => ({ ...v, absorvido: v.absorvido + portal })),
-      this.efetivoAjustes(rep, mesesAjuste, piso).then((ls) => ls.filter((l) => mesmoMes(l.emissao, periodo))),
+  private async mesDaBolsa(
+    rep: number,
+    periodo: { ano: number; mes: number },
+    piso: number,
+    servicos: number[],
+    lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5],
+    mesesAjuste: number,
+    teto: TetoBolsa,
+    direto = false,
+  ) {
+    const lerBi = () => this.bi.bolsaVendedor(rep, periodo.ano, periodo.mes, piso, servicos, lotes, teto);
+    const [v, cas, ajustes] = await Promise.all([
+      direto ? lerBi() : this.mesCache.ler(`${rep}|${periodo.ano}-${periodo.mes}|${piso}|${teto.corte}-${teto.pct}-${teto.desde}`, lerBi),
+      this.casamentoDoRep(rep, direto).catch((e) => {
+        this.logger.warn(`Casamento orçamento × NF indisponível (rep ${rep}): ${(e as Error).message}`);
+        return null;
+      }),
+      this.efetivoAjustes(rep, mesesAjuste, piso, direto).then((ls) => ls.filter((l) => mesmoMes(l.emissao, periodo))),
     ]);
+    // O BI só conhece a promoção do Celta: a do portal B2B (venda normal no
+    // Celta) entra pela NF casada com o orçamento. O excedente do teto por linha vem do BI.
+    const portal = this.absorvidoPromoPortalNoMes(cas, periodo, piso, servicos);
+    return [{ ...v, absorvido: v.absorvido + portal }, ajustes, cas] as const;
   }
+
+  private mesCache = new CacheVelho<Awaited<ReturnType<OrcamentoBiRepository['bolsaVendedor']>>>(60_000);
+  private clientesCache = new CacheVelho<Awaited<ReturnType<OrcamentoBiRepository['bolsaPorCliente']>>>(60_000);
+  private celulasCache = new CacheVelho<Awaited<ReturnType<OrcamentoBiRepository['celulasComissao']>>>(60_000);
 
   /**
    * Metade do negativo das vendas do mês em promoção do PORTAL B2B: NF casada
    * com item de orçamento FECHADO em promoção do portal, a mesma conta do BI
    * para a promoção do Celta. Casamento indisponível → 0 (a bolsa não cai).
    */
-  private async absorvidoPromoPortalNoMes(rep: number, periodo: { ano: number; mes: number }, piso: number, servicos: number[]) {
-    const c = await this.casamentoDoRep(rep).catch((e) => {
-      this.logger.warn(`Promoção do portal na bolsa do mês indisponível (rep ${rep}): ${(e as Error).message}`);
-      return null;
-    });
+  private absorvidoPromoPortalNoMes(c: Awaited<ReturnType<OrcamentoService['casamentoDoRep']>> | null, periodo: { ano: number; mes: number }, piso: number, servicos: number[]) {
     if (!c) return 0;
     const fora = new Set(servicos);
     let total = 0;
@@ -807,15 +832,15 @@ export class OrcamentoService {
     });
   }
 
-  private canalCache: { chave: string; em: number; v: Awaited<ReturnType<OrcamentoBiRepository['bolsaVendedor']>> } | null = null;
+  private canalCache = new CacheVelho<Awaited<ReturnType<OrcamentoBiRepository['bolsaVendedor']>>>(60_000);
 
-  /** Venda do canal atacado no mês (mesma leitura da bolsa do vendedor, sem filtro de vendedor), com cache de 1 minuto. */
-  private async canalMtd(periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], teto: TetoBolsa) {
+  /**
+   * Venda do canal atacado no mês (mesma leitura da bolsa do vendedor, sem filtro de vendedor),
+   * com cache de 1 minuto; vencido, a leitura espera o BI.
+   */
+  private canalMtd(periodo: { ano: number; mes: number }, piso: number, servicos: number[], lotes: Parameters<OrcamentoBiRepository['bolsaVendedor']>[5], teto: TetoBolsa) {
     const chave = `${periodo.ano}-${periodo.mes}-${piso}-${teto.corte}-${teto.pct}-${teto.desde}`;
-    if (this.canalCache?.chave === chave && Date.now() - this.canalCache.em < 60_000) return this.canalCache.v;
-    const v = await this.bi.bolsaVendedor(null, periodo.ano, periodo.mes, piso, servicos, lotes, teto);
-    this.canalCache = { chave, em: Date.now(), v };
-    return v;
+    return this.canalCache.ler(chave, () => this.bi.bolsaVendedor(null, periodo.ano, periodo.mes, piso, servicos, lotes, teto));
   }
 
   /** Saldo da bolsa do CANAL atacado (todos os vendedores) no mês; leitura do BI indisponível → null. */
@@ -839,24 +864,35 @@ export class OrcamentoService {
   /**
    * Piso da bolsa em vigor: pela DRE (custo + fixas + variáveis reais → 4%), pelo
    * degrau de volume do canal, ou fixo. Nos modos dre/degrau a linha dos 4% é o
-   * próprio piso: saldo retido = lucro a mais.
+   * próprio piso: saldo retido = lucro a mais. A leitura do BI fica 10 minutos em
+   * cache por mês; `direto` lê sem cache.
    */
-  private async pisoVigente(periodo: { ano: number; mes: number }) {
+  private async pisoVigente(periodo: { ano: number; mes: number }, direto = false) {
     const p = this.parametros();
-    const [vol, dre] = await Promise.all([
-      p.bolsa_modo === 'degrau' ? this.bi.volumeCanal3m(periodo.ano, periodo.mes) : Promise.resolve(null),
-      p.bolsa_modo === 'dre'
-        ? this.bi.dreCanalMensal(p.bolsa_dre_meses).catch((e) => {
-            this.logger.warn(`DRE do canal indisponível — piso cai para o fixo: ${(e as Error).message}`);
-            return null;
-          })
-        : Promise.resolve(null),
-    ]);
+    const ler = () => this.leituraDoPiso(periodo);
+    // a queda da DRE derruba para o piso fixo só nesta leitura: o fixo não fica guardado
+    const { vol, dre } = await (direto ? ler() : this.pisoCache.ler(`${periodo.ano}-${periodo.mes}`, ler)).catch((e) => {
+      if (p.bolsa_modo !== 'dre') throw e;
+      this.logger.warn(`DRE do canal indisponível — piso cai para o fixo: ${(e as Error).message}`);
+      return { vol: null, dre: null };
+    });
     const pisoDre = dre ? pisoPorDre(dre, p.bolsa_dre_meses, p.meta_resultado) : null;
     const degrau = vol ? pisoPorVolume(p.bolsa_degraus, vol.media_mes) : null;
     const piso = pisoDre ? pisoDre.piso : degrau ? degrau.piso : p.bolsa_piso;
     const linha = pisoDre || degrau || !(p.linha_4pct > 0) ? piso : p.linha_4pct;
     return { piso, linha, pisoDre, degrau, vol };
+  }
+
+  private pisoCache = new CacheVelho<Awaited<ReturnType<OrcamentoService['leituraDoPiso']>>>(10 * 60_000);
+
+  /** Leitura do BI que define o piso (volume do canal no modo degrau, DRE no modo dre); lança se o BI falhar. Cache de 10 minutos em pisoVigente. */
+  private async leituraDoPiso(periodo: { ano: number; mes: number }) {
+    const p = this.parametros();
+    const [vol, dre] = await Promise.all([
+      p.bolsa_modo === 'degrau' ? this.bi.volumeCanal3m(periodo.ano, periodo.mes) : Promise.resolve(null),
+      p.bolsa_modo === 'dre' ? this.bi.dreCanalMensal(p.bolsa_dre_meses) : Promise.resolve(null),
+    ]);
+    return { vol, dre };
   }
 
   /**
@@ -1483,8 +1519,11 @@ export class OrcamentoService {
    * mostra a página na hora e pede de novo com a bolsa das NFs; `bolsa_nf` sai ausente.
    */
   async listar(f: FiltroListaOrcamento, comNf = true) {
-    const r = await this.db.listar(f);
-    return { ...r, itens: await this.comBolsa(await this.comRepNome(r.itens), comNf) };
+    const t = cronometro(this.parametros().log_lento_ms);
+    const r = await t.etapa('postgres', this.db.listar(f));
+    const itens = await t.etapa('bolsa', this.comBolsa(await t.etapa('vendedores', this.comRepNome(r.itens)), comNf));
+    t.fim(`lista (bolsaNf=${comNf ? 1 : 0})`, (m) => this.logger.warn(m));
+    return { ...r, itens };
   }
 
   async obter(id: string) {
@@ -2343,14 +2382,16 @@ export class OrcamentoService {
     dia.setHours(0, 0, 0, 0);
     const meses = Math.ceil((Date.now() - dia.getTime()) / (30 * 86_400_000)) + 1;
     const desde = `${dia.getFullYear()}${String(dia.getMonth() + 1).padStart(2, '0')}${String(dia.getDate()).padStart(2, '0')}`;
+    const t = cronometro(this.parametros().log_lento_ms);
     const [nfOrc, linhas] = await Promise.all([
-      this.erp.nfsDosOrcamentosCelta(celtas).catch((e) => {
+      t.etapa('celta', this.erp.nfsDosOrcamentosCelta(celtas).catch((e) => {
         this.logger.warn(`NF dos orçamentos do Celta indisponível (casa pela janela): ${(e as Error).message}`);
         return new Map<number, { nf: number | null; condicionais_nfs: number[] }>();
-      }),
+      })),
       // com o teto ligado vem também o PRECO2 da linha (bolsa nas NFs do orçamento)
-      this.oportunidadesParaBolsa(meses).then((lotes) => this.bi.linhasNfAjuste(pares, desde, lotes, this.tetoVigente().teto)),
+      t.etapa('bi', this.oportunidadesParaBolsa(meses).then((lotes) => this.bi.linhasNfAjuste(pares, desde, lotes, this.tetoVigente().teto))),
     ]);
+    t.fim(`casamento (${pares.length} pares, ${celtas.length} orçamentos do Celta)`, (m) => this.logger.warn(m));
     const nfs = linhas.map((l) => ({ ...l, emissao: new Date(`${l.emissao}T00:00:00`) }));
     // a série vem da própria linha do BI (NFS é única por empresa); NF fora das linhas não casa
     const chave = (n: number): NfChave => ({ empresa: 3, serie: nfs.find((l) => l.nfs === n)?.serie ?? '', nfs: n });
@@ -2374,55 +2415,89 @@ export class OrcamentoService {
     return casarAjustes(ajustes.map((a) => paraCasar(a, doCelta(a.celta_orcamento))), linhas, { piso, hoje: new Date() });
   }
 
-  private ajusteCache = new Map<string, { em: number; v: Promise<ReturnType<typeof casarAjustes>['linhas']> }>();
+  /** Recálculo de cache em segundo plano que falhou: o último valor segue servido. */
+  private avisoCache(chave: string, e: Error) {
+    this.logger.warn(`Recálculo em segundo plano falhou (${chave}): ${e.message}`);
+  }
+
+  private ajusteCache = new CacheVelho<ReturnType<typeof casarAjustes>['linhas']>(5 * 60_000, 30 * 60_000, (c, e) => this.avisoCache(`ajustes ${c}`, e));
 
   /**
    * Efetivo dos ajustes do vendedor por linha de NF (estorno da devolução negativo), dos
-   * orçamentos importados nos últimos `meses` — cache de 5 minutos por vendedor. Falha do
-   * BI/ERP não derruba a bolsa: o ajuste fica fora até a próxima leitura.
+   * orçamentos importados nos últimos `meses` — cache por vendedor: 5 minutos novo, e até
+   * 30 minutos servindo o último valor enquanto recalcula. Falha do BI/ERP sem valor
+   * guardado não derruba a bolsa: o ajuste fica fora (não guardado) até a próxima leitura.
    */
-  private efetivoAjustes(rep: number, meses: number, piso: number) {
-    const chave = `${rep}|${meses}|${piso}`;
-    const c = this.ajusteCache.get(chave);
-    if (c && Date.now() - c.em < 5 * 60_000) return c.v;
+  private efetivoAjustes(rep: number, meses: number, piso: number, direto = false) {
+    const calcular = () => this.ajustesCasados(rep, meses, piso);
+    return (direto ? calcular() : this.ajusteCache.ler(`${rep}|${meses}|${piso}`, calcular)).catch((e) => {
+      this.logger.warn(`Ajustes da bolsa indisponíveis (rep ${rep}): ${(e as Error).message}`);
+      return [] as ReturnType<typeof casarAjustes>['linhas'];
+    });
+  }
+
+  /** Ajustes importados nos últimos `meses` casados com as NFs; lança se o BI/ERP falhar. */
+  private async ajustesCasados(rep: number, meses: number, piso: number) {
     const desde = new Date();
     desde.setHours(0, 0, 0, 0);
     desde.setMonth(desde.getMonth() - meses);
-    const v = this.db
-      .ajustes({ rep, importadosDesde: desde })
-      .then(async (ajustes) => (ajustes.length ? (await this.casarAjustesComNf(ajustes, piso)).linhas : []))
-      .catch((e) => {
-        this.logger.warn(`Ajustes da bolsa indisponíveis (rep ${rep}): ${(e as Error).message}`);
-        this.ajusteCache.delete(chave);
-        return [];
-      });
-    this.ajusteCache.set(chave, { em: Date.now(), v });
-    return v;
+    const ajustes = await this.db.ajustes({ rep, importadosDesde: desde });
+    return ajustes.length ? (await this.casarAjustesComNf(ajustes, piso)).linhas : [];
   }
 
   /* --------------------------------------------------- extrato da bolsa */
 
-  private casamentoCache = new Map<number, { em: number; v: ReturnType<OrcamentoService['casarFechados']> }>();
+  private casamentoCache = new CacheVelho<Awaited<ReturnType<OrcamentoService['casarFechados']>>>(5 * 60_000, 30 * 60_000, (c, e) =>
+    this.avisoCache(`casamento rep ${c}`, e),
+  );
 
   /**
    * Orçamentos FECHADOS do vendedor (desfecho nos últimos CASAMENTO_MESES) casados com as NFs do
    * atacado — a mesma leitura serve a lista, o orçamento, o extrato e as vendas dos auxiliares
-   * na gestão do atacado, para todos baterem. Cache de 5 minutos por vendedor; erro não fica em cache.
+   * na gestão do atacado, para todos baterem. Cache por vendedor: 5 minutos novo, e até 30
+   * minutos servindo o último valor enquanto recalcula; erro não fica em cache.
    */
-  casamentoDoRep(rep: number) {
-    const c = this.casamentoCache.get(rep);
-    if (c && Date.now() - c.em < 5 * 60_000) return c.v;
-    const v = this.casarFechados(rep);
-    v.catch(() => this.casamentoCache.delete(rep));
-    this.casamentoCache.set(rep, { em: Date.now(), v });
-    return v;
+  casamentoDoRep(rep: number, direto = false) {
+    return direto ? this.casarFechados(rep) : this.casamentoCache.ler(String(rep), () => this.casarFechados(rep));
   }
 
-  private async casarFechados(rep: number) {
+  /** Início da janela do casamento: hoje 00:00 menos CASAMENTO_MESES. */
+  private desdeCasamento() {
     const desde = new Date();
     desde.setHours(0, 0, 0, 0);
     desde.setMonth(desde.getMonth() - CASAMENTO_MESES);
-    const fechados = await this.db.fechadosParaCasar(rep, desde);
+    return desde;
+  }
+
+  /**
+   * Aquecimento da bolsa: recalcula o casamento e os ajustes (janela do card/extrato e da lista)
+   * de cada vendedor com orçamento FECHADO na janela, um por vez, e guarda no cache — a leitura
+   * da tela encontra o valor pronto. Falha de um vendedor não para os demais.
+   */
+  async aquecerBolsa() {
+    const inicio = Date.now();
+    const { piso } = await this.pisoVigente(mesComissional());
+    const reps = await this.db.repsComFechados(this.desdeCasamento());
+    let falhas = 0;
+    const lentos: Array<{ rep: number; ms: number }> = [];
+    for (const rep of reps) {
+      const t = Date.now();
+      try {
+        await this.casamentoCache.renovar(String(rep), () => this.casarFechados(rep));
+        for (const meses of [2, CASAMENTO_MESES]) {
+          await this.ajusteCache.renovar(`${rep}|${meses}|${piso}`, () => this.ajustesCasados(rep, meses, piso));
+        }
+      } catch (e) {
+        falhas++;
+        this.logger.warn(`Aquecimento da bolsa falhou (rep ${rep}): ${(e as Error).message}`);
+      }
+      lentos.push({ rep, ms: Date.now() - t });
+    }
+    return { vendedores: reps.length, falhas, ms: Date.now() - inicio, lentos };
+  }
+
+  private async casarFechados(rep: number) {
+    const fechados = await this.db.fechadosParaCasar(rep, this.desdeCasamento());
     if (!fechados.length) return { linhas: [] as Awaited<ReturnType<OrcamentoService['nfsParaCasar']>>['linhas'], ...casarOrcamentos([], []) };
     // sem importação no Celta, a janela começa no desfecho
     const inicio = (f: (typeof fechados)[number]) => f.celta_importado_em ?? f.desfecho_em!;
@@ -2459,31 +2534,30 @@ export class OrcamentoService {
     const k = ano == null && mes == null ? 0 : meses.findIndex((m) => m.ano === ano && m.mes === mes);
     if (k < 0) throw new BadRequestException(`ano/mes: escolha um dos últimos 6 meses comissionais (${meses.map((m) => `${m.mes}/${m.ano}`).join(', ')}).`);
     const periodo = meses[k];
-    const [{ piso, linha }, servicos] = await Promise.all([this.pisoVigente(atual), this.servicosDoErp()]);
+    const t = cronometro(this.parametros().log_lento_ms);
+    const [{ piso, linha }, servicos] = await t.etapa('piso', Promise.all([this.pisoVigente(atual), this.servicosDoErp()]));
     const { teto } = this.tetoVigente();
     // lotes e ajustes que alcançam o mês escolhido (no mês atual, os mesmos do card)
-    const lotes = await this.oportunidadesParaBolsa(k + 2);
-    const [rows, [v, ajustes], cas] = await Promise.all([
-      this.bi.linhasExtrato(rep, periodo.ano, periodo.mes, lotes, servicos, teto),
-      this.mesDaBolsa(rep, periodo, piso, servicos, lotes, k + 2, teto),
-      this.casamentoDoRep(rep).catch((e) => {
-        this.logger.warn(`Casamento orçamento × NF indisponível (rep ${rep}): ${(e as Error).message}`);
-        return null;
-      }),
+    const lotes = await t.etapa('lotes', this.oportunidadesParaBolsa(k + 2));
+    // o casamento das linhas é o mesmo que deu o absorvido do card (mesDaBolsa)
+    const [rows, [v, ajustes, cas]] = await Promise.all([
+      t.etapa('linhas', this.bi.linhasExtrato(rep, periodo.ano, periodo.mes, lotes, servicos, teto)),
+      t.etapa('mes', this.mesDaBolsa(rep, periodo, piso, servicos, lotes, k + 2, teto)),
     ]);
     // nº impresso e chave da NF: a view do BI os traz nulos (Stage_Vendas não carrega esses campos);
     // completa pelo ERP só o que veio vazio. ERP fora → ficam nulos, o extrato sai assim mesmo.
     const faltam = rows.filter((r) => r.empresa === 3 && (r.nota_fiscal == null || r.chave_nfe == null)).map((r) => r.nfs);
     if (faltam.length) {
-      const doErp = await this.erp.numerosNfSaida(faltam).catch((e) => {
+      const doErp = await t.etapa('nf_erp', this.erp.numerosNfSaida(faltam).catch((e) => {
         this.logger.warn(`Nº e chave das NFs indisponíveis no ERP (extrato sai sem eles): ${(e as Error).message}`);
         return new Map<number, { nota_fiscal: number | null; chave_nfe: string | null }>();
-      });
+      }));
       for (const r of rows) {
         const n = r.empresa === 3 ? doErp.get(r.nfs) : undefined;
         if (n) { r.nota_fiscal ??= n.nota_fiscal; r.chave_nfe ??= n.chave_nfe; }
       }
     }
+    t.fim(`extrato rep ${rep} ${periodo.mes}/${periodo.ano}`, (m) => this.logger.warn(m));
     const indice = new Map((cas?.linhas ?? []).map((l, i) => [`${l.empresa}|${l.serie}|${l.nfs}|${l.item}`, i]));
     const casadasDe = (r: { empresa: number; serie: string; nfs: number; item: number }) => {
       const i = indice.get(`${r.empresa}|${r.serie}|${r.nfs}|${r.item}`);
