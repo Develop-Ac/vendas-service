@@ -122,7 +122,7 @@ describe('GestaoService.visaoGeral', () => {
     expect(r.canal.ritmo! / 1000).toBeCloseTo(19.7, 1);
     expect(Math.abs(r.canal.previsao! / 1000 - 493.5)).toBeLessThan(0.2);
     expect(r.canal.ritmo_para_meta! / 1000).toBeCloseTo(26.5, 1);
-    expect(r.canal.alvo_n3).toBeCloseTo(655_500);
+    expect(r.canal.alvo_n3).toBe(627_000);
     expect(r.canal.piso).not.toBeNull();
     expect(r.canal.serie).toHaveLength(12);
     expect(r.canal.serie[11].acumulado).toBeCloseTo(225_500);

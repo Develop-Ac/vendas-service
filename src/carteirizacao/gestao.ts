@@ -93,12 +93,21 @@ export function pisoVenda(custoDepto: number, markup: number | null, fator: numb
 }
 
 /**
- * N1: margem ≥ custo do departamento; N2: N1 e venda ≥ meta; N3: N1 e venda ≥ 115% da meta.
+ * Nível 3 do prêmio, em % da meta do mês. Era 115 no plano v5; ficou estabelecido 110
+ * (informado em 12/11/2026). Em inteiro para a conta do alvo não sofrer com ponto flutuante.
+ */
+export const N3_PCT_DA_META = 110;
+
+/** Venda que dá o nível 3 no mês. */
+export const alvoN3 = (meta: number): number => (meta * N3_PCT_DA_META) / 100;
+
+/**
+ * N1: margem ≥ custo do departamento; N2: N1 e venda ≥ meta; N3: N1 e venda ≥ 110% da meta.
  * Sem meta cadastrada no mês (meta ≤ 0) não há base: nível 0.
  */
 export function nivel(p: { venda: number; margem: number | null; custoDepto: number; meta: number }): Nivel {
   if (p.meta <= 0 || p.margem == null || p.margem < p.custoDepto) return 0;
-  if (p.venda >= p.meta * 1.15) return 3;
+  if (p.venda >= alvoN3(p.meta)) return 3;
   return p.venda >= p.meta ? 2 : 1;
 }
 

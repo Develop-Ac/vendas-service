@@ -21,6 +21,7 @@ import { mesesAnteriores } from '../orcamento/orcamento.bi.repository';
 import { OrcamentoService } from '../orcamento/orcamento.service';
 import { ehGerenciaVendas } from './papel';
 import {
+  alvoN3,
   contarDias,
   disciplina,
   margemMes,
@@ -324,7 +325,7 @@ export class GestaoService {
         previsao,
         meta,
         piso,
-        alvo_n3: meta * 1.15,
+        alvo_n3: alvoN3(meta),
         ritmo_para_piso: ritmoNecessario(piso, faturado, dias.restantes),
         ritmo_para_meta: ritmoNecessario(meta, faturado, dias.restantes),
         veredito: veredito(previsao, meta, piso),

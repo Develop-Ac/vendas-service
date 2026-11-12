@@ -125,7 +125,9 @@ describe('nível', () => {
     const base = { margem: 160_000, custoDepto: 157_000, meta: 570_000 };
     expect(nivel({ ...base, venda: 500_000 })).toBe(1);
     expect(nivel({ ...base, venda: 570_000 })).toBe(2);
-    expect(nivel({ ...base, venda: 655_500 })).toBe(3);
+    // nível 3 = 110% da meta, exato na divisa
+    expect(nivel({ ...base, venda: 626_999.99 })).toBe(2);
+    expect(nivel({ ...base, venda: 627_000 })).toBe(3);
   });
 });
 
