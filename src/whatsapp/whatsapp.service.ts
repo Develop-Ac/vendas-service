@@ -955,15 +955,24 @@ export class WhatsappService {
     const chave = chaveTelefone(dto.telefone) ?? dto.telefone.replace(/\D/g, '');
     if (!chave) throw new BadRequestException('Telefone inválido.');
     const cli_codigo = Number(dto.cli_codigo);
-    // número já vinculado = alterar (só gestão); novo = vendedor na própria carteira
-    const existente = await this.repo.contatoPorChave(chave);
-    const u = await this.exigirPapel(dto.usuario_id, existente ? { gestao: true } : { cli: cli_codigo });
+    // Vendedor: só cliente da própria carteira, e ali acrescenta número ou põe/troca o
+    // nome de número que já é do cliente. Número de outro cliente só a gestão move.
+    // A carteira é conferida antes: quem não é dono do cliente não descobre de quem é o número.
+    const u = await this.exigirPapel(dto.usuario_id, { cli: cli_codigo });
+    const gestao = ehGestaoVendas(u);
+    const existente = gestao ? null : await this.repo.contatoPorChave(chave);
+    if (existente && existente.cli_codigo !== cli_codigo) {
+      throw new ForbiddenException(
+        `Este número já está no cliente ${existente.cli_codigo}${existente.cli_nome ? ` · ${existente.cli_nome}` : ''}. Peça à supervisão.`,
+      );
+    }
     this.sugestoesCache = null;
     return this.repo.vincular({
       chave,
       telefone: dto.telefone,
       cli_codigo,
-      cli_nome: dto.cli_nome ?? null,
+      // número que já é do cliente: o vendedor só mexe no contato_nome
+      cli_nome: existente ? undefined : dto.cli_nome ?? null,
       criado_por: u.nome,
       // ausente não apaga o nome que já está lá
       contato_nome: dto.contato_nome === undefined ? undefined : dto.contato_nome.trim() || null,
@@ -990,7 +999,9 @@ export class WhatsappService {
 
   /**
    * Papel de vendas de quem mexe nos contatos: gestão (ehGestaoVendas) faz
-   * tudo; o vendedor só adiciona número a cliente da própria carteira.
+   * tudo; o vendedor, só em cliente da própria carteira, acrescenta número e
+   * põe ou troca o nome de número que já é do cliente. Apagar, mover número de
+   * outro cliente, divergências e varredura são da gestão.
    */
   async exigirPapel(usuario_id: string | undefined, o: { gestao?: boolean; cli?: number }) {
     const u = await this.repo.usuarioVendas(usuario_id);

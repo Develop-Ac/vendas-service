@@ -60,16 +60,20 @@ export class WhatsappRepository {
     origem?: 'MANUAL' | 'AGENDA';
   }) {
     const { chave, origem = 'MANUAL', ...resto } = params;
-    // Mesmo cliente = só ajuste de nome: origem e autor ficam (o número do ERP
-    // continua do ERP). Cliente novo = vínculo novo, com a origem de quem vinculou.
+    // Mesmo cliente = só ajuste de nome: origem, autor e telefone ficam (o número
+    // do ERP continua do ERP) e cli_nome vazio não apaga o gravado. Cliente novo =
+    // vínculo novo, com a origem de quem vinculou.
     const atual = await this.prisma.ven_wa_contato.findUnique({ where: { chave }, select: { cli_codigo: true } });
-    const { criado_por, ...ajuste } = resto;
     const contato = await this.prisma.ven_wa_contato.upsert({
       where: { chave },
       create: { chave, ...resto, origem },
       update:
         atual?.cli_codigo === params.cli_codigo
-          ? { ...ajuste, updated_at: new Date() }
+          ? {
+              contato_nome: resto.contato_nome,
+              ...(resto.cli_nome != null && { cli_nome: resto.cli_nome }),
+              updated_at: new Date(),
+            }
           : { ...resto, origem, updated_at: new Date() },
     });
     const msgs = await this.prisma.ven_wa_mensagem.updateMany({
@@ -258,12 +262,9 @@ export class WhatsappRepository {
     return this.prisma.ven_wa_contato.count();
   }
 
+  /** Erro de banco sobe: null quer dizer "número novo" e libera o vínculo. */
   async contatoPorChave(chave: string) {
-    try {
-      return await this.prisma.ven_wa_contato.findUnique({ where: { chave } });
-    } catch {
-      return null;
-    }
+    return this.prisma.ven_wa_contato.findUnique({ where: { chave } });
   }
 
   /**

@@ -62,7 +62,8 @@ const inicioDoDiaCuiaba = (d: Date): Date =>
 
 /**
  * Início do `motivo_geracao` da tarefa criada na troca de vendedor. A reconciliação
- * reconhece a tarefa por ele: é o único tipo em que contato anterior à geração vale.
+ * reconhece a tarefa por ele: é o único tipo em que contato anterior à geração vale
+ * (mensagem do dono da tarefa nos dias do prazo de contato que antecedem o lançamento).
  */
 export const MOTIVO_CLIENTE_NOVO = 'Cliente novo na sua carteira';
 
@@ -300,10 +301,12 @@ export class FilaService {
    *  - prazo estourado sem sinal -> ESCALADA (vira pauta do supervisor).
    *
    * Exceção da tarefa de cliente novo na carteira: a troca de vendedor costuma
-   * ser lançada depois de o vendedor já ter falado com o cliente. Para ela,
-   * mensagem enviada PELO DONO DA TAREFA no mesmo dia da geração (dia de
-   * Cuiabá) também conclui, mesmo anterior ao lançamento. Venda e orçamento do
-   * dia não entram: não dá para saber de qual vendedor foram.
+   * ser lançada depois de o vendedor já ter falado com o cliente (ele recebe a
+   * lista e começa a ligar; o lançamento no ERP vem horas ou um dia depois).
+   * Para ela, mensagem enviada PELO DONO DA TAREFA até FILA_PRAZO_CONTATO_DIAS
+   * dias antes da geração (dias de Cuiabá) também conclui, com a data da própria
+   * mensagem. Venda e orçamento anteriores não entram: não dá para saber de
+   * qual vendedor foram.
    */
   private reconciliando: Promise<void> | null = null;
 
@@ -328,26 +331,46 @@ export class FilaService {
       this.repo.ultimaMensagemEnviadaPorCliente(),
     ]);
     const ehClienteNovo = (t: Tarefa) => !!t.motivo_geracao?.startsWith(MOTIVO_CLIENTE_NOVO);
-    const diasDasNovas = emAndamento.filter(ehClienteNovo).map((t) => inicioDoDiaCuiaba(t.gerada_em).getTime());
-    const msgDoDono = diasDasNovas.length
-      ? await this.repo.ultimaMensagemEnviadaDoVendedor(new Date(Math.min(...diasDasNovas)))
-      : new Map<string, Date>();
+    const novas = emAndamento.filter(ehClienteNovo);
+    // Janela do contato prévio: do início do dia (Cuiabá) N dias antes da geração até a geração.
+    const janela = (t: Tarefa) => inicioDoDiaCuiaba(t.gerada_em).getTime() - this.prazoContatoDias * DIA_MS;
+    const msgsAosNovos = novas.length
+      ? await this.repo.mensagensEnviadasAosClientes(
+          novas.map((t) => t.cli_codigo),
+          new Date(Math.min(...novas.map(janela))),
+        )
+      : [];
+    const contatoPrevio = (t: Tarefa): Date | null => {
+      if (!ehClienteNovo(t)) return null;
+      const de = janela(t);
+      const ate = new Date(t.gerada_em).getTime();
+      let ultimo = 0;
+      for (const m of msgsAosNovos) {
+        if (m.cli_codigo !== t.cli_codigo || m.rep_codigo !== t.rep_codigo) continue;
+        const ts = new Date(m.timestamp).getTime();
+        if (ts >= de && ts <= ate && ts > ultimo) ultimo = ts;
+      }
+      return ultimo ? new Date(ultimo) : null;
+    };
     const agora = new Date();
     let escalouAgora = false;
 
     for (const t of emAndamento) {
       const cli = mapa.get(t.cli_codigo);
       if (cli) {
+        // O contato prévio vence qualquer sinal posterior: a tarefa já nasceu cumprida,
+        // e a data que fica é a do contato (é ela que o "fila no prazo" compara).
+        const previo = contatoPrevio(t);
+        if (previo) {
+          await this.repo.concluirTarefa(t.id, 'MENSAGEM', previo);
+          continue;
+        }
         const gerada = new Date(t.gerada_em).getTime();
         const depois = (d: Date | null | undefined) =>
           d && new Date(d).getTime() > gerada ? new Date(d) : null;
         const compra = depois(cli.data_ult_compra);
         const orc = depois(cli.ult_orcamento);
-        // A mais recente do dono é anterior à geração (senão `msgEnviada` já teria
-        // concluído acima): vale se caiu no mesmo dia.
-        const doDono = ehClienteNovo(t) ? msgDoDono.get(`${t.cli_codigo}|${t.rep_codigo}`) : undefined;
-        const noDia = doDono && doDono.getTime() >= inicioDoDiaCuiaba(t.gerada_em).getTime() ? doDono : null;
-        const msg = depois(msgEnviada.get(t.cli_codigo)) ?? noDia;
+        const msg = depois(msgEnviada.get(t.cli_codigo));
         if (compra || orc || msg) {
           // No rótulo, o sinal mais forte vence: venda (resultado) > orçamento
           // (proposta) > mensagem (contato, via sensor WAHA).

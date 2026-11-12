@@ -742,29 +742,21 @@ export class CarteirizacaoPrismaRepository {
   }
 
   /**
-   * Última mensagem ENVIADA por cliente E vendedor desde um corte, na chave
-   * `<cli_codigo>|<rep_codigo>`. É o contato do próprio dono da tarefa: a
-   * mensagem de outro vendedor ao mesmo cliente não entra na chave dele.
+   * Mensagens ENVIADAS a estes clientes desde um corte, com o vendedor que
+   * enviou. Serve para achar o contato do próprio dono da tarefa: a mensagem de
+   * outro vendedor ao mesmo cliente não vale para ele.
    */
-  async ultimaMensagemEnviadaDoVendedor(desde: Date): Promise<Map<string, Date>> {
+  async mensagensEnviadasAosClientes(
+    clis: number[],
+    desde: Date,
+  ): Promise<Array<{ cli_codigo: number | null; rep_codigo: number | null; timestamp: Date }>> {
     try {
-      const grupos = await this.prisma.ven_wa_mensagem.groupBy({
-        by: ['cli_codigo', 'rep_codigo'],
-        where: {
-          direcao: 'ENVIADA',
-          cli_codigo: { not: null },
-          rep_codigo: { not: null },
-          timestamp: { gte: desde },
-        },
-        _max: { timestamp: true },
+      return await this.prisma.ven_wa_mensagem.findMany({
+        where: { direcao: 'ENVIADA', cli_codigo: { in: clis }, rep_codigo: { not: null }, timestamp: { gte: desde } },
+        select: { cli_codigo: true, rep_codigo: true, timestamp: true },
       });
-      return new Map(
-        grupos
-          .filter((g) => g._max.timestamp != null)
-          .map((g) => [`${g.cli_codigo}|${g.rep_codigo}`, g._max.timestamp as Date]),
-      );
     } catch {
-      return new Map();
+      return [];
     }
   }
 

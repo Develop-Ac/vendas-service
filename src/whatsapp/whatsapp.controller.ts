@@ -66,6 +66,8 @@ export class WhatsappController {
   }
 
   // 1 toque que aprende para sempre (corrige o histórico da chave junto).
+  // Vendedor: cliente da própria carteira, número novo ou que já é do cliente;
+  // número de outro cliente só a gestão move.
   @Post('contatos/vincular')
   vincular(
     @Body()

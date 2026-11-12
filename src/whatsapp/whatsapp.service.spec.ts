@@ -74,7 +74,7 @@ describe('WhatsappService', () => {
     contarContatos: jest.fn(async () => 0),
     medicoes: jest.fn(async () => ({ total: 0, casadas: 0, porSessao: [] })),
     contatoPorChave: jest.fn(async (chave: string) =>
-      vinculos.has(chave) ? { chave, cli_codigo: vinculos.get(chave), origem: chave === '6588887777' ? 'SEED_ERP' : 'MANUAL' } : null,
+      vinculos.has(chave) ? { chave, cli_codigo: vinculos.get(chave), cli_nome: chave === '6588887777' ? 'CLIENTE A' : null, origem: chave === '6588887777' ? 'SEED_ERP' : 'MANUAL' } : null,
     ),
     usuarioVendas: jest.fn(async (ref: string) =>
       ref === 'sup' ? { id: 'sup', vendas_hub_inicial: 'SUPERVISAO_ATACADO', vendas_rep_codigo: null }
@@ -324,9 +324,32 @@ describe('WhatsappService', () => {
     expect((repo.vincular as jest.Mock).mock.calls[0][0]).toMatchObject({ chave: '6511112222', contato_nome: 'João' });
   });
 
-  it('vendedor: número novo só na própria carteira; número já vinculado é da gestão (403)', async () => {
-    await expect(service.vincular({ telefone: '65 9 1111-2222', cli_codigo: 5, usuario_id: 'v316' })).rejects.toThrow(ForbiddenException);
-    await expect(service.vincular({ telefone: '65 9 8888-7777', cli_codigo: 9, usuario_id: 'v316' })).rejects.toThrow(ForbiddenException);
+  it('vendedor nomeia número que já é do cliente da própria carteira', async () => {
+    vinculos.set('6511112222', 9);
+    await service.vincular({ telefone: '65 9 1111-2222', cli_codigo: 9, usuario_id: 'v316', contato_nome: 'João compras', cli_nome: 'QUALQUER' });
+    expect(repo.vincular).toHaveBeenCalledTimes(1);
+    const p = (repo.vincular as jest.Mock).mock.calls[0][0];
+    expect(p).toMatchObject({ chave: '6511112222', cli_codigo: 9, contato_nome: 'João compras' });
+    // o nome do cliente não vem do vendedor
+    expect(p.cli_nome).toBeUndefined();
+    // origem e autor do número ficam por conta do repositório, que os preserva
+    expect(p).not.toHaveProperty('origem');
+  });
+
+  it('vendedor: número de outro cliente é 403 com o dono do número', async () => {
+    await expect(service.vincular({ telefone: '65 9 8888-7777', cli_codigo: 9, usuario_id: 'v316' }))
+      .rejects.toThrow('Este número já está no cliente 1 · CLIENTE A. Peça à supervisão.');
+    vinculos.set('6511112222', 5); // sem nome do cliente gravado: só o código
+    await expect(service.vincular({ telefone: '65 9 1111-2222', cli_codigo: 9, usuario_id: 'v316' }))
+      .rejects.toThrow('Este número já está no cliente 5. Peça à supervisão.');
+    expect(repo.vincular).not.toHaveBeenCalled();
+  });
+
+  it('vendedor fora da carteira: 403 de carteira antes do dono do número; gestão move', async () => {
+    await expect(service.vincular({ telefone: '65 9 8888-7777', cli_codigo: 5, usuario_id: 'v316' }))
+      .rejects.toThrow('Só para cliente da sua carteira.');
+    await expect(service.vincular({ telefone: '65 9 1111-2222', cli_codigo: 5, usuario_id: 'v316' }))
+      .rejects.toThrow('Só para cliente da sua carteira.');
     await expect(service.vincular({ telefone: '65 9 8888-7777', cli_codigo: 9 })).rejects.toThrow(ForbiddenException);
     await service.vincular({ telefone: '65 9 8888-7777', cli_codigo: 9, usuario_id: 'sup' });
     expect(repo.vincular).toHaveBeenCalledTimes(1);

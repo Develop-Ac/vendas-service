@@ -73,14 +73,14 @@ describe('FilaService', () => {
   let escaladas: string[];
   let canceladas: Array<{ id: string; obs: string }>;
   let msgEnviadaPorCliente: Map<number, Date>;
-  let msgDoVendedor: Map<string, Date>;
+  let mensagensAosClientes: Array<{ cli_codigo: number; rep_codigo: number; timestamp: Date }>;
   let usuario: any;
   let delegadas: Array<{ id: string; data: any }>;
 
   const repo = {
     tarefasEmAndamento: jest.fn(async () => tarefasEmAndamento),
     ultimaMensagemEnviadaPorCliente: jest.fn(async () => msgEnviadaPorCliente),
-    ultimaMensagemEnviadaDoVendedor: jest.fn(async () => msgDoVendedor),
+    mensagensEnviadasAosClientes: jest.fn(async (_clis: number[], _desde: Date) => mensagensAosClientes),
     tarefasConcluidasDesde: jest.fn(async () => []),
     escaladasDesde: jest.fn(async () => [{ rep_codigo: 10, rep_nome: 'ANA' }, { rep_codigo: 10, rep_nome: 'ANA' }, { rep_codigo: 10, rep_nome: 'ANA' }]),
 
@@ -155,7 +155,7 @@ describe('FilaService', () => {
     escaladas = [];
     canceladas = [];
     msgEnviadaPorCliente = new Map();
-    msgDoVendedor = new Map();
+    mensagensAosClientes = [];
     usuario = { id: 'u1', nome: 'SUPERVISOR', vendas_hub_inicial: 'SUPERVISAO_ATACADO', setor: null };
     delegadas = [];
     vencidas = [];
@@ -418,30 +418,43 @@ describe('FilaService', () => {
     expect(concluidas).toHaveLength(0);
   });
 
-  it('cliente novo na carteira: mensagem do próprio vendedor no dia da troca conclui, mesmo anterior ao lançamento', async () => {
+  it('cliente novo na carteira: mensagem do próprio vendedor até 3 dias antes do lançamento da troca conclui', async () => {
     // Troca lançada em 05/11 às 15h47 de Cuiabá (19h47 UTC).
     const gerada = new Date('2026-11-05T19:47:00Z');
     const motivo_geracao = 'Cliente novo na sua carteira (designado até 25/11)';
     const tarefa = (id: string, cli_codigo: number, over: any = {}) => ({
       id, cli_codigo, rep_codigo: 10, status: 'ESCALADA', gerada_em: gerada, prazo_em: new Date(Date.now() + DIA_MS), motivo_geracao, ...over,
     });
-    clientes = [1, 2, 3, 4].map((cli_codigo) => cliente({ cli_codigo }));
+    const msg = (cli_codigo: number, rep_codigo: number, iso: string) => ({ cli_codigo, rep_codigo, timestamp: new Date(iso) });
+    clientes = [1, 2, 3, 4, 5, 6].map((cli_codigo) => cliente({ cli_codigo }));
     tarefasEmAndamento = [
       tarefa('mesmoDia', 1), // falou às 9h de Cuiabá, antes do lançamento
-      tarefa('vespera', 2), // falou na véspera às 18h: não vale
+      tarefa('vespera', 2), // falou na véspera às 18h
       tarefa('outroVendedor', 3), // quem falou no dia foi o vendedor 20
       tarefa('regua', 4, { motivo_geracao: 'Curva A: 40d sem compra (régua 15d)' }), // tarefa da régua não tem a exceção
+      tarefa('antigo', 5), // falou 4 dias antes: fora da janela
+      tarefa('previoEPosterior', 6), // falou na véspera e de novo dias depois: vale a véspera
     ];
-    msgDoVendedor = new Map([
-      ['1|10', new Date('2026-11-05T13:00:00Z')],
-      ['2|10', new Date('2026-11-04T22:00:00Z')],
-      ['3|20', new Date('2026-11-05T13:00:00Z')],
-      ['4|10', new Date('2026-11-05T13:00:00Z')],
-    ]);
+    mensagensAosClientes = [
+      msg(1, 10, '2026-11-05T13:00:00Z'),
+      msg(2, 10, '2026-11-04T22:00:00Z'),
+      msg(3, 20, '2026-11-05T13:00:00Z'),
+      msg(4, 10, '2026-11-05T13:00:00Z'),
+      msg(5, 10, '2026-11-01T22:00:00Z'),
+      msg(6, 10, '2026-11-04T18:00:00Z'),
+      msg(6, 10, '2026-11-10T11:00:00Z'),
+    ];
+    msgEnviadaPorCliente = new Map([[6, new Date('2026-11-10T11:00:00Z')]]);
     await service.listar({});
-    expect(concluidas).toEqual([{ id: 'mesmoDia', sinal: 'MENSAGEM' }]);
-    // a busca parte da meia-noite de Cuiabá do dia da troca
-    expect((repo as any).ultimaMensagemEnviadaDoVendedor).toHaveBeenCalledWith(new Date('2026-11-05T04:00:00Z'));
+    expect(concluidas).toEqual([
+      { id: 'mesmoDia', sinal: 'MENSAGEM' },
+      { id: 'vespera', sinal: 'MENSAGEM' },
+      { id: 'previoEPosterior', sinal: 'MENSAGEM' },
+    ]);
+    // a data que fica é a do contato prévio, não a da mensagem posterior
+    expect(repo.concluirTarefa).toHaveBeenCalledWith('previoEPosterior', 'MENSAGEM', new Date('2026-11-04T18:00:00Z'));
+    // a busca parte da meia-noite de Cuiabá 3 dias antes da troca, só nos clientes das tarefas de cliente novo
+    expect(repo.mensagensEnviadasAosClientes).toHaveBeenCalledWith([1, 2, 3, 5, 6], new Date('2026-11-02T04:00:00Z'));
   });
 
   // --------------------------------------------------------------- desfecho
