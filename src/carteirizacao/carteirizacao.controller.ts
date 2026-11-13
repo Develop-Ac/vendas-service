@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   Headers,
+  Logger,
   Param,
   ParseIntPipe,
   Post,
@@ -45,6 +46,8 @@ const toNum = (v: unknown) =>
 
 @Controller('carteirizacao')
 export class CarteirizacaoController {
+  private readonly logger = new Logger(CarteirizacaoController.name);
+
   constructor(
     private readonly service: CarteirizacaoService,
     private readonly fila: FilaService,
@@ -148,14 +151,18 @@ export class CarteirizacaoController {
   }
 
   // Geração manual/agendada (a carga diária também chama). Idempotente.
-  // Também processa o retorno de venda perdida; falha nele não muda a resposta da fila (retornos: null).
+  // Também processa o retorno de venda perdida; falha nele não muda a resposta da fila:
+  // vai para o log e volta em `retornos.erro`, para quem disparou saber o motivo.
   @Post('fila/gerar')
   async gerarFila() {
     const f = await this.fila.gerar();
     const retornos = await this.retornos
       .processar()
       .then(({ chegouPorRep, ...r }) => r)
-      .catch(() => null);
+      .catch((e) => {
+        this.logger.error(`Retorno de venda perdida falhou: ${e?.message ?? e}`, e?.stack);
+        return { erro: String(e?.message ?? e) };
+      });
     return { ...f, retornos };
   }
 
