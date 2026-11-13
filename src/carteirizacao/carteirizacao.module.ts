@@ -8,6 +8,7 @@ import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository
 import { CarteirizacaoErpRepository } from './carteirizacao.erp.repository';
 import { CarteirizacaoSyncScheduler } from './carteirizacao.sync.scheduler';
 import { FilaService } from './fila.service';
+import { RetornoVendaPerdidaService } from './retorno-venda-perdida.service';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { ResgateService } from './resgate.service';
 import { TrocaVendedorService } from './troca-vendedor.service';
@@ -28,6 +29,7 @@ import { MssqlService } from 'src/common/mssql/mssql.service';
     CarteirizacaoPrismaRepository,
     CarteirizacaoSyncScheduler,
     FilaService,
+    RetornoVendaPerdidaService,
     AvisosVendasService,
     ResgateService,
     TrocaVendedorService,

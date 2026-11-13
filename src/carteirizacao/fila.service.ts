@@ -8,6 +8,7 @@ import {
 import { CarteirizacaoService, ClienteCarteira, RESGATE_DIAS } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
+import { RetornoVendaPerdidaService } from './retorno-venda-perdida.service';
 import {
   CriarCoberturaDto,
   DelegarTarefaDto,
@@ -53,7 +54,7 @@ type Tarefa = Awaited<ReturnType<CarteirizacaoPrismaRepository['tarefasEmAndamen
 type Cobertura = NonNullable<Awaited<ReturnType<CarteirizacaoPrismaRepository['obterCobertura']>>>;
 
 /** Dia corrente em Cuiabá, como a coluna @db.Date guarda (meia-noite UTC). */
-const hojeCuiaba = (): Date =>
+export const hojeCuiaba = (): Date =>
   new Date(`${new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Cuiaba' })}T00:00:00Z`);
 
 /** Meia-noite de Cuiabá (UTC-4, sem horário de verão) do dia em que `d` cai. */
@@ -105,6 +106,7 @@ export class FilaService {
     private readonly carteirizacao: CarteirizacaoService,
     private readonly repo: CarteirizacaoPrismaRepository,
     private readonly avisosVendas: AvisosVendasService,
+    private readonly retornos: RetornoVendaPerdidaService,
   ) {}
 
   private get regua(): Record<'A' | 'B' | 'C', number> {
@@ -449,6 +451,11 @@ export class FilaService {
       },
       itens,
       concluidas_hoje: concluidasHoje.map(enriquecer),
+      // "Produto chegou": tabela ausente ou erro não derruba a fila.
+      retornos: await this.retornos.listar(params, clientes).catch((e) => {
+        this.logger.warn(`Fila: retornos de venda perdida indisponíveis: ${e?.message ?? e}`);
+        return [];
+      }),
     };
   }
 

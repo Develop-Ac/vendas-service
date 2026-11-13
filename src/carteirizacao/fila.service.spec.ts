@@ -1,6 +1,7 @@
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { FilaService } from './fila.service';
+import { RetornoVendaPerdidaService } from './retorno-venda-perdida.service';
 import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
 
@@ -145,7 +146,8 @@ describe('FilaService', () => {
   });
 
   const avisosVendas = { filaDia: jest.fn(async () => undefined), filaEscalada: jest.fn(async () => undefined), resgateSla: jest.fn(async () => undefined), orcamentoVencendo: jest.fn(async () => undefined), escaladasSupervisor: jest.fn(async () => undefined) } as unknown as AvisosVendasService;
-  const service = new FilaService(carteirizacao, repo, avisosVendas);
+  const retornos = { listar: jest.fn(async (): Promise<any[]> => []) };
+  const service = new FilaService(carteirizacao, repo, avisosVendas, retornos as unknown as RetornoVendaPerdidaService);
 
   beforeEach(() => {
     clientes = [];
@@ -401,6 +403,29 @@ describe('FilaService', () => {
     tarefasEmAndamento = [];
     await service.gerar();
     expect(criadas).toHaveLength(0); // mensagem recente = contato houve, ninguém entra
+  });
+
+  it('produto chegou vem em `retornos` e a tarefa da régua do mesmo cliente segue intacta em `itens`', async () => {
+    clientes = [cliente({ cli_codigo: 1 })];
+    const prazo = new Date(Date.now() + DIA_MS);
+    tarefasEmAndamento = [
+      { id: 't1', cli_codigo: 1, rep_codigo: 10, status: 'ABERTA', tipo: 'CONTATO', gerada_em: new Date(Date.now() - DIA_MS), prazo_em: prazo },
+    ];
+    const grupo = { cli_codigo: 1, rep_codigo: 10, atrasada: false, produtos: [{ id: 'r1', pro_codigo: 500 }] };
+    retornos.listar.mockResolvedValueOnce([grupo]);
+    const r = await service.listar({ rep_codigo: 10 });
+    expect(retornos.listar).toHaveBeenLastCalledWith({ rep_codigo: 10 }, clientes);
+    expect(r.retornos).toEqual([grupo]);
+    expect(r.itens).toEqual([expect.objectContaining({ id: 't1', status: 'ABERTA', cli_codigo: 1, prazo_em: prazo })]);
+    expect(r.resumo).toMatchObject({ abertas: 1, escaladas: 0 });
+    expect(concluidas).toHaveLength(0);
+  });
+
+  it('erro nos retornos (tabela ausente) não derruba a fila', async () => {
+    retornos.listar.mockRejectedValueOnce(new Error('relation "ven_venda_perdida_retorno" does not exist'));
+    const r = await service.listar({});
+    expect(r.retornos).toEqual([]);
+    expect(r.itens).toEqual([]);
   });
 
   it('NÃO conclui por sinal anterior à geração', async () => {

@@ -932,6 +932,20 @@ export class OrcamentoService {
     };
   }
 
+  /* ------------------------------------------ retorno de venda perdida */
+
+  /** Saldo disponível (empresa 3, sem cache) e inativo por produto; código ausente = desconhecido. */
+  async saldosPorCodigo(codigos: number[]): Promise<Map<number, { saldo: number; inativo: boolean; descricao: string | null }>> {
+    const ps = await this.erp.produtosPorCodigo(codigos);
+    return new Map(ps.map((p) => [p.PRO_CODIGO, { saldo: p.ESTOQUE_DISPONIVEL, inativo: p.INATIVO === 'S', descricao: p.PRO_DESCRICAO || null }]));
+  }
+
+  /** Linhas de NF (venda e devolução) do atacado dos pares cliente + produto desde `desdeYmd` (YYYY-MM-DD). */
+  async vendasPorPar(pares: { cli_codigo: number; pro_codigo: number }[], desdeYmd: string) {
+    const linhas = await this.bi.linhasNfAjuste(pares, desdeYmd.replace(/-/g, ''));
+    return linhas.map(({ cli_codigo, pro_codigo, emissao, devolucao, quantidade, liquido }) => ({ cli_codigo, pro_codigo, emissao, devolucao, quantidade, liquido }));
+  }
+
   /* --------------------------------------------- venda perdida pela pesquisa */
 
   /**

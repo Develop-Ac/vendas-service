@@ -369,6 +369,71 @@ export class CarteirizacaoPrismaRepository {
     });
   }
 
+  // ====================================== retorno de venda perdida
+  /** Vendas perdidas com cliente a partir de um corte — candidatas a retorno quando o produto chega. */
+  async vendasPerdidasComCliente(desde: Date) {
+    return this.prisma.ven_venda_perdida.findMany({
+      where: { cli_codigo: { not: null }, created_at: { gte: desde } },
+      select: {
+        id: true,
+        cli_codigo: true,
+        pro_codigo: true,
+        descricao: true,
+        quantidade: true,
+        rep_codigo: true,
+        created_at: true,
+        ven_orcamento: { select: { cli_nome: true } },
+      },
+    });
+  }
+
+  /** Retornos ainda na lista do vendedor (encerrada_em nulo), opcionalmente de um vendedor. */
+  async retornosEmAberto(rep_codigo?: number) {
+    return this.prisma.ven_venda_perdida_retorno.findMany({
+      where: { encerrada_em: null, ...(rep_codigo != null ? { rep_codigo } : {}) },
+      orderBy: { prazo_em: 'asc' },
+    });
+  }
+
+  /** Abertos e os gerados desde o corte (janela da conversão), para a reconciliação diária. */
+  async retornosParaReconciliar(desde: Date) {
+    return this.prisma.ven_venda_perdida_retorno.findMany({
+      where: { OR: [{ encerrada_em: null }, { gerada_em: { gte: desde } }] },
+    });
+  }
+
+  /** Retornos dos clientes desde o corte — o que bloqueia gerar de novo o mesmo par. */
+  async retornosDosClientes(clis: number[], desde: Date) {
+    if (!clis.length) return [];
+    return this.prisma.ven_venda_perdida_retorno.findMany({
+      where: { cli_codigo: { in: clis }, gerada_em: { gte: desde } },
+      select: { cli_codigo: true, pro_codigo: true, gerada_em: true, status: true, encerrada_em: true },
+    });
+  }
+
+  /**
+   * Cria os retornos. O único parcial uq_ven_vp_retorno_aberto barra o segundo aberto do par
+   * em corrida; a geração filtra antes pelos retornos existentes.
+   */
+  async criarRetornos(rows: Prisma.ven_venda_perdida_retornoCreateManyInput[]) {
+    if (!rows.length) return { count: 0 };
+    return this.prisma.ven_venda_perdida_retorno.createMany({ data: rows });
+  }
+
+  async atualizarRetorno(id: string, data: Prisma.ven_venda_perdida_retornoUpdateInput) {
+    return this.prisma.ven_venda_perdida_retorno.update({
+      where: { id },
+      data: { ...data, updated_at: new Date() },
+    });
+  }
+
+  /** Retornos gerados no período (quadro da aba Equipe da gestão do atacado). */
+  async retornosGeradosEntre(de: Date, ate: Date) {
+    return this.prisma.ven_venda_perdida_retorno.findMany({
+      where: { gerada_em: { gte: de, lte: ate } },
+    });
+  }
+
   // ======================================= cobertura da fila por período
   /** Coberturas ativas, futuras e as que acabaram (vencidas ou encerradas) desde o corte. */
   async listarCoberturas(desde: Date) {

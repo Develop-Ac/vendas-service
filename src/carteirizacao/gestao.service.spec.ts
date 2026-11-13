@@ -35,6 +35,7 @@ describe('GestaoService.visaoGeral', () => {
     ]),
   };
   const repo = {
+    retornosGeradosEntre: jest.fn(async () => []),
     listarMetasPeriodo: jest.fn(async () => [
       { rep_codigo: 1, valor_meta: 250_000 },
       { rep_codigo: 2, valor_meta: 190_000 },
@@ -261,6 +262,7 @@ describe('GestaoService.equipe', () => {
   /** Casamento do extrato da bolsa por rep do orçamento (OrcamentoService.casamentoDoRep). */
   let casamentos: Map<number, { linhas: Linha[]; porOrcamento: Map<string, Array<{ linha: number; quantidade: number }>> }>;
   const repo = {
+    retornosGeradosEntre: jest.fn(async () => []),
     listarMetasPeriodo: jest.fn(async () => [
       { rep_codigo: 1, valor_meta: 250_000 },
       { rep_codigo: 2, valor_meta: 190_000 },
@@ -383,11 +385,44 @@ describe('GestaoService.equipe', () => {
     expect(r.vendedores[0].previsao! / 1000).toBeCloseTo(237.5, 1);
     expect(r.totais).toMatchObject({ vao_bater: 1, em_risco: 1, nao_batem: 1 });
   });
+
+  it('retornos de venda perdida: gerados no período, por vendedor e total', async () => {
+    const ret = (rep: number, status: string, extra: Record<string, unknown> = {}) => ({
+      rep_codigo: rep, rep_nome: `R${rep}`, status, gerada_em: new Date('2026-11-03T15:00:00Z'),
+      contato_em: null, convertida_em: null, convertida_qtd: null, convertida_valor: null, ...extra,
+    });
+    const conv = { convertida_em: new Date('2026-11-05T00:00:00Z'), convertida_qtd: 2, convertida_valor: 500 };
+    repo.retornosGeradosEntre.mockResolvedValueOnce([
+      ret(1, 'CONTATADA', { contato_em: new Date('2026-11-04T12:00:00Z'), ...conv }),
+      ret(1, 'NEGLIGENCIADA'),
+      ret(1, 'CANCELADA'),
+      ret(2, 'ABERTA'),
+      ret(2, 'NEGLIGENCIADA', conv), // comprou sem contato do vendedor
+    ] as never);
+    const r = await service.equipe(2026, 11);
+    expect(repo.retornosGeradosEntre).toHaveBeenLastCalledWith(new Date('2026-10-26T04:00:00Z'), new Date('2026-11-26T03:59:59.999Z'));
+    const zero = { valor: 0, quantidade: 0 };
+    expect(r.retornos).toEqual({
+      vendedores: [
+        { rep_codigo: 1, rep_nome: 'R1', geradas: 3, contatadas_no_prazo: 1, negligenciadas: 1, canceladas: 1, em_aberto: 0, convertidas: { valor: 500, quantidade: 1 }, convertidas_sem_contato: zero },
+        { rep_codigo: 2, rep_nome: 'R2', geradas: 2, contatadas_no_prazo: 0, negligenciadas: 1, canceladas: 0, em_aberto: 1, convertidas: { valor: 500, quantidade: 1 }, convertidas_sem_contato: { valor: 500, quantidade: 1 } },
+      ],
+      total: { geradas: 5, contatadas_no_prazo: 1, negligenciadas: 2, canceladas: 1, em_aberto: 1, convertidas: { valor: 1000, quantidade: 2 }, convertidas_sem_contato: { valor: 500, quantidade: 1 } },
+    });
+  });
+
+  it('tabela de retornos fora do ar: a resposta sai sem o bloco', async () => {
+    repo.retornosGeradosEntre.mockRejectedValueOnce(new Error('relation does not exist'));
+    const r = await service.equipe(2026, 11);
+    expect('retornos' in r).toBe(false);
+    expect(r.vendedores).toHaveLength(3);
+  });
 });
 
 describe('GestaoService.fechamento', () => {
   const linhas = new Map<string, Record<string, unknown>>();
   const repo = {
+    retornosGeradosEntre: jest.fn(async () => []),
     usuarioVendas: jest.fn(async (id?: string) =>
       id === 'ger'
         ? { id, codigo: 'G1', nome: 'Gerente', setor: 'VENDAS', vendas_hub_inicial: 'GERENCIA' }
@@ -459,13 +494,14 @@ describe('GestaoService.fechamento', () => {
 });
 
 describe('GestaoService: mês fechado lido da foto', () => {
-  const periodo = { ano: 2026, mes: 10, fechado: false };
+  const periodo = { ano: 2026, mes: 10, inicio: '2026-09-26', fim: '2026-10-25', fechado: false };
   const foto = {
     visao_geral: { periodo, canal: { faturado: 480_000 }, gerencia: { markup: 1.5 } },
     equipe: { periodo, vendedores: [{ rep_codigo: 1 }] },
   };
   const bi = new Proxy({}, { get: () => jest.fn(() => { throw new Error('BI não pode ser lido'); }) });
   const repo = {
+    retornosGeradosEntre: jest.fn(async () => []),
     usuarioVendas: jest.fn(async (id?: string) => (id === 'ger' ? { id, setor: 'VENDAS', vendas_hub_inicial: 'GERENCIA' } : { id, setor: 'VENDAS', vendas_hub_inicial: 'SUPERVISAO_ATACADO' })),
     fechamentoAtacado: jest.fn(async () => ({ ano: 2026, mes: 10, nivel: 1, pontos: 70, venda: 480_000, meta: 570_000, fechado_em: new Date(), fechado_por: 'agendamento', foto })),
   };
@@ -496,5 +532,19 @@ describe('GestaoService: mês fechado lido da foto', () => {
     const e = await service.equipe(2026, 10, '2026-10-12', '2026-10-18', 'sup');
     expect(supervisao.esforco).toHaveBeenLastCalledWith({ desde: '2026-10-12', ate: '2026-10-18' }, false);
     expect(e).toMatchObject({ periodo: { fechado: true }, vendedores: [{ rep_codigo: 1 }], esforco: { janela: { desde: '2026-10-12' } } });
+  });
+
+  it('foto do mês fechado recebe o quadro de retornos ao vivo, pelo período da foto', async () => {
+    repo.retornosGeradosEntre.mockResolvedValueOnce([
+      { rep_codigo: 1, rep_nome: 'A', status: 'CONTATADA', contato_em: new Date('2026-10-02T12:00:00Z'), convertida_em: null, convertida_qtd: null, convertida_valor: null },
+    ] as never);
+    const e = await service.equipe(2026, 10, undefined, undefined, 'sup');
+    expect(repo.retornosGeradosEntre).toHaveBeenLastCalledWith(new Date('2026-09-26T04:00:00Z'), new Date('2026-10-26T03:59:59.999Z'));
+    expect(e).toMatchObject({
+      periodo: { fechado: true },
+      vendedores: [{ rep_codigo: 1 }],
+      retornos: { vendedores: [{ rep_codigo: 1, geradas: 1, contatadas_no_prazo: 1 }], total: { geradas: 1 } },
+    });
+    expect('retornos' in foto.equipe).toBe(false);
   });
 });

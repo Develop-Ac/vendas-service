@@ -48,11 +48,19 @@ export class AvisosVendasService {
     return ids;
   }
 
-  /** Fila do dia gerada para o vendedor (uma vez por dia por rep — ref = rep:data). */
-  async filaDia(rep: number, resumo: { total: number; resgates: number; escaladas: number }) {
+  /**
+   * Fila do dia gerada para o vendedor (uma vez por dia por rep — ref = rep:data).
+   * `chegou` = clientes com retorno de venda perdida ("produto chegou") gerado hoje;
+   * quando há, o corpo vai resolvido na emissão porque o template já gravado no
+   * avisos-service não é reescrito pelo catálogo.
+   */
+  async filaDia(rep: number, resumo: { total: number; resgates: number; escaladas: number; chegou?: number }) {
     const usuarios = await this.usuariosDoRep(rep);
-    if (!usuarios.length || !resumo.total) return;
-    this.avisos.emitir('fila.dia', { ref: `${rep}:${ymdHoje()}`, vars: resumo, usuarios, link: LINK_TAREFAS_HOJE });
+    if (!usuarios.length || (!resumo.total && !resumo.chegou)) return;
+    const corpo = resumo.chegou
+      ? `${resumo.resgates} resgate(s) · ${resumo.escaladas} escalada(s) · ${resumo.chegou} cliente(s) com produto que chegou`
+      : undefined;
+    this.avisos.emitir('fila.dia', { ref: `${rep}:${ymdHoje()}`, vars: resumo, usuarios, link: LINK_TAREFAS_HOJE, corpo });
   }
 
   /** Tarefa passou do prazo e virou ESCALADA. */

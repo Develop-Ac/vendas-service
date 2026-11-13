@@ -16,6 +16,7 @@ import { SoPeloProxy } from '../common/so-pelo-proxy.guard';
 import type { FastifyReply } from 'fastify';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
+import { RetornoVendaPerdidaService } from './retorno-venda-perdida.service';
 import { ResgateService } from './resgate.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { TrocaVendedorService } from './troca-vendedor.service';
@@ -52,6 +53,7 @@ export class CarteirizacaoController {
     private readonly troca: TrocaVendedorService,
     private readonly supervisao: SupervisaoService,
     private readonly gestao: GestaoService,
+    private readonly retornos: RetornoVendaPerdidaService,
   ) {}
 
   @Get('clientes')
@@ -146,9 +148,15 @@ export class CarteirizacaoController {
   }
 
   // Geração manual/agendada (a carga diária também chama). Idempotente.
+  // Também processa o retorno de venda perdida; falha nele não muda a resposta da fila (retornos: null).
   @Post('fila/gerar')
-  gerarFila() {
-    return this.fila.gerar();
+  async gerarFila() {
+    const f = await this.fila.gerar();
+    const retornos = await this.retornos
+      .processar()
+      .then(({ chegouPorRep, ...r }) => r)
+      .catch(() => null);
+    return { ...f, retornos };
   }
 
   // Supervisão/gerência passa a tarefa a outro vendedor; a carteira não muda.

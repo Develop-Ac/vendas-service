@@ -20,6 +20,7 @@ import {
 import { mesesAnteriores } from '../orcamento/orcamento.bi.repository';
 import { OrcamentoService } from '../orcamento/orcamento.service';
 import { ehGerenciaVendas } from './papel';
+import { resumirRetornos } from './retorno-venda-perdida';
 import {
   alvoN3,
   contarDias,
@@ -395,8 +396,10 @@ export class GestaoService {
     const foto = aoVivo ? null : await this.fotoDoMes(p, usuarioId);
     if (foto) {
       const gravada = foto.equipe as Record<string, unknown>;
-      if (!semanaDesde || !semanaAte) return this.daFoto(gravada) as never;
-      return this.daFoto({ ...gravada, esforco: await this.supervisao.esforco({ desde: semanaDesde, ate: semanaAte }, false) }) as never;
+      if (!semanaDesde || !semanaAte) return (await this.comRetornos(this.daFoto(gravada))) as never;
+      return (await this.comRetornos(
+        this.daFoto({ ...gravada, esforco: await this.supervisao.esforco({ desde: semanaDesde, ate: semanaAte }, false) }),
+      )) as never;
     }
     const [cal, porVendedor, metasCanal, negociacao, esforco] = await Promise.all([
       this.bi.diasUteisPeriodo(ano, mes),
@@ -497,7 +500,7 @@ export class GestaoService {
     const faturado_canal = porVendedor.reduce((s, v) => s + v.total, 0);
     const ateOntemCanal = porVendedor.reduce((s, v) => s + v.ate_ontem, 0);
     const conta = (v: Veredito) => vendedores.filter((x) => x.veredito === v).length;
-    return {
+    return this.comRetornos({
       periodo,
       pool_rep: REP_DISPONIVEL,
       vendedores,
@@ -519,7 +522,23 @@ export class GestaoService {
         nao_batem: conta('NAO_BATE'),
       },
       esforco,
-    };
+    });
+  }
+
+  /**
+   * Quadro "Retorno de venda perdida" da aba Equipe: retornos gerados no período da
+   * resposta, por vendedor. Sempre ao vivo, também por cima da foto do mês fechado,
+   * porque a conversão corre dias depois da geração. Leitura indisponível (tabela fora
+   * do ar) = resposta sem o bloco.
+   */
+  private async comRetornos<T extends { periodo: object }>(resposta: T): Promise<T & { retornos?: ReturnType<typeof resumirRetornos> }> {
+    try {
+      const { inicio, fim } = resposta.periodo as { inicio: string; fim: string };
+      const linhas = await this.repo.retornosGeradosEntre(inicioDia(inicio), fimDia(fim));
+      return { ...resposta, retornos: resumirRetornos(linhas) };
+    } catch {
+      return resposta;
+    }
   }
 
   /**

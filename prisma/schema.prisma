@@ -2346,6 +2346,40 @@ model ven_venda_perdida {
   @@index([pro_codigo], map: "idx_ven_venda_perdida_pro")
 }
 
+/// Retorno de venda perdida: o produto que faltou ao cliente voltou a ter saldo e vira sugestão de
+/// contato para o vendedor, com prazo, desfecho (CONTATADA/NEGLIGENCIADA/CANCELADA) e conversão em venda.
+/// Sem FK para ven_venda_perdida (o Fechou apaga/reescreve a venda perdida). DDL: sql/2026-11-13_venda_perdida_retorno_postgres.sql.
+/// Um aberto por cliente + produto: índice único parcial uq_ven_vp_retorno_aberto (WHERE encerrada_em IS NULL), só no SQL.
+model ven_venda_perdida_retorno {
+  id                String    @id @default(cuid())
+  venda_perdida_id  String?
+  venda_perdida_em  DateTime  @db.Timestamptz(6)
+  cli_codigo        Int
+  cli_nome          String?
+  pro_codigo        Int
+  descricao         String?
+  quantidade_pedida Decimal   @db.Decimal(15, 3)
+  saldo_na_geracao  Decimal   @db.Decimal(15, 3)
+  rep_codigo        Int
+  rep_nome          String?
+  gerada_em         DateTime  @default(now()) @db.Timestamptz(6)
+  prazo_em          DateTime  @db.Timestamptz(6)
+  status            String    @default("ABERTA")
+  contato_em        DateTime? @db.Timestamptz(6)
+  contato_sinal     String?
+  cancelada_em      DateTime? @db.Timestamptz(6)
+  encerrada_em      DateTime? @db.Timestamptz(6)
+  convertida_em     DateTime? @db.Date
+  convertida_qtd    Decimal?  @db.Decimal(15, 3)
+  convertida_valor  Decimal?  @db.Decimal(15, 2)
+  created_at        DateTime  @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@index([rep_codigo, encerrada_em], map: "idx_ven_vp_retorno_rep_encerrada")
+  @@index([cli_codigo, pro_codigo], map: "idx_ven_vp_retorno_cli_pro")
+  @@index([gerada_em], map: "idx_ven_vp_retorno_gerada")
+}
+
 /// Ajustes de layout do painel de vendas por hub, por cima do catálogo extraído do Metabase
 /// (src/paineis/catalogo). Sem linha = posição, tamanho e título do catálogo. DDL: sql/2026-10-08_painel_layout.sql.
 model ven_painel_layout {

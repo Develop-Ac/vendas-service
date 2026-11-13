@@ -14,7 +14,7 @@ import type { Catalogo } from './common/avisos/avisos-client';
  */
 export const CATALOGO_VENDAS: Catalogo = {
   'fila.dia': {
-    descricao: 'Fila do dia gerada para o vendedor (carga diária).',
+    descricao: 'Fila do dia gerada para o vendedor (carga diária); também cita os clientes com produto que chegou (retorno de venda perdida).',
     titulo: 'Fila de hoje: {total} cliente(s)',
     corpo: '{resgates} resgate(s) · {escaladas} escalada(s)',
     link: '/vendas/orcamento?tarefas=hoje',

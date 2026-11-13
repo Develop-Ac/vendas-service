@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
+import { RetornoVendaPerdidaService } from './retorno-venda-perdida.service';
 import { ResgateService } from './resgate.service';
 import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
@@ -19,6 +20,7 @@ export class CarteirizacaoSyncScheduler {
   constructor(
     private readonly service: CarteirizacaoService,
     private readonly fila: FilaService,
+    private readonly retornos: RetornoVendaPerdidaService,
     private readonly resgate: ResgateService,
     private readonly whatsapp: WhatsappService,
     private readonly avisosVendas: AvisosVendasService,
@@ -77,6 +79,18 @@ export class CarteirizacaoSyncScheduler {
       );
     } catch (e) {
       this.logger.error(`Falha na geração da fila do dia: ${(e as Error).message}`);
+    }
+
+    // Retorno de venda perdida ("produto chegou") logo depois da fila: reconcilia os
+    // retornos e gera os dos produtos que voltaram a ter saldo.
+    try {
+      const v = await this.retornos.processar();
+      this.logger.log(
+        `Produto chegou: ${v.geradas} novos, ${v.contatadas} contatados, ${v.negligenciadas} negligenciados, ` +
+          `${v.canceladas} cancelados, ${v.convertidas} convertidos.`,
+      );
+    } catch (e) {
+      this.logger.error(`Falha no retorno de venda perdida: ${(e as Error).message}`);
     }
 
     // Esteira de resgate na sequência: abre episódios de quem entrou em risco
