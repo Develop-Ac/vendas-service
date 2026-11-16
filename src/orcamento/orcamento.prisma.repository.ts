@@ -879,6 +879,17 @@ export class OrcamentoPrismaRepository {
     return o ? this.mapOrcamento(o) : null;
   }
 
+  /** Prévia dos itens (ordem da grade), sem custo, desconto máximo nem preço mínimo. */
+  async itensPrevia(id: string) {
+    const o = await this.prisma.ven_orcamento.findUnique({
+      where: { id },
+      select: { itens: { orderBy: { item: 'asc' }, select: { pro_codigo: true, descricao: true, quantidade: true, preco_unit: true, total: true } } },
+    });
+    if (!o) return null;
+    const itens = o.itens.map((i) => ({ ...i, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), total: n(i.total) }));
+    return { quantidade_itens: itens.length, itens };
+  }
+
   /**
    * Fila do cron do comparativo: orçamentos já importados no Celta (têm nº) que
    * ainda não bateram. Quem bate vira comparado = true e sai daqui sozinho.

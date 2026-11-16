@@ -282,6 +282,7 @@ como hoje e registra o número em "Fechado".
 | POST | `/relacionados/recalcular` | reapura os pares no BI |
 | GET/POST | `/` | lista / cria. Lista: `?rep=&cli=&status=&de=&ate=&numero=&produto=&flag=&page=&pageSize=` — `de`/`ate` YYYY-MM-DD sobre a criação, em dias de Cuiabá (`ate` inclusivo); `numero` casa o nº da intranet **ou** o do Celta; `produto` só com dígitos = código do produto, senão trecho da descrição (sem caixa) — orçamentos com ao menos um item assim; `flag` = `SEM_CELTA` (fechado sem nº do Celta), `ACIMA_ALCADA`, `AGUARDANDO` (em aprovação) ou `RETORNO_HOJE` (ADIADO com retorno hoje). Sem `flag`, os ADIADOS com retorno hoje vêm no topo da lista (dentro dos demais filtros) e cada item traz `retorno_em` e `retorno_hoje`. Parâmetro inválido é ignorado |
 | GET/PUT/DELETE | `/:id` | obtém / regrava / cancela |
+| GET | `/:id/itens` | prévia dos itens na ordem da grade → `{ quantidade_itens, itens: [{ pro_codigo, descricao, quantidade, preco_unit, total }] }` (só Postgres; sem custo, desconto máximo nem preço mínimo); inexistente → 404 |
 | POST | `/:id/enviar` · `/:id/aprovar` · `/:id/desfecho` | ciclo |
 
 ## Itens sem saldo ao concluir

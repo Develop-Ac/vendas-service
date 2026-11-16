@@ -1551,6 +1551,13 @@ export class OrcamentoService {
     return (await this.comBolsa([await this.obter(id)]))[0];
   }
 
+  /** GET /orcamento/:id/itens: prévia dos itens, só Postgres (sem ERP nem BI). */
+  async itens(id: string) {
+    const r = await this.db.itensPrevia(id);
+    if (!r) throw new NotFoundException('Orçamento não encontrado.');
+    return r;
+  }
+
   /**
    * Bolsa dos FECHADOS: a do orçamento (gravada no desfecho; nos fechados antes da coluna,
    * calculada agora com o piso de hoje → `bolsa_aprox`) e a gerada nas NFs casadas

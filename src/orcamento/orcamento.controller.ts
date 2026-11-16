@@ -518,6 +518,12 @@ export class OrcamentoController {
     return this.service.saldo(id);
   }
 
+  @Get(':id/itens')
+  @ApiOperation({ summary: 'Prévia dos itens do orçamento (código, descrição, quantidade, preço, total), na ordem da grade.' })
+  itens(@Param('id') id: string) {
+    return this.service.itens(id);
+  }
+
   @Post(':id/saldo/decidir')
   @ApiOperation({ summary: 'Decisão por item sem saldo: VENDA_PERDIDA (registra), ENCOMENDA (fica marcada) ou RETIRAR. Regrava o orçamento.' })
   decidirSaldo(@Param('id') id: string, @Body() dto: DecisaoSaldoDto) {
