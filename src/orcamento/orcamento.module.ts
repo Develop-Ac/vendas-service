@@ -15,6 +15,7 @@ import { OrcamentoComparativoScheduler } from './comparativo.scheduler';
 import { BolsaFechamentoScheduler } from './bolsa-fechamento.scheduler';
 import { BolsaAquecimentoScheduler } from './bolsa-aquecimento.scheduler';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
+import { OfertaRepository } from '../oferta/oferta.repository';
 
 /**
  * Orçamento do Atacado — a tela de proposta do vendedor com a régua v3 embutida.
@@ -39,6 +40,8 @@ import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
     OrcamentoCeltaRepository,
     RelacionadosScheduler,
     MssqlService,
+    // só o repositório (depende do PrismaService global): importar o OfertaModule criaria dependência circular
+    OfertaRepository,
   ],
   exports: [OrcamentoService],
 })

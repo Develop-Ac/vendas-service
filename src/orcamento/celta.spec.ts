@@ -41,6 +41,13 @@ describe('corpoParaCelta', () => {
     expect(c.itens[1]).not.toHaveProperty('promocao');
   });
 
+  it('oferta da intranet (código -1) vai com promocao: true; vendida fora, sem a marca', () => {
+    const [a, b] = base.itens ?? [];
+    const c = corpoParaCelta({ ...base, itens: [{ ...a, promocao_codigo: -1 }, { ...b, promocao_codigo: -1, fora_promocao: true }] });
+    expect(c.itens[0]).toMatchObject({ pro_codigo: 40381, promocao: true });
+    expect(c.itens[1]).not.toHaveProperty('promocao');
+  });
+
   it('ajuste da bolsa: motivo e justificativa na observação, antes dos itens e só em ASCII', () => {
     const c = corpoParaCelta({
       ...base,
@@ -143,6 +150,17 @@ describe('justificativaAlcada', () => {
     ] })).toEqual({ itens: [1], resultado: 45 });
     expect(t).not.toMatch(/R\$/);
     expect(t).toContain('1 9,4% (máx 5,0%, compensado)');
+  });
+
+  it('compensação: liquidação/campanha fica fora da conta; promoção sai metade; vendida fora, inteira', () => {
+    const itens = (o: Partial<import('./celta').ItemParaCelta>) => [
+      { pro_codigo: 1, quantidade: 1, preco_tabela: 160, preco_unit: 145, desc_pct: 0.09375, preco_minimo: 152, custo_ref: 100 },
+      // 2 × 120 contra piso 150 → −60
+      { pro_codigo: 2, quantidade: 2, preco_tabela: 200, preco_unit: 120, desc_pct: 0.4, preco_minimo: 120, custo_ref: 100, promocao_codigo: -1, ...o },
+    ];
+    expect(compensacaoOrcamento({ ...base, piso_bolsa: 1.5, itens: itens({ oferta_tipo: 'LIQUIDACAO' }) })).toEqual({ itens: [1], resultado: -5 });
+    expect(compensacaoOrcamento({ ...base, piso_bolsa: 1.5, itens: itens({ oferta_tipo: 'PROMOCAO' }) })).toEqual({ itens: [1], resultado: -35 });
+    expect(compensacaoOrcamento({ ...base, piso_bolsa: 1.5, itens: itens({ oferta_tipo: null, promocao_codigo: null, fora_promocao: true }) })).toEqual({ itens: [1], resultado: -65 });
   });
 
   it('avisa quando está abaixo do mínimo sem aprovação', () => {

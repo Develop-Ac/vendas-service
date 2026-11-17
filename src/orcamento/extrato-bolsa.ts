@@ -1,5 +1,7 @@
+import { foraDaBolsa } from '../oferta/oferta';
 import { absorcaoPromocao, calcularBolsa, corteNaData, round2, tetoLinha, type TetoBolsa } from './regua';
 import { JANELA_DIAS_PADRAO, janela, mesmaNf, type LinhaNf, type NfChave } from './ajuste-bolsa';
+import { fracaoCasada } from './promocao-portal';
 
 /* =============================================================================
    EXTRATO DA BOLSA — de onde veio cada real da bolsa do vendedor, NF a NF.
@@ -22,8 +24,12 @@ export interface OrcParaCasar {
   nf_orcamento: NfChave | null;
   /** NF do condicional aberto a partir do orçamento (ORCAMENTOS.CONDICIONAL → CONDICIONAIS.NFS) */
   nfs_condicional: NfChave[];
-  /** `promo_portal`: item em promoção do portal B2B (não vendido fora dela). */
-  itens: { pro_codigo: number; quantidade: number; preco_unit: number; custo_ref: number | null; promo_portal?: boolean }[];
+  /**
+   * `promo_portal`: item em promoção do portal B2B (não vendido fora dela).
+   * `fora_bolsa`: item em liquidação/campanha da intranet (não vendido fora dela).
+   * `oferta_item_id`: item da oferta (liquidação/campanha) de que a linha saiu, se não vendida fora dela.
+   */
+  itens: { pro_codigo: number; quantidade: number; preco_unit: number; custo_ref: number | null; promo_portal?: boolean; fora_bolsa?: boolean; oferta_item_id?: number | null }[];
 }
 
 export interface UnidadesCasadas {
@@ -34,6 +40,10 @@ export interface UnidadesCasadas {
   quantidade: number;
   /** A unidade saiu de item em promoção do portal B2B. */
   promo_portal?: boolean;
+  /** A unidade saiu de item em liquidação/campanha da intranet: fica fora da bolsa. */
+  fora_bolsa?: boolean;
+  /** Item da oferta de que a unidade saiu (apuração dos ganhos da campanha). */
+  oferta_item_id?: number;
 }
 
 /**
@@ -51,11 +61,13 @@ export function casarOrcamentos(orcs: OrcParaCasar[], linhas: LinhaNf[], o: { ja
   const porEmissao = (a: number, b: number) => linhas[a].emissao.getTime() - linhas[b].emissao.getTime() || a - b;
   const livre = linhas.map((l) => l.quantidade);
   const porLinha = new Map<number, UnidadesCasadas[]>();
-  const porOrcamento = new Map<string, { linha: number; quantidade: number; promo_portal?: boolean }[]>();
+  const porOrcamento = new Map<string, { linha: number; quantidade: number; promo_portal?: boolean; fora_bolsa?: boolean }[]>();
   const casar = (i: number, orc: OrcParaCasar, item: OrcParaCasar['itens'][number], quantidade: number) => {
-    porLinha.set(i, [...(porLinha.get(i) ?? []), { orcamento_id: orc.id, numero: orc.numero, preco_unit_orc: item.preco_unit, custo_ref: item.custo_ref, quantidade, ...(item.promo_portal && { promo_portal: true }) }]);
-    porOrcamento.set(orc.id, [...(porOrcamento.get(orc.id) ?? []), { linha: i, quantidade, ...(item.promo_portal && { promo_portal: true }) }]);
+    const marcas = { ...(item.promo_portal && { promo_portal: true }), ...(item.fora_bolsa && { fora_bolsa: true }), ...(item.oferta_item_id != null && { oferta_item_id: item.oferta_item_id }) };
+    porLinha.set(i, [...(porLinha.get(i) ?? []), { orcamento_id: orc.id, numero: orc.numero, preco_unit_orc: item.preco_unit, custo_ref: item.custo_ref, quantidade, ...marcas }]);
+    porOrcamento.set(orc.id, [...(porOrcamento.get(orc.id) ?? []), { linha: i, quantidade, ...marcas }]);
   };
+  const vendidoDoItem = new Map<OrcParaCasar['itens'][number], { linha: number; quantidade: number }[]>();
   const ordem = [...orcs].sort((a, b) => a.inicio.getTime() - b.inicio.getTime() || a.numero - b.numero);
   const indices = linhas.map((_, i) => i);
 
@@ -80,27 +92,32 @@ export function casarOrcamentos(orcs: OrcParaCasar[], linhas: LinhaNf[], o: { ja
         livre[i] -= q;
         falta -= q;
         casar(i, orc, item, q);
+        vendidoDoItem.set(item, [...(vendidoDoItem.get(item) ?? []), { linha: i, quantidade: q }]);
       }
     }
   }
 
-  const devolvido = new Map<string, number>();
+  // Devolução volta para a linha do orçamento que levou a venda, até o que ela vendeu. Com o
+  // produto em mais de uma linha (na oferta e fora dela), a linha da oferta recebe primeiro:
+  // a devolução desconta o ganho antes de mexer na venda comum.
+  const devolvido = new Map<OrcParaCasar['itens'][number], number>();
   for (const i of indices.filter((k) => linhas[k].devolucao).sort(porEmissao)) {
     const d = linhas[i];
     let resta = d.quantidade;
     for (const orc of ordem) {
-      if (resta <= 0) break;
-      const item = orc.cli_codigo === d.cli_codigo ? orc.itens.find((it) => it.pro_codigo === d.pro_codigo) : undefined;
-      if (!item) continue;
-      const chave = `${orc.id}|${d.pro_codigo}`;
-      const vendida = (porOrcamento.get(orc.id) ?? [])
-        .filter((c) => !linhas[c.linha].devolucao && linhas[c.linha].pro_codigo === d.pro_codigo && linhas[c.linha].emissao.getTime() <= d.emissao.getTime())
-        .reduce((s, c) => s + c.quantidade, 0);
-      const q = Math.min(resta, vendida - (devolvido.get(chave) ?? 0));
-      if (q <= 0) continue;
-      resta -= q;
-      devolvido.set(chave, (devolvido.get(chave) ?? 0) + q);
-      casar(i, orc, item, q);
+      if (orc.cli_codigo !== d.cli_codigo) continue;
+      const itens = orc.itens.filter((it) => it.pro_codigo === d.pro_codigo).sort((a, b) => Number(b.oferta_item_id != null) - Number(a.oferta_item_id != null));
+      for (const item of itens) {
+        if (resta <= 0) break;
+        const vendida = (vendidoDoItem.get(item) ?? [])
+          .filter((c) => linhas[c.linha].emissao.getTime() <= d.emissao.getTime())
+          .reduce((s, c) => s + c.quantidade, 0);
+        const q = Math.min(resta, vendida - (devolvido.get(item) ?? 0));
+        if (q <= 0) continue;
+        resta -= q;
+        devolvido.set(item, (devolvido.get(item) ?? 0) + q);
+        casar(i, orc, item, q);
+      }
     }
   }
   return { porLinha, porOrcamento };
@@ -125,6 +142,11 @@ export interface LinhaBolsa {
    * no Celta é venda normal). Vale a mesma metade da promoção sobre ela.
    */
   promo_portal?: number;
+  /**
+   * Fração da linha casada com item em liquidação/campanha da intranet: essa parte
+   * fica fora da bolsa (líquido, custo, metade da promoção, ajuste e excedente).
+   */
+  fora_bolsa?: number;
 }
 
 /**
@@ -133,14 +155,22 @@ export interface LinhaBolsa {
  * — a mesma conta de `bolsaVendedor`, para a soma das linhas fechar com o card ao centavo.
  * Serviço fica fora da bolsa. `corte`/`pct`: teto da bolsa por linha (tetoLinha) — o corte já
  * resolvido para a data da linha (corteNaData; 0 = regra fora); o excedente sai do `saldo`.
+ * A fração `fora_bolsa` (liquidação/campanha) sai de tudo: os valores (e o `liquido`) devolvidos
+ * já são só da parte que fica na bolsa.
  */
 export function valoresLinha(l: LinhaBolsa, piso: number, corte = 0, pct = 0) {
-  if (l.servico) return { custo_piso: 0, absorvido: 0, ajuste: 0, excedente: 0, saldo: 0 };
-  const custo_piso = l.custo_bolsa * piso;
-  const fator = l.promocao ? 1 : Math.min(1, Math.max(0, l.promo_portal ?? 0));
+  if (l.servico) return { liquido: 0, custo_piso: 0, absorvido: 0, ajuste: 0, excedente: 0, saldo: 0 };
+  const fracao = (x: number | undefined) => Math.min(1, Math.max(0, x ?? 0));
+  const k = 1 - fracao(l.fora_bolsa);
+  const liquido = l.liquido * k;
+  const custo_piso = l.custo_bolsa * piso * k;
+  // marca S do BI: a linha toda leva a metade (menos a parte fora da bolsa) e a fração do portal
+  // não soma de novo; sem a marca, só a parte casada com promoção do portal (disjunta da fora da bolsa)
+  const fator = l.promocao ? k : fracao(l.promo_portal);
   const absorvido = fator > 0 && l.custo_produto > 0 && l.custo_produto * piso > l.liquido ? ((l.custo_produto * piso - l.liquido) / 2) * fator : 0;
-  const excedente = l.devolucao ? 0 : tetoLinha({ liquido: l.liquido, custo_bolsa: l.custo_bolsa, preco_tabela: l.preco_tabela }, piso, corte, pct).excedente;
-  return { custo_piso, absorvido, ajuste: l.ajuste, excedente, saldo: l.liquido - custo_piso + absorvido + l.ajuste - excedente };
+  const excedente = l.devolucao ? 0 : tetoLinha({ liquido: l.liquido, custo_bolsa: l.custo_bolsa, preco_tabela: l.preco_tabela }, piso, corte, pct).excedente * k;
+  const ajuste = l.ajuste * k;
+  return { liquido, custo_piso, absorvido, ajuste, excedente, saldo: liquido - custo_piso + absorvido + ajuste - excedente };
 }
 
 /**
@@ -152,7 +182,7 @@ export function conciliar(linhas: Array<LinhaBolsa & { emissao?: string }>, piso
   for (const l of linhas) {
     if (l.servico) { servicos++; continue; }
     const v = valoresLinha(l, piso, corteNaData(teto, l.emissao), teto?.pct ?? 0);
-    venda += l.liquido;
+    venda += v.liquido;
     custo += v.custo_piso;
     absorvido += v.absorvido;
     ajuste += v.ajuste;
@@ -171,7 +201,7 @@ export function conciliar(linhas: Array<LinhaBolsa & { emissao?: string }>, piso
 }
 
 /** Dia (AAAA-MM-DD) de uma data montada como meia-noite local (emissão das linhas de NF). */
-const diaLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+export const diaLocal = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
 /**
  * Põe o efetivo de cada ajuste da bolsa negativa (por NF + produto, como `casarAjustes` devolve)
@@ -190,7 +220,7 @@ export function atribuirAjustes(linhas: Array<NfChave & { pro_codigo: number; aj
  * Orçamento sem unidade casada não entra no mapa.
  */
 export function bolsaNfPorOrcamento(
-  porOrcamento: Map<string, { linha: number; quantidade: number; promo_portal?: boolean }[]>,
+  porOrcamento: Map<string, { linha: number; quantidade: number; promo_portal?: boolean; fora_bolsa?: boolean }[]>,
   linhas: Array<LinhaNf & { custo_produto: number; servico: boolean; ajuste: number; preco_tabela: number }>,
   piso: number,
   teto?: TetoBolsa | null,
@@ -202,9 +232,10 @@ export function bolsaNfPorOrcamento(
       const l = linhas[c.linha];
       if (!(l.quantidade > 0)) continue;
       const s = l.devolucao ? -1 : 1;
-      // a parte deste orçamento em promoção do portal B2B leva a metade da promoção (só na venda)
+      // a parte deste orçamento em promoção do portal B2B leva a metade da promoção (só na venda);
+      // a parte em liquidação/campanha da intranet não põe nada na bolsa
       const v = valoresLinha(
-        { liquido: s * l.liquido, custo_bolsa: s * l.custo, custo_produto: s * l.custo_produto, promocao: l.promocao, servico: l.servico, devolucao: l.devolucao, preco_tabela: l.preco_tabela, ajuste: l.ajuste, promo_portal: c.promo_portal ? 1 : 0 },
+        { liquido: s * l.liquido, custo_bolsa: s * l.custo, custo_produto: s * l.custo_produto, promocao: l.promocao, servico: l.servico, devolucao: l.devolucao, preco_tabela: l.preco_tabela, ajuste: l.ajuste, promo_portal: c.promo_portal ? 1 : 0, fora_bolsa: c.fora_bolsa ? 1 : 0 },
         piso,
         corteNaData(teto, diaLocal(l.emissao)),
         teto?.pct ?? 0,
@@ -217,13 +248,54 @@ export function bolsaNfPorOrcamento(
 }
 
 /**
+ * O que a leitura do mês no BI (`bolsaVendedor`/`bolsaPorCliente`) contou da parte das linhas de NF
+ * casada com item em liquidação/campanha da intranet — quem chama subtrai do resultado do BI.
+ * Por linha do casamento emitida no mês (`noMes`), sem serviço, com f = fração fora da bolsa:
+ * f × líquido, f × custo da bolsa, f × excedente do teto (corte da data da linha) e, com a marca
+ * de promoção do BI, f × a metade da promoção. Devolução entra com sinal (o BI a soma negativa).
+ * `porCliente`: venda, custo e excedente do mesmo desconto por cliente da linha.
+ */
+export function descontoForaBolsaNoMes(
+  linhas: Array<LinhaNf & { custo_produto: number; preco_tabela: number }>,
+  porLinha: Map<number, Array<{ quantidade: number; fora_bolsa?: boolean }>>,
+  noMes: (emissao: Date) => boolean,
+  piso: number,
+  servicos: number[],
+  teto?: TetoBolsa | null,
+) {
+  const fora = new Set(servicos);
+  const total = { venda_liquida: 0, custo: 0, absorvido: 0, excedente: 0 };
+  const porCliente = new Map<number, { venda_liquida: number; custo: number; excedente: number }>();
+  linhas.forEach((l, i) => {
+    if (fora.has(l.pro_codigo) || !noMes(l.emissao)) return;
+    const f = fracaoCasada(l.quantidade, porLinha.get(i) ?? [], 'fora_bolsa');
+    if (!f) return;
+    const s = l.devolucao ? -1 : 1;
+    const v = valoresLinha(
+      { liquido: s * l.liquido, custo_bolsa: s * l.custo, custo_produto: s * l.custo_produto, promocao: l.promocao, servico: false, devolucao: l.devolucao, preco_tabela: l.preco_tabela, ajuste: 0 },
+      piso,
+      corteNaData(teto, diaLocal(l.emissao)),
+      teto?.pct ?? 0,
+    );
+    const d = { venda_liquida: f * v.liquido, custo: f * s * l.custo, excedente: f * v.excedente };
+    total.venda_liquida += d.venda_liquida;
+    total.custo += d.custo;
+    total.excedente += d.excedente;
+    total.absorvido += f * v.absorvido;
+    const c = porCliente.get(l.cli_codigo) ?? { venda_liquida: 0, custo: 0, excedente: 0 };
+    porCliente.set(l.cli_codigo, { venda_liquida: c.venda_liquida + d.venda_liquida, custo: c.custo + d.custo, excedente: c.excedente + d.excedente });
+  });
+  return { ...total, porCliente };
+}
+
+/**
  * Bolsa do orçamento a partir dos itens gravados: a mesma conta da projeção na tela
  * (`calcularBolsa().orcamento`) — receita sem serviço, custo da bolsa × piso, item sem custo
  * neutro, metade da promoção absorvida, ajuste da bolsa negativa que a empresa assume, menos o
  * excedente do teto por linha (`excedenteDoOrcamento`; corte 0 = regra fora).
  */
 export function bolsaDoOrcamento(
-  itens: Array<{ pro_codigo: number; quantidade: number; preco_unit: number; total: number; custo_ref: number | null; preco_tabela: number; promocao_codigo: number | null; fora_promocao: boolean }>,
+  itens: Array<{ pro_codigo: number; quantidade: number; preco_unit: number; total: number; custo_ref: number | null; preco_tabela: number; promocao_codigo: number | null; fora_promocao: boolean; oferta_tipo?: string | null }>,
   ajustes: Array<{ quantidade: number; assumido_unit: number }>,
   piso: number,
   servicos: Set<number>,
@@ -231,8 +303,9 @@ export function bolsaDoOrcamento(
   pct = 0,
 ) {
   let receita = 0, custo = 0, semCusto = 0, absorvido = 0;
-  for (const i of itens) {
-    if (servicos.has(i.pro_codigo)) continue;
+  // serviço e liquidação/campanha da intranet (não vendida fora) ficam fora da bolsa
+  const naBolsa = itens.filter((i) => !servicos.has(i.pro_codigo) && (i.fora_promocao || !foraDaBolsa(i.oferta_tipo)));
+  for (const i of naBolsa) {
     receita += i.total;
     if (i.custo_ref != null && i.custo_ref > 0) custo += i.custo_ref * i.quantidade;
     else semCusto += i.total;
@@ -242,7 +315,7 @@ export function bolsaDoOrcamento(
     receita_mtd: 0, custo_mtd: 0, desconto_mtd: 0,
     receita_orc: receita, custo_orc: custo, sem_custo_orc: semCusto, absorvido_orc: absorvido,
     ajuste_orc: ajustes.reduce((s, a) => s + a.assumido_unit * a.quantidade, 0),
-    excedente_orc: excedenteDoOrcamento(itens.filter((i) => !servicos.has(i.pro_codigo)), piso, corte, pct),
+    excedente_orc: excedenteDoOrcamento(naBolsa, piso, corte, pct),
     piso,
   }).orcamento;
 }

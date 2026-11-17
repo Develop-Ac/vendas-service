@@ -6,6 +6,7 @@ import { ClienteDevido, ItemProdutoDia, MotivoFora } from './produtos-dia';
 import { PrismaService } from '../prisma/prisma.service';
 import { ExcecaoItem, FaixaVolume, RegraFaixa, REGUA_PADRAO, VOLUME_PADRAO } from './regua';
 import { PROMOCAO_PORTAL } from './promocao-portal';
+import { foraDaBolsa, type TipoOferta } from '../oferta/oferta';
 
 /* =============================================================================
    ORÇAMENTO — persistência no Postgres da intranet.
@@ -707,6 +708,8 @@ export class OrcamentoPrismaRepository {
       qtd_encomenda: n(i.qtd_encomenda),
       fora_promocao: !!i.fora_promocao,
       pedir_ajuste: !!i.pedir_ajuste,
+      oferta_item_id: (i.oferta_item_id ?? null) as number | null,
+      oferta_tipo: (i.oferta_tipo ?? null) as TipoOferta | null,
     };
   }
 
@@ -1195,7 +1198,7 @@ export class OrcamentoPrismaRepository {
       where: { rep_codigo: rep, status: 'FECHADO', desfecho_em: { gte: desde } },
       select: {
         id: true, numero: true, cli_codigo: true, rep_codigo: true, celta_orcamento: true, celta_importado_em: true, desfecho_em: true,
-        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, custo_ref: true, promocao_codigo: true, fora_promocao: true }, orderBy: { item: 'asc' } },
+        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, custo_ref: true, promocao_codigo: true, fora_promocao: true, oferta_tipo: true, oferta_item_id: true }, orderBy: { item: 'asc' } },
       },
     });
     return rows.map((r) => ({
@@ -1203,6 +1206,8 @@ export class OrcamentoPrismaRepository {
       itens: r.itens.map((i) => ({
         pro_codigo: i.pro_codigo, quantidade: n(i.quantidade), preco_unit: n(i.preco_unit), custo_ref: nn(i.custo_ref),
         promo_portal: i.promocao_codigo === PROMOCAO_PORTAL && !i.fora_promocao,
+        fora_bolsa: foraDaBolsa(i.oferta_tipo) && !i.fora_promocao,
+        oferta_item_id: i.fora_promocao ? null : i.oferta_item_id,
       })),
     }));
   }
@@ -1213,7 +1218,7 @@ export class OrcamentoPrismaRepository {
       where: { id: { in: ids } },
       select: {
         id: true,
-        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, total: true, custo_ref: true, preco_tabela: true, promocao_codigo: true, fora_promocao: true } },
+        itens: { select: { pro_codigo: true, quantidade: true, preco_unit: true, total: true, custo_ref: true, preco_tabela: true, promocao_codigo: true, fora_promocao: true, oferta_tipo: true } },
         ven_bolsa_ajuste: { select: { quantidade: true, assumido_unit: true } },
       },
     });
@@ -1243,7 +1248,7 @@ export class OrcamentoPrismaRepository {
       },
       select: {
         id: true, numero: true, cli_nome: true, total: true, desconto_total: true, subtotal: true,
-        itens: { select: { quantidade: true, custo_ref: true, total: true, preco_tabela: true } },
+        itens: { select: { quantidade: true, custo_ref: true, total: true, preco_tabela: true, fora_promocao: true, oferta_tipo: true } },
       },
     });
   }

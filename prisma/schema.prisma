@@ -2317,6 +2317,9 @@ model ven_orcamento_item {
   difal              Decimal       @default(0) @db.Decimal(15, 2)
   difal_pct          Decimal?      @db.Decimal(6, 4)
   pedir_ajuste       Boolean       @default(false)
+  /// oferta da intranet (ven_oferta_item.id) e o tipo dela na hora da venda (PROMOCAO | LIQUIDACAO | CAMPANHA)
+  oferta_item_id     Int?
+  oferta_tipo        String?
   ven_orcamento      ven_orcamento @relation(fields: [orcamento_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
 
   @@index([orcamento_id], map: "idx_ven_orcamento_item_orc")
@@ -2826,6 +2829,48 @@ model ven_bolsa_oportunidade {
   updated_at   DateTime  @default(now()) @db.Timestamptz(6)
 
   @@index([pro_codigo], map: "ven_bolsa_oportunidade_pro_idx")
+}
+
+/// Oferta do atacado (grupo): promoção, liquidação ou campanha cadastrada na intranet.
+/// Origem e prêmio só valem para campanha/liquidação; premio_faixas = [{ a_partir_de, valor }].
+model ven_oferta {
+  id                Int       @id @default(autoincrement())
+  nome              String
+  tipo              String
+  origem            String?
+  fornecedor_codigo Int?
+  fornecedor_nome   String?
+  premio_tipo       String?
+  premio_valor      Decimal?  @db.Decimal(15, 4)
+  premio_faixas     Json?
+  criado_por        String?
+  criado_em         DateTime  @default(now()) @db.Timestamptz(6)
+  atualizado_em     DateTime  @default(now()) @db.Timestamptz(6)
+}
+
+/// Item da oferta: preço por tabela (nulo = não vale naquela tabela), vigência inicio..fim
+/// (fim inclusivo, dia de Cuiabá), limite de unidades e o ciclo RASCUNHO > PENDENTE > APROVADO > ENCERRADO.
+model ven_oferta_item {
+  id               Int       @id @default(autoincrement())
+  oferta_id        Int
+  pro_codigo       Int
+  descricao        String?
+  preco_t2         Decimal?  @db.Decimal(15, 2)
+  preco_t5         Decimal?  @db.Decimal(15, 2)
+  inicio           DateTime  @db.Date
+  fim              DateTime  @db.Date
+  limite_qtd       Decimal?  @db.Decimal(15, 3)
+  status           String    @default("RASCUNHO")
+  enviado_por      String?
+  enviado_em       DateTime? @db.Timestamptz(6)
+  aprovado_por     String?
+  aprovado_em      DateTime? @db.Timestamptz(6)
+  encerrado_por    String?
+  encerrado_em     DateTime? @db.Timestamptz(6)
+  encerrado_motivo String?
+
+  @@index([pro_codigo], map: "ven_oferta_item_pro_idx")
+  @@index([oferta_id], map: "ven_oferta_item_oferta_idx")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.

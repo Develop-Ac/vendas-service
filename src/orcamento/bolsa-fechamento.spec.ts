@@ -20,7 +20,7 @@ describe('fechamento mensal da bolsa', () => {
       gravarFechamentoBolsa: jest.fn(async () => []),
     };
     const bi = { vendedoresAtacado: jest.fn(async () => [{ rep_codigo: 1, rep_nome: 'A', papel: null }, { rep_codigo: 2, rep_nome: 'B', papel: null }]) };
-    const service = new OrcamentoService({} as never, bi as never, db as never, {} as never, {} as never);
+    const service = new OrcamentoService({} as never, bi as never, db as never, {} as never, {} as never, {} as never);
     // leituras do BI/ERP fora do teste: só a entrada do mês de cada vendedor importa
     Object.assign(service as unknown as Record<string, unknown>, {
       pisoVigente: async () => ({ piso: 1.5, linha: 1.5 }),

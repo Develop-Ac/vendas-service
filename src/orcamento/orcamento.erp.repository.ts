@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ErpApiService, FiltroErp } from '../common/erp-api/erp-api.service';
 import { colunaTabela } from './regua';
+import type { TipoOferta } from '../oferta/oferta';
 
 /* =============================================================================
    ORÇAMENTO — leitura AO VIVO no ERP (Celta) via erp-firebird-api.
@@ -136,6 +137,8 @@ export interface OpcoesBusca {
   inativos?: boolean;
   comercializavel?: boolean;
   limite?: number;
+  /** Falha do ERP vira erro em vez de lista vazia (quem decide pela lista, não só a mostra). */
+  estrito?: boolean;
 }
 
 export interface ClienteErp {
@@ -235,6 +238,11 @@ export interface PromocaoItem {
   valor: number | null;
   /** Preço promocional do balcão (PROM_VALOR, tabela 1) — informativo, como a EST012 mostra. */
   valor_balcao: number | null;
+  /**
+   * Oferta da intranet (ven_oferta_item): item, tipo e quanto resta do limite (null = sem limite).
+   * Liquidação e campanha com prêmio: ganho do vendedor por unidade e a próxima faixa (só intranet).
+   */
+  oferta?: { item_id: number; tipo: TipoOferta; restam: number | null; ganho_unit?: number; proxima_faixa?: { valor: number; a_partir_de: number } | null };
 }
 
 /**
@@ -368,7 +376,7 @@ export class OrcamentoErpRepository {
       if (!f.length) return { produtos: [], truncado: false };
       lotes = [f];
     }
-    const resultados = await Promise.all(lotes.map((f) => consultar(f).catch((e) => { this.logger.warn(`busca ${campo}: ${(e as Error).message}`); return [] as Record<string, any>[]; })));
+    const resultados = await Promise.all(lotes.map((f) => consultar(f).catch((e) => { if (o.estrito) throw e; this.logger.warn(`busca ${campo}: ${(e as Error).message}`); return [] as Record<string, any>[]; })));
     const vistos = new Set<number>();
     const saida: ProdutoErp[] = [];
     for (const r of resultados) {

@@ -273,6 +273,14 @@ export class OrcamentoController {
     return this.service.buscarProdutos(q ?? '', tabela ?? null, toNum(cli), Math.min(100, toNum(limite) ?? 30));
   }
 
+  @Get('produtos/ofertas')
+  @ApiOperation({ summary: 'Só os produtos em oferta da intranet vigente para a tabela do cliente (atacado 2/5), já avaliados na régua. Fora do atacado ou com a fonte da promoção no Celta = lista vazia.' })
+  @ApiQuery({ name: 'tabela', required: false, description: 'TABELA_PRECO do cliente (2/5).' })
+  @ApiQuery({ name: 'cli', required: false, description: 'Cliente, para trazer o último preço pago.' })
+  produtosEmOferta(@Query('tabela') tabela?: string, @Query('cli') cli?: string) {
+    return this.service.produtosEmOferta(tabela ?? null, toNum(cli));
+  }
+
   @Get('produtos/chegadas')
   @ApiOperation({
     summary: 'Previsão de chegada dos produtos em pedido de compra não entregue (itens sem saldo) — do próprio item e dos similares do grupo (`similar: true`) — e os similares que têm saldo agora (`com_saldo`).',

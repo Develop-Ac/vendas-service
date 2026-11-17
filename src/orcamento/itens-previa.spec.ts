@@ -34,7 +34,7 @@ describe('prévia dos itens do orçamento', () => {
   });
 
   // erp e bi vazios: qualquer consulta a eles quebraria o teste
-  const service = (r: unknown) => new OrcamentoService({} as never, {} as never, { itensPrevia: jest.fn(async () => r) } as never, {} as never, {} as never);
+  const service = (r: unknown) => new OrcamentoService({} as never, {} as never, { itensPrevia: jest.fn(async () => r) } as never, {} as never, {} as never, {} as never);
 
   it('service devolve a prévia sem consultar ERP nem BI', async () => {
     const r = { quantidade_itens: 1, itens: [{ pro_codigo: 1, descricao: 'X', quantidade: 1, preco_unit: 2, total: 2 }] };

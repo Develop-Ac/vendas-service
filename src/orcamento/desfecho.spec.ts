@@ -15,7 +15,7 @@ describe('desfecho com data de retorno', () => {
     };
     const avisos = { aprovacaoEncerrada: jest.fn(), retornoEncerrado: jest.fn(), orcamentoAprovacao: jest.fn() };
     const erp = { clientePorCodigo: jest.fn(async () => ({ CLI_NOME: 'C', TABELA_PRECO: 1 })) };
-    const service = new OrcamentoService(erp as never, {} as never, db as never, {} as never, avisos as never);
+    const service = new OrcamentoService(erp as never, {} as never, db as never, {} as never, avisos as never, {} as never);
     // bolsa e itens fora do teste: só o status gravado importa
     Object.assign(service as unknown as Record<string, unknown>, {
       bolsaNoFechamento: async () => ({}),
@@ -109,5 +109,29 @@ describe('desfecho com data de retorno', () => {
     expect(db.atualizar).toHaveBeenCalledWith('o1', expect.objectContaining({ status: 'APROVACAO', aprovado_em: null }), expect.anything(), true);
     expect(avisos.orcamentoAprovacao).toHaveBeenCalled();
     expect(avisos.retornoEncerrado).toHaveBeenCalledWith('o1');
+  });
+
+  it('FECHADO com oferta: sob a trava dos itens, recusa item não aprovado e o que passa do limite', async () => {
+    const linha = (item: number, oferta_item_id: number, quantidade: number) => ({ item, descricao: 'P', pro_codigo: item, quantidade, oferta_item_id, fora_promocao: false });
+    const itens: Record<number, { status: string; limite_qtd: number | null }> = { 1: { status: 'APROVADO', limite_qtd: 10 }, 2: { status: 'ENCERRADO', limite_qtd: null } };
+    const ofertas = {
+      comTrava: jest.fn(async (_ids: number[], fn: () => Promise<unknown>) => fn()),
+      item: jest.fn(async (x: number) => itens[x]),
+      vendidas: jest.fn(async () => new Map([[1, { qtd: 7, valor: 0 }]])),
+    };
+    const fechar = async (linhas: unknown[]) => {
+      const { service, db } = montar('ENVIADO', { itens: linhas });
+      Object.assign(service as unknown as Record<string, unknown>, { ofertas });
+      return { r: service.desfecho('o1', { resultado: 'FECHADO' }), db };
+    };
+    const ok = await fechar([linha(1, 1, 3)]);
+    await expect(ok.r).resolves.toEqual(expect.objectContaining({ status: 'FECHADO' }));
+    expect(ofertas.comTrava).toHaveBeenCalledWith([1], expect.any(Function));
+    const limite = await fechar([linha(1, 1, 4)]);
+    await expect(limite.r).rejects.toBeInstanceOf(BadRequestException);
+    expect(limite.db.atualizar).not.toHaveBeenCalled();
+    const encerrado = await fechar([linha(2, 2, 1)]);
+    await expect(encerrado.r).rejects.toThrow();
+    expect(encerrado.db.atualizar).not.toHaveBeenCalled();
   });
 });

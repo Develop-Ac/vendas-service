@@ -9,6 +9,7 @@
  * demais parcelas. A quantidade vai inteira (o que ficou sob encomenda continua no
  * orçamento do Celta).
  */
+import { foraDaBolsa } from '../oferta/oferta';
 import { round2 } from './regua';
 import { baseDoCliente, cobradoDe, descBaseAcimaDoMaximo } from './preco-base';
 
@@ -33,6 +34,8 @@ export interface ItemParaCelta {
   custo_ref?: number | null;
   promocao_codigo?: number | null;
   fora_promocao?: boolean;
+  /** tipo da oferta da intranet; liquidação/campanha fica fora da conta da compensação (fora da bolsa) */
+  oferta_tipo?: string | null;
   /** imposto fora do estado da linha (cliente do Pará): ST ou DIFAL, os dois somados ao total ao cliente */
   icms_st?: number | null;
   difal?: number | null;
@@ -85,6 +88,7 @@ export function compensacaoOrcamento(o: OrcamentoParaCelta): { itens: number[]; 
   for (const i of o.itens ?? []) {
     const custo = Number(i.custo_ref ?? 0);
     if (!(custo > 0)) continue; // sem custo é neutro
+    if (!i.fora_promocao && foraDaBolsa(i.oferta_tipo)) continue; // liquidação/campanha: fora da bolsa
     const preco = unitarioDe(i);
     const qtd = Number(i.quantidade);
     let linha = (preco - custo * piso) * qtd;

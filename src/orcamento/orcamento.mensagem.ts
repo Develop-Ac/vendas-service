@@ -18,7 +18,8 @@ export function mensagemWhatsapp(o: PdfOrcamento): string {
   for (const it of o.itens) {
     const qtd = Number.isInteger(it.quantidade) ? String(it.quantidade) : it.quantidade.toLocaleString('pt-BR');
     const marca = it.marca ? ` (${it.marca})` : '';
-    const promo = it.promocao_fim ? ' — promoção' : '';
+    // o cliente só vê "oferta" (dd/mm), seja promoção, liquidação, campanha, Celta ou portal
+    const promo = it.promocao_fim ? ` — oferta até ${it.promocao_fim.slice(0, 5)}` : '';
     const enc = it.qtd_encomenda > 0 ? ` (${it.qtd_encomenda} sob encomenda)` : '';
     const falta = (it.falta_saldo ?? 0) > 0 ? ` (${it.falta_saldo} ${it.saldo_situacao === 'AGUARDANDO' ? 'aguardando liberação' : 'sem estoque no momento'})` : '';
     linhas.push(`${qtd} × ${it.descricao}${marca}${promo}${enc}${falta} — ${brl(it.total)}`);

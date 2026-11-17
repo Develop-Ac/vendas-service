@@ -5,7 +5,7 @@ import { BolsaAquecimentoScheduler } from './bolsa-aquecimento.scheduler';
 describe('aquecimento da bolsa', () => {
   it('vendedor 1 falha, vendedor 2 fica aquecido e a leitura seguinte não recalcula', async () => {
     const db = { repsComFechados: jest.fn(async () => [1, 2]), ajustes: jest.fn(async () => []) };
-    const service = new OrcamentoService({} as never, {} as never, db as never, {} as never, {} as never);
+    const service = new OrcamentoService({} as never, {} as never, db as never, {} as never, {} as never, {} as never);
     const casarFechados = jest.fn(async (rep: number) => {
       if (rep === 1) throw new Error('BI fora');
       return { linhas: [] };

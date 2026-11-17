@@ -4,7 +4,7 @@ import { OrcamentoService } from './orcamento.service';
 describe('caches da bolsa', () => {
   const montar = () => {
     const db = { ajustes: jest.fn() };
-    const service = new OrcamentoService({} as never, {} as never, db as never, {} as never, {} as never);
+    const service = new OrcamentoService({} as never, {} as never, db as never, {} as never, {} as never, {} as never);
     const s = service as unknown as Record<string, unknown>;
     return { service, db, s };
   };
@@ -49,7 +49,7 @@ describe('caches da bolsa', () => {
       bolsaVendedor: jest.fn(async () => ({ venda_liquida: 100, custo: 50, desconto: 0, absorvido: 0, excedente: 0 })),
       dreCanalMensal: jest.fn(),
     };
-    const service = new OrcamentoService({} as never, bi as never, {} as never, {} as never, {} as never);
+    const service = new OrcamentoService({} as never, bi as never, {} as never, {} as never, {} as never, {} as never);
     const s = service as unknown as Record<string, unknown>;
     const efetivoAjustes = jest.fn(async () => []);
     Object.assign(s, { efetivoAjustes, absorvidoPromoPortalNoMes: async () => 0 });

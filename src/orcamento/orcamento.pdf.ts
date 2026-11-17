@@ -265,7 +265,8 @@ function linhaItem(doc: PDFKit.PDFDocument, y: number, it: PdfItem, cols: Col[],
   y += Math.max(12, hDescr + 1);
   if (it.promocao_fim) {
     doc.fillColor(SUAVE).fontSize(7.5).text(
-      `promoção válida até ${it.promocao_fim}${it.preco_original ? ` · de R$ ${brl(it.preco_original)} por R$ ${brl(it.preco_unit)}` : ''}`,
+      // o cliente só vê "oferta", seja promoção, liquidação, campanha, Celta ou portal
+      `oferta até ${it.promocao_fim.slice(0, 5)}${it.preco_original ? ` · de R$ ${brl(it.preco_original)} por R$ ${brl(it.preco_unit)}` : ''}`,
       cols[0][1] + 44, y, { lineBreak: false },
     );
     doc.fillColor(TEXTO);

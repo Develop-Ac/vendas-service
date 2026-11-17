@@ -1,6 +1,6 @@
 import { corpoParaCelta } from './celta';
 import { bolsaDoOrcamento, bolsaNfPorOrcamento, casarOrcamentos, valoresLinha } from './extrato-bolsa';
-import { fracaoPromoPortal } from './promocao-portal';
+import { fracaoCasada, fracaoPromoPortal } from './promocao-portal';
 import { PromocaoItem } from './orcamento.erp.repository';
 import { comPromosDoPortal, PROMOCAO_PORTAL, PromosPortal } from './orcamento.service';
 
@@ -40,13 +40,13 @@ describe('item em promoção do portal no orçamento', () => {
     expect(JSON.stringify(promo)).not.toEqual(JSON.stringify(comum));
   });
 
-  it('vai ao Celta como item normal: o código do portal não é enviado', () => {
+  it('vai ao Celta como promoção: com promocao: true, sem o código do portal', () => {
     const corpo = corpoParaCelta({
       id: 'o1', numero: 1, cli_codigo: 1, rep_codigo: 9, cp_codigo: 7, fp_codigo: null, observacao: null,
       itens: [{ pro_codigo: 10, quantidade: 2, preco_tabela: 100, preco_unit: 80, total: 160, desc_pct: 0, promocao_codigo: PROMOCAO_PORTAL }],
     } as never);
-    expect(JSON.stringify(corpo)).not.toContain('promocao');
-    expect(corpo.itens[0]).toEqual(expect.objectContaining({ pro_codigo: 10, quantidade: 2 }));
+    expect(JSON.stringify(corpo)).not.toContain('promocao_codigo');
+    expect(corpo.itens[0]).toEqual(expect.objectContaining({ pro_codigo: 10, quantidade: 2, promocao: true }));
   });
 });
 
@@ -65,10 +65,18 @@ describe('bolsa do mês: venda em promoção do portal (o BI não a marca)', () 
     expect(valoresLinha(linha, 1).absorvido).toBe(0);
   });
 
+  it('linha com a marca de promoção do BI e casada com promoção do portal: a metade entra uma vez só', () => {
+    const marcaS = valoresLinha({ ...linha, promocao: true }, 1);
+    expect(valoresLinha({ ...linha, promocao: true, promo_portal: 1 }, 1)).toEqual(marcaS);
+    expect(valoresLinha({ ...linha, promocao: true, promo_portal: 0.5 }, 1)).toEqual(marcaS);
+    expect(marcaS.absorvido).toBe(20);
+  });
+
   it('a fração é a quantidade casada com itens em promoção do portal', () => {
     expect(fracaoPromoPortal(4, [{ quantidade: 2, promo_portal: true }, { quantidade: 2 }])).toBe(0.5);
     expect(fracaoPromoPortal(4, [{ quantidade: 4 }])).toBe(0);
     expect(fracaoPromoPortal(0, [{ quantidade: 4, promo_portal: true }])).toBe(0);
+    expect(fracaoCasada(4, [{ quantidade: 1, fora_bolsa: true }, { quantidade: 2, promo_portal: true }], 'fora_bolsa')).toBe(0.25);
   });
 
   it('o casamento leva a marca do item até a NF e a bolsa por orçamento a aplica', () => {
