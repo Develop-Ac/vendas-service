@@ -57,7 +57,7 @@ export const PERMISSOES_APROVACAO = ['/vendas/orcamento/liberar-bloqueio', '/ven
 export const PERMISSAO_AJUSTE_BOLSA = '/vendas/orcamento/ajustar-bolsa';
 import { AvisosVendasService } from '../common/avisos/avisos-vendas.service';
 import { OfertaRepository } from '../oferta/oferta.repository';
-import { comOfertas, excedeLimite, foraDaBolsa, restam, type TipoOferta } from '../oferta/oferta';
+import { comOfertas, excedeLimite, foraDaBolsa, liberadoPeloPar, msgPar, msgTeto, niveisDaTabela, precoNoNivel, resolverCondicoes, restam, type TipoOferta } from '../oferta/oferta';
 import { CacheVelho } from './cache-velho';
 import { cronometro } from './leitura-lenta';
 import { analyticsAtacadoGet } from '../common/analytics/analytics-atacado';
@@ -125,6 +125,12 @@ export interface ProdutoOrcamento {
   /** tipo, oferta_item_id e restam (null = sem limite) só na oferta da intranet; ganho_unit e proxima_faixa só na tela do vendedor */
   promocao: {
     codigo: number; descricao: string; data_final: string; somente_avista: boolean; tipo?: TipoOferta; oferta_item_id?: number; restam?: number | null;
+    /** máximo por cliente e o que resta dele para o cliente do orçamento (null = sem teto) */
+    limite_cliente?: number | null; restam_cliente?: number | null;
+    /** preço progressivo: primeiro nível (preco_tabela) a partir de qtd_minima; níveis adicionais na tabela do cliente */
+    qtd_minima?: number; niveis?: { a_partir_de: number; preco: number }[];
+    /** agarradinho: produto que precisa ir junto; libera `proporcao` unidades da oferta por unidade */
+    par?: { pro_codigo: number; descricao: string | null; proporcao: number } | null;
     ganho_unit?: number; proxima_faixa?: { valor: number; a_partir_de: number } | null;
   } | null;
   /** Promoção do balcão (tabela 1) vigente, SEM preço na tabela do cliente — só informação. */
@@ -1211,8 +1217,16 @@ export class OrcamentoService {
     if (ofertasIntranet) {
       try {
         const aprovados = await this.ofertas.aprovadosDosProdutos(codigos);
-        const vendidas = await this.ofertas.vendidas(aprovados.map((o) => o.id));
-        comOfertas(promos, aprovados.map((o) => ({ ...o, vendidas: vendidas.get(o.id)?.qtd ?? 0 })), produtos, tabelaPreco, hojeYmd());
+        const idsOferta = aprovados.map((o) => o.id);
+        const [vendidas, doCliente] = await Promise.all([
+          this.ofertas.vendidas(idsOferta),
+          cli ? this.ofertas.vendidasDoCliente(idsOferta, cli) : Promise.resolve(new Map<number, number>()),
+        ]);
+        // saldo dos pares: o dos próprios produtos quando estão na lista; os demais, uma leitura do ERP
+        const saldoPar = new Map(produtos.map((p) => [p.PRO_CODIGO, Number(p.ESTOQUE_DISPONIVEL)]));
+        const faltantes = [...new Set(aprovados.map((o) => o.par_pro_codigo).filter((c): c is number => c != null && !saldoPar.has(c)))];
+        if (faltantes.length) for (const p of await this.erp.produtosPorCodigo(faltantes)) saldoPar.set(p.PRO_CODIGO, Number(p.ESTOQUE_DISPONIVEL));
+        comOfertas(promos, aprovados.map((o) => ({ ...o, vendidas: vendidas.get(o.id)?.qtd ?? 0, vendidas_cliente: doCliente.get(o.id) ?? 0 })), produtos, tabelaPreco, hojeYmd(), saldoPar);
       } catch (e) {
         this.logger.warn(`Ofertas da intranet indisponíveis: ${(e as Error).message}`);
       }
@@ -1258,15 +1272,7 @@ export class OrcamentoService {
     let avaliacao = avaliacaoNormal;
     if (aplica && promo) {
       const fim = promo.data_final.split('-').reverse().join('/');
-      avaliacao = {
-        ...avaliacaoNormal,
-        desc_max_pct: 0,
-        desc_max_efetivo_pct: 0,
-        preco_minimo: precoPromo as number,
-        fracao_volume: 0,
-        escala_volume: avaliacao.escala_volume.map((d) => ({ ...d, desc_max_pct: 0, desc_max_efetivo_pct: 0, preco_minimo: precoPromo as number })),
-        motivo: `${promo.oferta ? 'Oferta' : 'Promoção'} "${promo.descricao}" até ${fim}: preço fechado, sem desconto.`,
-      };
+      avaliacao = avaliacaoFechada(avaliacaoNormal, precoPromo as number, `${promo.oferta ? 'Oferta' : 'Promoção'} "${promo.descricao}" até ${fim}: preço fechado, sem desconto.`);
     }
     return {
       pro_codigo: p.PRO_CODIGO,
@@ -1312,7 +1318,7 @@ export class OrcamentoService {
               descricao: promo.descricao,
               data_final: promo.data_final,
               somente_avista: promo.somente_avista,
-              ...(promo.oferta ? { tipo: promo.oferta.tipo, oferta_item_id: promo.oferta.item_id, restam: promo.oferta.restam, ganho_unit: promo.oferta.ganho_unit, proxima_faixa: promo.oferta.proxima_faixa } : {}),
+              ...(promo.oferta ? (({ item_id, ...resto }) => ({ oferta_item_id: item_id, ...resto }))(promo.oferta) : {}),
             }
           : null,
       promocao_balcao:
@@ -1718,16 +1724,33 @@ export class OrcamentoService {
     const promos: Array<{ preco: number; custo: number | null; qtd: number }> = [];
     // mercadoria do orçamento para o teto da bolsa por linha (o piso só se conhece na bolsa)
     const itensTeto: Array<{ quantidade: number; total: number; custo_ref: number | null; preco_tabela: number }> = [];
+    // Preço progressivo: a quantidade do item de oferta é a soma das linhas que ficam nela
+    // (a que o vendedor pediu fora não conta) e o preço de cada linha é o do nível alcançado.
+    const pedidoFora = (i: ItemOrcamentoDto, p?: ProdutoOrcamento) => !!i.fora_promocao && !!p?.promocao && !!p.sem_promocao;
+    const condicoes = resolverCondicoes(
+      itens.map((i) => {
+        const p = porCodigo.get(i.pro_codigo);
+        return { pro_codigo: i.pro_codigo, quantidade: Number(i.quantidade), oferta_item_id: !pedidoFora(i, p) ? (p?.promocao?.oferta_item_id ?? null) : null };
+      }),
+      produtos.flatMap((p) =>
+        p.promocao?.oferta_item_id
+          ? [{ item_id: p.promocao.oferta_item_id, preco: p.preco_tabela, qtd_minima: p.promocao.qtd_minima ?? 1, niveis: p.promocao.niveis ?? [], par: p.promocao.par ?? null }]
+          : [],
+      ),
+    );
 
     itens.forEach((i, idx) => {
       const p = porCodigo.get(i.pro_codigo);
       if (!p) { erros.push(`Item ${idx + 1}: produto ${i.pro_codigo} não existe na empresa 3.`); return; }
       const qtd = Number(i.quantidade);
       // Vender FORA da promoção/liquidação: tabela normal do cliente e régua
-      // padrão na linha (desconto, alçada e bolsa como em qualquer item).
-      const fora = !!i.fora_promocao && !!p.promocao && !!p.sem_promocao;
-      const tabela = fora ? p.sem_promocao!.preco_tabela : p.preco_tabela;
-      const av = fora ? p.sem_promocao!.avaliacao : p.avaliacao;
+      // padrão na linha (desconto, alçada e bolsa como em qualquer item). Fora também
+      // quando a quantidade do item fica abaixo do primeiro nível da oferta.
+      const pedido = pedidoFora(i, p);
+      const nivel = !pedido && p.promocao?.oferta_item_id ? condicoes.get(p.promocao.oferta_item_id)?.preco : undefined;
+      const fora = pedido || (nivel === null && !!p.sem_promocao);
+      const tabela = fora ? p.sem_promocao!.preco_tabela : (nivel ?? p.preco_tabela);
+      const av = fora ? p.sem_promocao!.avaliacao : nivel != null ? avaliacaoFechada(p.avaliacao, nivel, p.avaliacao.motivo) : p.avaliacao;
       // O preço nasce da tabela do cliente menos o desconto. `preco_unit` vale por
       // cima quando o vendedor fechou o unitário ou o TOTAL da linha: um unitário exato
       // em centavos. Abaixo da tabela é desconto (a régua e a bolsa avaliam esse preço);
@@ -1829,7 +1852,8 @@ export class OrcamentoService {
         oferta_tipo: !fora && p.promocao?.oferta_item_id ? (p.promocao.tipo ?? null) : null,
         // parte sem saldo que o cliente aceitou receber depois (decidida ao concluir)
         qtd_encomenda: Math.min(qtd, Math.max(0, Number(i.qtd_encomenda ?? 0))),
-        fora_promocao: fora,
+        // só o pedido do vendedor: fora por quantidade volta à oferta sozinha quando ela sobe
+        fora_promocao: pedido,
         pedir_ajuste: !!i.pedir_ajuste,
         icms_st: 0,
         difal: 0,
@@ -1837,8 +1861,17 @@ export class OrcamentoService {
       });
     });
     // limite da oferta: a soma das linhas do mesmo item não passa do que resta
-    const restamPorItem = new Map(produtos.filter((p) => p.promocao?.oferta_item_id).map((p) => [p.promocao!.oferta_item_id!, p.promocao!.restam ?? null]));
-    erros.push(...excedeLimite(linhas.map((l) => ({ item: Number(l.item), descricao: l.descricao ?? null, quantidade: Number(l.quantidade), oferta_item_id: l.oferta_item_id ?? null })), restamPorItem));
+    const daOferta = produtos.filter((p) => p.promocao?.oferta_item_id);
+    const restamPorItem = new Map(daOferta.map((p) => [p.promocao!.oferta_item_id!, p.promocao!.restam ?? null]));
+    const linhasOferta = linhas.map((l) => ({ item: Number(l.item), descricao: l.descricao ?? null, quantidade: Number(l.quantidade), oferta_item_id: l.oferta_item_id ?? null }));
+    erros.push(...excedeLimite(linhasOferta, restamPorItem));
+    // máximo por cliente: a soma das linhas do item não passa do que resta para o cliente
+    const teto = new Map(daOferta.map((p) => [p.promocao!.oferta_item_id!, p.promocao!.limite_cliente ?? null]));
+    erros.push(...excedeLimite(linhasOferta, new Map(daOferta.map((p) => [p.promocao!.oferta_item_id!, p.promocao!.restam_cliente ?? null])), msgTeto(teto)));
+    // agarradinho: a soma das linhas do item não passa do que o par libera
+    const pares = new Map(daOferta.flatMap((p) => (p.promocao!.par ? [[p.promocao!.oferta_item_id!, p.promocao!.par] as const] : [])));
+    const liberadoPorItem = new Map([...condicoes].map(([k, c]) => [k, c.liberado]));
+    erros.push(...excedeLimite(linhasOferta, liberadoPorItem, msgPar(pares)));
     if (erros.length) throw new BadRequestException(erros);
     subtotal = round2(subtotal); subtotalCliente = round2(subtotalCliente); total = round2(total);
     const desconto = round2(subtotal - total);
@@ -2840,19 +2873,54 @@ export class OrcamentoService {
       }
     }
     // Oferta no fechamento: o item precisa seguir APROVADO (encerrado ou voltado a pendente não vale
-    // mais o preço) e caber no limite com o vendido relido agora. A leitura e a gravação do FECHADO
+    // mais o preço) e caber no limite e no máximo do cliente com o vendido relido agora. A leitura e a gravação do FECHADO
     // correm sob a trava dos itens: dois fechamentos juntos não passam os dois pelo mesmo saldo.
     const daOferta = dto.resultado === 'FECHADO' ? (o.itens ?? []).filter((i) => i.oferta_item_id != null && !i.fora_promocao) : [];
     const ids = [...new Set<number>(daOferta.map((i) => Number(i.oferta_item_id)))];
     const fechar = async () => {
       if (ids.length) {
-        const [itensOferta, vendidas] = await Promise.all([Promise.all(ids.map((x) => this.ofertas.item(x))), this.ofertas.vendidas(ids)]);
+        const [itensOferta, vendidas, doCliente] = await Promise.all([
+          Promise.all(ids.map((x) => this.ofertas.item(x))),
+          this.ofertas.vendidas(ids),
+          this.ofertas.vendidasDoCliente(ids, o.cli_codigo),
+        ]);
         const restamPorItem = new Map<number, number | null>();
-        itensOferta.forEach((it, k) => restamPorItem.set(ids[k], it ? restam(it.limite_qtd, vendidas.get(ids[k])?.qtd ?? 0) : null));
+        const teto = new Map<number, number | null>();
+        const restamCliente = new Map<number, number | null>();
+        const pares = new Map<number, { pro_codigo: number; descricao: string | null }>();
+        const liberado = new Map<number, number | null>();
+        itensOferta.forEach((it, k) => {
+          if (it?.par_pro_codigo != null) {
+            const par = { pro_codigo: it.par_pro_codigo, proporcao: Number(it.par_proporcao ?? 1) };
+            pares.set(ids[k], { pro_codigo: par.pro_codigo, descricao: it.par_descricao });
+            liberado.set(ids[k], liberadoPeloPar(o.itens ?? [], par));
+          }
+          restamPorItem.set(ids[k], it ? restam(it.limite_qtd, vendidas.get(ids[k])?.qtd ?? 0) : null);
+          teto.set(ids[k], it?.limite_cliente ?? null);
+          restamCliente.set(ids[k], it ? restam(it.limite_cliente, doCliente.get(ids[k]) ?? 0) : null);
+        });
         const erros = daOferta
           .filter((i) => itensOferta[ids.indexOf(Number(i.oferta_item_id))]?.status !== 'APROVADO')
           .map((i) => `Item ${i.item} (${i.descricao}): a oferta não está mais aprovada — refaça a linha pelo preço atual.`);
+        // preço gravado conferido contra o nível que a quantidade do item alcança hoje
+        const qtdItem = new Map<number, number>();
+        for (const i of daOferta) qtdItem.set(Number(i.oferta_item_id), (qtdItem.get(Number(i.oferta_item_id)) ?? 0) + Number(i.quantidade));
+        for (const i of daOferta) {
+          const it = itensOferta[ids.indexOf(Number(i.oferta_item_id))];
+          if (it?.status !== 'APROVADO') continue;
+          const qtd = qtdItem.get(Number(i.oferta_item_id)) ?? 0;
+          // ponytail: a linha não guarda de qual coluna (PRECO2/PRECO5) veio a oferta; aceita o nível de qualquer das duas tabelas
+          const confere = (['PRECO2', 'PRECO5'] as const).some((col) => {
+            const base = col === 'PRECO2' ? it.preco_t2 : it.preco_t5;
+            if (base == null) return false;
+            const preco = precoNoNivel(Number(base), Number(it.qtd_minima ?? 1), niveisDaTabela({ niveis: it.niveis ?? [] }, col, Infinity), qtd);
+            return preco != null && round2(preco) === round2(Number(i.preco_tabela));
+          });
+          if (!confere) erros.push(`Item ${i.item} (${i.descricao}): o preço na oferta mudou — refaça a linha pelo preço atual.`);
+        }
         erros.push(...excedeLimite(daOferta, restamPorItem));
+        erros.push(...excedeLimite(daOferta, restamCliente, msgTeto(teto)));
+        erros.push(...excedeLimite(daOferta, liberado, msgPar(pares)));
         if (erros.length) throw new BadRequestException(erros);
       }
       if (o.status === 'APROVACAO') this.avisos.aprovacaoEncerrada(id);
@@ -3321,3 +3389,16 @@ function precoOportunidade(p: ProdutoErp) {
 }
 
 export { comPromosDoPortal, PROMOCAO_OFERTA, PROMOCAO_PORTAL, type PromosPortal } from './promocao-portal';
+
+/** Avaliação de preço fechado (promoção ou nível da oferta): sem desconto, o mínimo é o próprio preço. */
+function avaliacaoFechada(av: Avaliacao, preco: number, motivo: string): Avaliacao {
+  return {
+    ...av,
+    desc_max_pct: 0,
+    desc_max_efetivo_pct: 0,
+    preco_minimo: preco,
+    fracao_volume: 0,
+    escala_volume: av.escala_volume.map((d) => ({ ...d, desc_max_pct: 0, desc_max_efetivo_pct: 0, preco_minimo: preco })),
+    motivo,
+  };
+}

@@ -10,12 +10,20 @@ usadas pelo cadastro e pelo orçamento.
 ## Modelo
 
 - **Grupo** (`ven_oferta`): `nome`, `tipo` (`PROMOCAO` | `LIQUIDACAO` | `CAMPANHA`), `criado_por`
-  (nome do usuário). Liquidação nasce com `premio_tipo = PCT_CUSTO` e `premio_valor = 0,05`; campanha
+  (nome do usuário). Fora da campanha, o tipo do grupo é só o **padrão** dos itens que entram; campanha
   grava `origem`, `fornecedor_codigo`/`fornecedor_nome`, `premio_tipo`, `premio_valor` e `premio_faixas`
-  (ver "Campanha e prêmio"). Promoção não tem prêmio.
+  (ver "Campanha e prêmio"). O `premio_*` gravado num grupo de liquidação não é mais lido.
 - **Item** (`ven_oferta_item`): um produto dentro do grupo, com `descricao` (cópia do ERP na
   inclusão), `preco_t2` e `preco_t5` (nulo = não vale para aquela tabela), `inicio` e `fim` (datas do
-  calendário de Cuiabá, fim inclusivo), `limite_qtd` (nulo = sem limite) e a situação.
+  calendário de Cuiabá, fim inclusivo), `limite_qtd` (nulo = sem limite) e a situação. Condições do
+  próprio item:
+  - `tipo`: o do item, que decide selo, mínimo e bolsa. Entra como o enviado na inclusão (`tipo` em
+    `itens`) ou o padrão do grupo; em grupo de campanha é sempre `CAMPANHA`.
+  - `premio_valor`: bônus da liquidação em fração do custo; nasce 0,05, aceita 0 a < 1; nulo nos
+    outros tipos.
+  - `limite_cliente`: máximo por cliente (ver "Máximo por cliente").
+  - `qtd_minima` (padrão 1) e `niveis` (ver "Preço progressivo").
+  - `par_pro_codigo`, `par_descricao`, `par_proporcao` (ver "Agarradinho").
 - **Situações do item**: `RASCUNHO` → `PENDENTE` → `APROVADO` → `ENCERRADO`, com `enviado_por/em`,
   `aprovado_por/em`, `encerrado_por/em` e `encerrado_motivo` (`DATA` | `LIMITE` | `SALDO` | `MANUAL`).
 - **Linha do orçamento** (`ven_orcamento_item`): `oferta_item_id` e `oferta_tipo`, gravados quando a
@@ -52,8 +60,8 @@ abas.
 | `PUT /oferta/fonte` | `{ intranet: boolean }` | Troca a fonte (ver "Fonte da promoção"); vale na hora, sem reiniciar. |
 | `PUT /oferta/:id` | `{ nome }` | Renomeia. |
 | `GET /oferta/:id` | — | Detalhe com os itens: custo, saldo, tabela 2, tabela 5, mínimos, vendidas, restam e `erros` das conferências. |
-| `POST /oferta/:id/itens` | `{ itens: [{ pro_codigo, preco_t2?, qtd? }] }` | Inclui por código ou pela lista de sugestão. Resposta: detalhe + `recusados: [{ pro_codigo, motivo }]`. |
-| `PUT /oferta/item/:itemId` | `{ preco_t2?, preco_t5?, inicio?, fim?, limite_qtd? }` | Edita (campo ausente não muda). |
+| `POST /oferta/:id/itens` | `{ itens: [{ pro_codigo, preco_t2?, qtd?, tipo? }] }` | Inclui por código ou pela lista de sugestão. Resposta: detalhe + `recusados: [{ pro_codigo, motivo }]`. |
+| `PUT /oferta/item/:itemId` | `{ preco_t2?, preco_t5?, inicio?, fim?, limite_qtd?, tipo?, premio_valor?, limite_cliente?, qtd_minima?, niveis?, par_pro_codigo?, par_proporcao? }` | Edita (campo ausente não muda; `null` limpa teto e par; `niveis: []` remove os níveis). `tipo` só `PROMOCAO`/`LIQUIDACAO`. |
 | `DELETE /oferta/item/:itemId` | — | Remove; só `RASCUNHO`. |
 | `POST /oferta/:id/replicar-datas` | `{ item_id }` | Copia início e fim do item para todos os não encerrados do grupo. |
 | `POST /oferta/:id/enviar` | `{ itens?: number[] }` | `RASCUNHO` → `PENDENTE` (vazio = grupo todo). |
@@ -68,8 +76,12 @@ Só por código: cada tabela nasce no mínimo e o montador ajusta na linha. Pre�
 tabela vira nulo (a oferta não vale naquela tabela). Produto fora do ERP, com erro de conferência ou
 em sobreposição é recusado com o motivo; os demais entram.
 
-**Edição.** Item `ENCERRADO` não se edita. Mudar preço, datas ou limite de um `APROVADO` devolve
-**só esse item** a `PENDENTE` (limpa `aprovado_por/em`); os outros do grupo continuam valendo. Replicar
+**Edição.** Item `ENCERRADO` não se edita. Mudar preço, datas, limite, tipo, bônus, máximo por
+cliente, quantidade mínima, níveis ou par de um `APROVADO` devolve **só esse item** a `PENDENTE`
+(limpa `aprovado_por/em`); os outros do grupo continuam valendo. Recusas (400): trocar o tipo de item
+de campanha; bônus em item que não é liquidação; trocar tipo ou bônus de item que já tem venda
+faturada (o preço segue editável). Virar liquidação sem bônus informado = 0,05; sair dela limpa o
+bônus. Replicar
 datas faz o mesmo para cada aprovado que mudou; um conflito de sobreposição recusa a replicação inteira.
 
 **Envio e aprovação** reconferem cada item com custo e tabela de agora; item com erro, fora da etapa de
@@ -80,8 +92,13 @@ origem ou de outro grupo volta em `recusados` e o restante avança.
 Ao incluir, editar, enviar e aprovar (mensagem por item):
 
 - preço > 0 e menor que o preço normal daquela tabela; ao menos uma tabela com preço;
-- preço ≥ mínimo: liquidação e campanha, `custo × OFERTA_PISO` (padrão 1,30); promoção, o
-  `preco_minimo` que a régua do atacado dá ao produto naquela tabela;
+- preço ≥ mínimo, pelo **tipo do item**: liquidação e campanha, `custo × OFERTA_PISO` (padrão 1,30);
+  promoção, o `preco_minimo` que a régua do atacado dá ao produto naquela tabela;
+- preço progressivo: `qtd_minima` ≥ 1; até 2 níveis; `a_partir_de` crescente (o primeiro acima de
+  `qtd_minima`); em cada tabela com preço base, todo nível tem preço, menor que o anterior e ≥ o
+  mínimo; nível com preço em tabela sem preço base é recusado;
+- agarradinho: par diferente do próprio produto e proporção > 0; ao editar, o par tem de existir e
+  estar ativo no ERP ("Produto par X não encontrado ou inativo no ERP.");
 - produto sem custo no ERP: recusado;
 - início ≤ fim;
 - sobreposição: o mesmo produto em outro item **não encerrado** (rascunho inclusive) com datas que se
@@ -108,6 +125,10 @@ calcula a vigência ao vivo, sem depender da apuração: item fora do período, 
 não sai como oferta. O item que chega ao limite num fechamento fica `ENCERRADO`/`LIMITE` na próxima
 apuração. A gestão encerra antes com `POST /oferta/:id/encerrar` (`MANUAL`).
 
+Par do agarradinho sem saldo **não encerra** o item: a oferta só deixa de sair no orçamento enquanto o
+par estiver zerado e volta sozinha quando o par tiver saldo. O detalhe mostra `par_saldo` e
+`par_sem_saldo`.
+
 ## Limite e vendidas
 
 **Vendidas** = soma de `ven_orcamento_item.quantidade` (e `total`, para o valor) das linhas com aquele
@@ -122,6 +143,36 @@ podem somar mais que o restante, e o segundo a fechar é recusado. A releitura e
 correm sob uma trava por item de oferta (`pg_advisory_xact_lock`), então dois fechamentos juntos não
 passam pelo mesmo saldo. O fechamento também recusa a linha cujo item de oferta não está mais
 `APROVADO` (encerrado ou voltado a pendente por edição): o vendedor refaz a linha pelo preço atual.
+
+## Máximo por cliente
+
+`limite_cliente` (nulo = sem teto) é o máximo de unidades que um mesmo cliente compra na oferta, somando
+os orçamentos `FECHADO` dele com aquele `oferta_item_id` (`vendidasDoCliente`, mesma conta das
+vendidas recortada por `cli_codigo`). O produto devolvido ao editor leva `limite_cliente` e
+`restam_cliente`. Salvar e fechar recusam como o limite geral, com "Item N (descrição): máximo de X por
+cliente na oferta — restam M para este cliente; reduza a quantidade ou venda fora da oferta."; no
+fechamento a releitura corre sob a mesma trava por item.
+
+## Preço progressivo
+
+O primeiro preço (`preco_t2`/`preco_t5`) vale a partir de `qtd_minima`; `niveis`
+(`[{ a_partir_de, preco_t2, preco_t5 }]`, até 2) baixam o preço a partir de cada quantidade. Regra pura
+`precoNoNivel`: abaixo de `qtd_minima` não há oferta; acima, vale o preço do maior nível alcançado, para
+todas as unidades. A quantidade é a soma das linhas do orçamento com o mesmo item de oferta
+(`resolverCondicoes`); linha vendida fora não soma. Abaixo da quantidade mínima a linha sai pelo preço
+normal (como vendida fora, sem gravar `fora_promocao`). O editor recebe `qtd_minima` e os `niveis` já
+na tabela do cliente. No fechamento, o preço gravado tem de bater com o nível relido; senão "o preço na
+oferta mudou — refaça a linha pelo preço atual.".
+
+## Agarradinho
+
+Item com `par_pro_codigo` só sai na oferta junto com o produto par: cada unidade do par libera
+`par_proporcao` (padrão 1) unidades da oferta (`liberadoPeloPar`: soma de todas as linhas do par no
+orçamento × proporção). Sem o par no orçamento, a linha sai pelo preço normal; acima do liberado,
+salvar e fechar recusam com "Item N (descrição): o par CÓDIGO (DESCRIÇÃO) libera L unidades na oferta —
+inclua mais do par ou reduza a quantidade.". A conta é item a item: as mesmas unidades do par liberam
+cada oferta que aponte para ele. O par sem saldo tira a oferta do orçamento (ver "Vigência e
+encerramento"). O editor recebe `par: { pro_codigo, descricao, proporcao }`.
 
 ## Orçamento do atacado
 
@@ -139,12 +190,12 @@ Com a fonte na **Intranet** **e** cliente de tabela 2 ou 5 (`enriquecer` em
 3. depois entram as ofertas vigentes da intranet (`comOfertas`): preço de `preco_t2` ou `preco_t5`
    pela coluna de onde veio o preço normal do cliente (tabela por substituição incluída). Se a oferta
    não for menor que o preço normal, a linha não é oferta. Falha na leitura das ofertas só loga e o
-   orçamento segue sem oferta.
+   orçamento segue sem oferta. Selo, mínimo, bolsa e ganho seguem o **tipo do item**.
 
 Cliente de outra tabela, ou chave desligada: comportamento de antes (promoção de balcão do Celta).
 
 O produto devolvido ao editor leva `promocao: { codigo: -1, descricao (nome do grupo), data_final,
-tipo, oferta_item_id, restam }`. Vender fora da oferta limpa `oferta_item_id` e `oferta_tipo` e segue
+tipo, oferta_item_id, restam, limite_cliente, restam_cliente, qtd_minima, niveis, par }`. Vender fora da oferta limpa `oferta_item_id` e `oferta_tipo` e segue
 a regra normal. Orçamento com oferta que venceu, foi encerrada ou voltou a pendente é re-precificado
 ao vivo na reabertura, como a promoção vencida do Celta. A linha de oferta não pede alçada (o mínimo
 é o próprio preço). Ao Celta vai `promocao: true` para os três tipos; vendida fora, sem a marca.
@@ -190,7 +241,7 @@ liquidação. Regras puras em `src/oferta/premio.ts` (+ `premio.spec.ts`).
   Na de fornecedor, `fornecedor_codigo` é obrigatório e tem de existir no ERP; o nome gravado é o nome
   fantasia (ou a razão social). Na de empresa, o fornecedor fica nulo.
 - **Tipos de prêmio**: `PCT_VENDA` — fração do valor vendido; `VALOR_UNIDADE` — R$ por unidade.
-  Liquidação é sempre `PCT_CUSTO` (fração do custo; padrão 0,05).
+  Liquidação é sempre `PCT_CUSTO`, com a fração no próprio item (`premio_valor`; padrão 0,05).
 - **Percentual em fração na API**: 0,02 = 2% (`PCT_VENDA` < 1). A tela mostra em %.
 - **Faixas por quantidade** (`premio_faixas: [{ a_partir_de, valor }]`, até 10): a partir dessa
   quantidade total do vendedor na campanha, vale aquele valor no lugar do base, para todas as unidades.
@@ -198,7 +249,7 @@ liquidação. Regras puras em `src/oferta/premio.ts` (+ `premio.spec.ts`).
   base). Faixa fora de ordem ou fornecedor ausente = 400 com o erro.
 - **Mínimo**: o preço da campanha segue `custo × OFERTA_PISO`, como a liquidação.
 - **Trocar o prêmio** (`PUT /oferta/:id/premio`, `/estoque/promocoes/aprovar`): tipo ou faixas ausentes
-  mantêm os do grupo; promoção = 400; grupo que já tem venda faturada é recusado. Os itens não mudam de
+  mantêm os do grupo; grupo que não é campanha = 400 (o bônus da liquidação se troca no item); grupo que já tem venda faturada é recusado. Os itens não mudam de
   situação.
 
 **Montagem por marca** (`POST /oferta/:id/marca`, só campanha, `{ marca, pct }`): lê do ERP os produtos
@@ -225,7 +276,8 @@ Regras puras em `src/oferta/ganhos.ts` (+ `ganhos.spec.ts`); rota `GET /oferta/g
   de orçamento que saiu de item de **liquidação ou campanha**. Promoção e venda fora da oferta não geram
   ganho. O casamento olha só os últimos 8 meses de desfecho: venda mais antiga que isso não entra.
 - **Liquidação**: bônus das notas emitidas dentro do mês comissional = quantidade × `custo_ref` da
-  linha do orçamento × fração.
+  linha do orçamento × `premio_valor` **do item** (nulo = 0). Vale para item de liquidação em qualquer
+  grupo que não seja campanha; os itens de promoção do mesmo grupo não geram ganho.
 - **Campanha**: prêmio sobre todas as vendas do vendedor na campanha (faixa pela quantidade total), pago
   de uma vez no mês comissional em que cai o fim, e só depois do fim (`PAGAR`). Antes disso, nos meses
   que a campanha cruza, aparece `ANDAMENTO` ("em andamento"), fora do total.
@@ -250,7 +302,8 @@ Fornecedores e Detalhe) é gerado pela tela a partir desse JSON; o serviço não
 
 `GET /oferta/:id/resultado`: `{ faturado: [{ oferta_item_id, pro_codigo, descricao, quantidade, valor }],
 vendedores: [{ rep_codigo, rep_nome, quantidade, valor, ganho, situacao }] | null }` — no grupo inteiro,
-sem recorte de mês; `vendedores` é nulo em promoção ou sem `/estoque/promocoes/ganhos`.
+sem recorte de mês; `vendedores` conta só os itens de liquidação (ou a campanha inteira) e é nulo em
+grupo sem item de liquidação que não seja campanha, ou sem `/estoque/promocoes/ganhos`.
 
 O relatório lê o casamento de cada vendedor com venda de oferta, um por vez (cache da bolsa): o mês frio
 pode demorar.
@@ -266,6 +319,9 @@ pode demorar.
 1. Aplicar `sql/2026-11-17_ofertas_postgres.sql` no Postgres da intranet **antes** de subir o serviço
    (o Prisma passa a ler `oferta_item_id` e `oferta_tipo` em toda consulta de item de orçamento;
    serviço novo sem o SQL quebra a leitura de orçamentos).
+   Em seguida, também antes do deploy, aplicar `sql/2026-11-17_ofertas_condicoes_item.sql` (tipo,
+   bônus, máximo por cliente, níveis e par no item; os itens já cadastrados herdam o tipo e o
+   percentual do grupo, sem mexer em preço). O Prisma lê essas colunas em todo item de oferta.
 2. Preencher os usuários de `/estoque/promocoes/aprovar` e aplicar
    `sql/2026-11-17_ofertas_permissao.sql` (copia `/estoque/promocoes` de quem tem `/estoque/analise`).
 3. Preencher os usuários da gestão e aplicar `sql/2026-11-17_ofertas_ganhos_permissao.sql`

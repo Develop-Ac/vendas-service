@@ -68,7 +68,7 @@ export class OfertaController {
   }
 
   @Put(':id/premio')
-  @ApiOperation({ summary: 'Troca o prêmio da liquidação ou campanha; exige /estoque/promocoes/aprovar; recusa se já há venda faturada.' })
+  @ApiOperation({ summary: 'Troca o prêmio da campanha (liquidação e promoção recebem 400; o bônus da liquidação é do item); exige /estoque/promocoes/aprovar; recusa se já há venda faturada.' })
   alterarPremio(@Param('id', ParseIntPipe) id: number, @Body() dto: AlterarPremioDto, @Headers('x-user-id') usuario?: string) {
     return this.service.alterarPremio(usuario, id, dto);
   }

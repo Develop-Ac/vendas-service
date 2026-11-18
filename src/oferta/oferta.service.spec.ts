@@ -11,6 +11,8 @@ const item = (over: Record<string, unknown>) => ({
   id: 1, oferta_id: 7, pro_codigo: 100, descricao: 'X', preco_t2: null, preco_t5: null,
   inicio: '2026-11-17', fim: '2026-12-16', limite_qtd: null, status: 'RASCUNHO', encerrado_motivo: null,
   enviado_por: null, enviado_em: null, aprovado_por: null, aprovado_em: null, encerrado_por: null, encerrado_em: null,
+  tipo: 'PROMOCAO', premio_valor: null, limite_cliente: null, qtd_minima: 1, niveis: [],
+  par_pro_codigo: null, par_descricao: null, par_proporcao: null,
   ...over,
 });
 
@@ -32,8 +34,8 @@ function montar(perms: Parameters<typeof usuario>[0], tipo = 'PROMOCAO', extra: 
     detalhe: jest.fn().mockResolvedValue({
       id: 7, nome: 'G', tipo, premio_tipo: null, premio_valor: null, criado_por: 'Ana', criado_em: new Date(),
       itens: [
-        item({ id: 1, pro_codigo: 100, preco_t2: 160, preco_t5: 170, limite_qtd: 10, status: 'APROVADO', aprovado_por: 'Carlos' }),
-        item({ id: 2, pro_codigo: 200, preco_t2: 140, preco_t5: 150 }),
+        item({ id: 1, pro_codigo: 100, preco_t2: 160, preco_t5: 170, limite_qtd: 10, status: 'APROVADO', aprovado_por: 'Carlos', tipo }),
+        item({ id: 2, pro_codigo: 200, preco_t2: 140, preco_t5: 150, tipo }),
       ],
     }),
     vendidas: jest.fn().mockResolvedValue(new Map([[1, { qtd: 7, valor: 1120 }]])),
@@ -145,8 +147,8 @@ describe('OfertaService', () => {
       const { service, repo } = montar(gravar, 'PROMOCAO', { ...grupo([]), naoEncerradosDosProdutos: jest.fn().mockResolvedValue([outra]) });
       const r = await service.incluirItens('u1', 7, [{ pro_codigo: 100, preco_t2: 160, qtd: 12 }, { pro_codigo: 200 }, { pro_codigo: 300 }]);
       expect(repo.incluirItens).toHaveBeenCalledWith(7, [
-        { pro_codigo: 100, descricao: 'P100', preco_t2: 160, preco_t5: 176, inicio: '2026-11-17', fim: '2026-12-17', limite_qtd: 12 },
-        { pro_codigo: 200, descricao: 'P200', preco_t2: 150, preco_t5: null, inicio: '2026-11-17', fim: '2026-12-17', limite_qtd: null },
+        { pro_codigo: 100, descricao: 'P100', preco_t2: 160, preco_t5: 176, inicio: '2026-11-17', fim: '2026-12-17', limite_qtd: 12, tipo: 'PROMOCAO', premio_valor: null, limite_cliente: null, qtd_minima: 1, niveis: [], par_pro_codigo: null, par_descricao: null, par_proporcao: null },
+        { pro_codigo: 200, descricao: 'P200', preco_t2: 150, preco_t5: null, inicio: '2026-11-17', fim: '2026-12-17', limite_qtd: null, tipo: 'PROMOCAO', premio_valor: null, limite_cliente: null, qtd_minima: 1, niveis: [], par_pro_codigo: null, par_descricao: null, par_proporcao: null },
       ]);
       expect(r.recusados).toEqual([{ pro_codigo: 300, motivo: 'Produto 300 já está na oferta "Outra" de 01/11/2026 a 31/12/2026.' }]);
     });
@@ -156,8 +158,73 @@ describe('OfertaService', () => {
       await service.alterarItem('u1', 1, { preco_t2: 170 });
       expect(repo.alterarItens).toHaveBeenCalledTimes(1);
       expect(repo.alterarItens).toHaveBeenCalledWith([
-        { id: 1, dados: { preco_t2: 170, preco_t5: 170, inicio: '2026-11-17', fim: '2026-12-16', limite_qtd: 10 }, voltaPendente: true },
+        { id: 1, dados: { tipo: 'PROMOCAO', premio_valor: null, preco_t2: 170, preco_t5: 170, inicio: '2026-11-17', fim: '2026-12-16', limite_qtd: 10, limite_cliente: null, qtd_minima: 1, niveis: [], par_pro_codigo: null, par_descricao: null, par_proporcao: null }, voltaPendente: true },
       ]);
+    });
+
+    it('critérios 1 e 2: liquidação em grupo de promoção nasce com 5% e no mínimo custo × 1,30; a promoção do lado fica na régua', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-11-17T15:00:00Z'));
+      const { service, repo } = montar(gravar, 'PROMOCAO', grupo([]));
+      await service.incluirItens('u1', 7, [{ pro_codigo: 100, tipo: 'LIQUIDACAO' }, { pro_codigo: 200 }]);
+      expect(repo.incluirItens).toHaveBeenCalledWith(7, [
+        expect.objectContaining({ pro_codigo: 100, preco_t2: 130, preco_t5: 130, tipo: 'LIQUIDACAO', premio_valor: 0.05 }),
+        expect.objectContaining({ pro_codigo: 200, preco_t2: 150, tipo: 'PROMOCAO', premio_valor: null }),
+      ]);
+    });
+
+    it('grupo de campanha: item entra como campanha mesmo pedindo outro tipo e não troca de tipo', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2026-11-17T15:00:00Z'));
+      const { service, repo } = montar(gravar, 'CAMPANHA');
+      await service.incluirItens('u1', 7, [{ pro_codigo: 300, tipo: 'LIQUIDACAO' }]);
+      expect(repo.incluirItens).toHaveBeenCalledWith(7, [expect.objectContaining({ tipo: 'CAMPANHA', premio_valor: null })]);
+      await expect(service.alterarItem('u1', 1, { tipo: 'LIQUIDACAO' })).rejects.toBeInstanceOf(BadRequestException);
+      expect(repo.alterarItens).not.toHaveBeenCalled();
+    });
+
+    it('bônus em item que não é liquidação → 400', async () => {
+      const { service, repo } = montar(gravar);
+      await expect(service.alterarItem('u1', 2, { premio_valor: 0.08 })).rejects.toMatchObject({ response: { message: 'Só item de liquidação tem bônus.' } });
+      expect(repo.alterarItens).not.toHaveBeenCalled();
+    });
+
+    it('grupo misto: detalhe confere cada item pelo seu tipo (régua na promoção, custo × 1,30 na liquidação)', async () => {
+      const { service } = montar([{ tela: TELA_OFERTAS, visualizar: true }], 'PROMOCAO', grupo([
+        item({ id: 1, pro_codigo: 100, preco_t2: 140, tipo: 'LIQUIDACAO', premio_valor: 0.05 }),
+        item({ id: 2, pro_codigo: 100, preco_t2: 140 }),
+      ]));
+      const [l, p] = (await service.detalhe('u1', 7)).itens;
+      expect(l).toMatchObject({ minimo_t2: 130, minimo_t5: 130, erros: [] });
+      expect(p).toMatchObject({ minimo_t2: 150, erros: ['Preço da tabela 2 (140.00) abaixo do mínimo (150.00).'] });
+    });
+
+    it('critério 10: par inexistente ou inativo recusa; par válido copia a descrição com proporção 1; null remove', async () => {
+      const { service, repo, orc } = montar(gravar);
+      orc.produtosPorCodigo.mockImplementation((codigos: number[], tabela: string) =>
+        Promise.resolve(codigos.filter((c) => c !== 999).map((c) => ({ ...produto(c, tabela), inativo: c === 888 }))));
+      await expect(service.alterarItem('u1', 1, { par_pro_codigo: 999 })).rejects.toMatchObject({ response: { message: 'Produto par 999 não encontrado ou inativo no ERP.' } });
+      await expect(service.alterarItem('u1', 1, { par_pro_codigo: 888 })).rejects.toMatchObject({ response: { message: 'Produto par 888 não encontrado ou inativo no ERP.' } });
+      await expect(service.alterarItem('u1', 1, { par_pro_codigo: 100 })).rejects.toBeInstanceOf(BadRequestException);
+      expect(repo.alterarItens).not.toHaveBeenCalled();
+      await service.alterarItem('u1', 1, { par_pro_codigo: 200 });
+      expect(repo.alterarItens).toHaveBeenLastCalledWith([{ id: 1, dados: expect.objectContaining({ par_pro_codigo: 200, par_descricao: 'P200', par_proporcao: 1 }), voltaPendente: true }]);
+      repo.item.mockResolvedValueOnce(item({ id: 1, preco_t2: 160, preco_t5: 170, par_pro_codigo: 200, par_descricao: 'P200', par_proporcao: 2 }));
+      await service.alterarItem('u1', 1, { par_pro_codigo: null });
+      expect(repo.alterarItens).toHaveBeenLastCalledWith([{ id: 1, dados: expect.objectContaining({ par_pro_codigo: null, par_descricao: null, par_proporcao: null }), voltaPendente: false }]);
+    });
+
+    it('critério 10: detalhe com o saldo do par e par_sem_saldo', async () => {
+      const { service, orc } = montar([{ tela: TELA_OFERTAS, visualizar: true }], 'PROMOCAO', grupo([
+        item({ id: 1, pro_codigo: 100, preco_t2: 160, par_pro_codigo: 300, par_descricao: 'P300', par_proporcao: 1 }),
+        item({ id: 2, pro_codigo: 200, preco_t2: 160, par_pro_codigo: 100, par_descricao: 'P100', par_proporcao: 1 }),
+        item({ id: 3, pro_codigo: 200, preco_t2: 160 }),
+      ]));
+      orc.produtosPorCodigo.mockImplementation((codigos: number[], tabela: string) =>
+        Promise.resolve(codigos.map((c) => ({ ...produto(c, tabela), estoque_disponivel: c === 300 ? 0 : 50 }))));
+      const [a, b, c] = (await service.detalhe('u1', 7)).itens;
+      expect(orc.produtosPorCodigo).toHaveBeenCalledWith([100, 300, 200], '2');
+      expect(a).toMatchObject({ par_saldo: 0, par_sem_saldo: true });
+      expect(b).toMatchObject({ par_saldo: 50, par_sem_saldo: false });
+      expect(c).toMatchObject({ par_saldo: null, par_sem_saldo: false });
     });
 
     it('alterar com preço abaixo do mínimo recusa e não grava', async () => {
@@ -308,7 +375,7 @@ describe('OfertaService', () => {
   describe('ganhos do mês', () => {
     const grupo = (id: number, tipo: string, itemId: number, extra: Record<string, unknown>) => ({
       id, nome: `G${id}`, tipo, origem: null, fornecedor_codigo: null, fornecedor_nome: null, inicio: '2026-10-27', fim: '2026-11-10',
-      itens: [{ id: itemId, pro_codigo: 100 + itemId, descricao: `Item ${itemId}`, inicio: '2026-10-27', fim: '2026-11-10', status: 'ENCERRADO' }],
+      itens: [{ id: itemId, pro_codigo: 100 + itemId, descricao: `Item ${itemId}`, inicio: '2026-10-27', fim: '2026-11-10', status: 'ENCERRADO', tipo, premio_valor: tipo === 'LIQUIDACAO' ? 0.05 : null }],
       ...extra,
     });
     const linha = (nfs: number, pro: number, quantidade: number, liquido: number) => ({
@@ -374,7 +441,7 @@ describe('OfertaService', () => {
     const liquidacao = (extra: Record<string, unknown> = {}) => ({
       id: 7, nome: 'L', tipo: 'LIQUIDACAO', origem: null, fornecedor_codigo: null, fornecedor_nome: null,
       premio_tipo: 'PCT_CUSTO', premio_valor: 0.05, premio_faixas: [], criado_por: 'Ana', criado_em: new Date(),
-      itens: [item({ id: 1, status: 'APROVADO', descricao: 'Palheta' })],
+      itens: [item({ id: 1, status: 'APROVADO', descricao: 'Palheta', preco_t2: 160, preco_t5: 170, tipo: 'LIQUIDACAO', premio_valor: 0.05 }), item({ id: 2, pro_codigo: 200, preco_t2: 160, tipo: 'LIQUIDACAO', premio_valor: 0.05, status: 'APROVADO' })],
       ...extra,
     });
     const casado = {
@@ -382,6 +449,7 @@ describe('OfertaService', () => {
       porLinha: new Map([[0, [{ orcamento_id: 'o1', numero: 1, preco_unit_orc: 0, custo_ref: 100, quantidade: 2, oferta_item_id: 1 }]]]),
     };
     const gestao = [{ tela: TELA_OFERTAS, visualizar: true }, { tela: TELA_OFERTAS_APROVAR, editar: true }];
+    const monta = [{ tela: TELA_OFERTAS, editar: true }];
 
     function montarGrupo(perms: Parameters<typeof usuario>[0], extra: Record<string, unknown> = {}, grupo = liquidacao()) {
       const m = montar(perms, 'LIQUIDACAO', { detalhe: jest.fn().mockResolvedValue(grupo), repsComOferta: jest.fn().mockResolvedValue([10]), alterarPremio: jest.fn().mockResolvedValue(undefined), ...extra });
@@ -395,25 +463,44 @@ describe('OfertaService', () => {
       expect(repo.alterarPremio).not.toHaveBeenCalled();
     });
 
-    it('grupo com venda faturada → 400', async () => {
-      const { service, repo } = montarGrupo(gestao);
-      await expect(service.alterarPremio('u1', 7, { premio_valor: 0.08 })).rejects.toMatchObject({ response: { message: 'Prêmio não pode ser alterado: grupo já tem venda faturada.' } });
+    const campanha = () => liquidacao({ tipo: 'CAMPANHA', origem: 'EMPRESA', premio_tipo: 'VALOR_UNIDADE', premio_valor: 3, itens: [item({ id: 1, status: 'APROVADO', tipo: 'CAMPANHA', preco_t2: 160 })] });
+
+    it('campanha com venda faturada → 400', async () => {
+      const { service, repo } = montarGrupo(gestao, {}, campanha());
+      await expect(service.alterarPremio('u1', 7, { premio_valor: 4 })).rejects.toMatchObject({ response: { message: 'Prêmio não pode ser alterado: grupo já tem venda faturada.' } });
       expect(repo.alterarPremio).not.toHaveBeenCalled();
     });
 
-    it('liquidação de 5% para 8%: grava sem ler o casamento e os itens aprovados continuam APROVADO', async () => {
-      const { service, repo, orc } = montarGrupo(gestao, { vendidas: jest.fn().mockResolvedValue(new Map()) });
-      const d = await service.alterarPremio('u1', 7, { premio_valor: 0.08 });
-      expect(repo.alterarPremio).toHaveBeenCalledWith(7, { premio_tipo: 'PCT_CUSTO', premio_valor: 0.08, premio_faixas: [] });
+    it('critério 2: prêmio de grupo em liquidação → 400 (o bônus é do item)', async () => {
+      const { service, repo } = montarGrupo(gestao, { vendidas: jest.fn().mockResolvedValue(new Map()) });
+      await expect(service.alterarPremio('u1', 7, { premio_valor: 0.08 })).rejects.toMatchObject({ response: { message: 'Só campanha tem prêmio de grupo; o bônus da liquidação é do item.' } });
+      expect(repo.alterarPremio).not.toHaveBeenCalled();
+    });
+
+    it('critério 3: bônus de 5% para 8% sem venda faturada devolve só aquele item a PENDENTE, sem ler o casamento', async () => {
+      const { service, repo, orc } = montarGrupo(monta, { vendidas: jest.fn().mockResolvedValue(new Map()) });
+      await service.alterarItem('u1', 1, { premio_valor: 0.08 });
+      expect(repo.alterarItens).toHaveBeenCalledWith([{ id: 1, dados: expect.objectContaining({ tipo: 'LIQUIDACAO', premio_valor: 0.08 }), voltaPendente: true }]);
       expect((orc as unknown as Record<string, jest.Mock>).casamentoDoRep).not.toHaveBeenCalled();
+    });
+
+    it('critério 3: liquidação vira promoção, zera o bônus e volta a PENDENTE', async () => {
+      const { service, repo } = montarGrupo(monta, { vendidas: jest.fn().mockResolvedValue(new Map()) });
+      await service.alterarItem('u1', 1, { tipo: 'PROMOCAO' });
+      expect(repo.alterarItens).toHaveBeenCalledWith([{ id: 1, dados: expect.objectContaining({ tipo: 'PROMOCAO', premio_valor: null }), voltaPendente: true }]);
+    });
+
+    it('critério 3: troca de tipo ou de bônus com venda faturada no item → 400; preço segue livre', async () => {
+      const { service, repo } = montarGrupo(monta);
+      await expect(service.alterarItem('u1', 1, { premio_valor: 0.08 })).rejects.toMatchObject({ response: { message: 'Tipo e bônus não podem ser alterados: item já tem venda faturada.' } });
+      await expect(service.alterarItem('u1', 1, { tipo: 'PROMOCAO' })).rejects.toBeInstanceOf(BadRequestException);
       expect(repo.alterarItens).not.toHaveBeenCalled();
-      expect(repo.avancar).not.toHaveBeenCalled();
-      expect(d.itens[0].status).toBe('APROVADO');
+      await service.alterarItem('u1', 1, { preco_t2: 165 });
+      expect(repo.alterarItens).toHaveBeenCalledTimes(1);
     });
 
     it('faixas fora de ordem → 400; promoção → 400', async () => {
-      const campanha = liquidacao({ tipo: 'CAMPANHA', origem: 'EMPRESA', premio_tipo: 'VALOR_UNIDADE', premio_valor: 3 });
-      const { service, repo } = montarGrupo(gestao, { vendidas: jest.fn().mockResolvedValue(new Map()) }, campanha);
+      const { service, repo } = montarGrupo(gestao, { vendidas: jest.fn().mockResolvedValue(new Map()) }, campanha());
       const faixas = [{ a_partir_de: 50, valor: 4 }, { a_partir_de: 30, valor: 5 }];
       await expect(service.alterarPremio('u1', 7, { premio_valor: 3, premio_faixas: faixas })).rejects.toBeInstanceOf(BadRequestException);
       const promo = montarGrupo(gestao, {}, liquidacao({ tipo: 'PROMOCAO', premio_tipo: null, premio_valor: null }));

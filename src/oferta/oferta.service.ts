@@ -47,9 +47,14 @@ function minimos(tipo: TipoOferta, e: DadosErp | undefined, piso: number) {
   return { minimo_t2: e?.tabela_2 != null ? minimo(e.regua_t2) : null, minimo_t5: e?.tabela_5 != null ? minimo(e.regua_t5) : null };
 }
 
-const conferir = (tipo: TipoOferta, e: DadosErp | undefined, i: ItemEditavel, piso: number) =>
+const conferir = (tipo: TipoOferta, e: DadosErp | undefined, i: ItemEditavel & { pro_codigo: number }, piso: number) =>
   conferirItem({
     tipo,
+    pro_codigo: i.pro_codigo,
+    par_pro_codigo: i.par_pro_codigo,
+    par_proporcao: i.par_proporcao,
+    qtd_minima: i.qtd_minima,
+    niveis: i.niveis,
     custo: e?.custo ?? null,
     piso,
     t2: { preco: i.preco_t2, tabela: e?.tabela_2 ?? null, minimoRegua: e?.regua_t2 ?? null },
@@ -87,12 +92,12 @@ export class OfertaService {
   /* ------------------------------------------------------------- ERP */
 
   /**
-   * Por produto: custo, saldo, preço normal das tabelas 2 e 5 e o mínimo que a
+   * Por produto: custo, saldo, inativo, preço normal das tabelas 2 e 5 e o mínimo que a
    * régua dá em cada uma (avaliação sem promoção). Tabela 5 sem preço próprio
    * (o orçamento cairia no PRECO2) = a oferta não vale para ela.
    */
   async dadosErp(codigos: number[]) {
-    const saida = new Map<number, { descricao: string; custo: number | null; saldo: number; tabela_2: number | null; tabela_5: number | null; regua_t2: number | null; regua_t5: number | null }>();
+    const saida = new Map<number, { descricao: string; custo: number | null; saldo: number; inativo: boolean; tabela_2: number | null; tabela_5: number | null; regua_t2: number | null; regua_t5: number | null }>();
     if (!codigos.length) return saida;
     const [t2, t5] = await Promise.all([this.orcamento.produtosPorCodigo(codigos, '2'), this.orcamento.produtosPorCodigo(codigos, '5')]);
     const minimo = (p: (typeof t2)[number] | undefined) => (p ? (p.sem_promocao?.avaliacao ?? p.avaliacao).preco_minimo : null);
@@ -104,6 +109,7 @@ export class OfertaService {
         descricao: p.descricao,
         custo: p.custo,
         saldo: Number(p.estoque_disponivel ?? 0),
+        inativo: !!p.inativo,
         tabela_2: Number(p.preco_tabela_2) > 0 ? Number(p.preco_tabela_2) : null,
         tabela_5: tem5 ? Number(p.preco_tabela_5) : null,
         regua_t2: minimo(p),
@@ -223,11 +229,12 @@ export class OfertaService {
         recusados.push({ pro_codigo: it.pro_codigo, motivo: 'Produto não encontrado no ERP.' });
         continue;
       }
-      const { minimo_t2, minimo_t5 } = minimos(o.tipo, e, piso);
+      const tipo: TipoOferta = o.tipo === 'CAMPANHA' ? 'CAMPANHA' : (it.tipo ?? o.tipo);
+      const { minimo_t2, minimo_t5 } = minimos(tipo, e, piso);
       const preco_t2 = it.preco_t2 ?? abaixoDa(minimo_t2, e.tabela_2);
       const preco_t5 = abaixoDa(it.preco_t5 ?? (it.preco_t2 != null ? precoT5Sugerido(it.preco_t2, e.tabela_2 ?? 0, e.tabela_5, minimo_t5) : minimo_t5), e.tabela_5);
-      const novo = { pro_codigo: it.pro_codigo, descricao: e.descricao, preco_t2, preco_t5, inicio, fim, limite_qtd: it.qtd ?? null };
-      const erros = conferir(o.tipo, e, novo, piso);
+      const novo = { pro_codigo: it.pro_codigo, descricao: e.descricao, preco_t2, preco_t5, inicio, fim, limite_qtd: it.qtd ?? null, tipo, premio_valor: tipo === 'LIQUIDACAO' ? 0.05 : null, limite_cliente: null, qtd_minima: 1, niveis: [], par_pro_codigo: null, par_descricao: null, par_proporcao: null };
+      const erros = conferir(tipo, e, novo, piso);
       const choque = conflito(novo, outros);
       if (choque) erros.push(choque);
       if (erros.length) {
@@ -270,20 +277,52 @@ export class OfertaService {
     return { i, o };
   }
 
-  /** Preço, datas ou limite; aprovado que muda algo disso volta a PENDENTE (os outros itens do grupo ficam como estão). */
+  /**
+   * Preço, datas, limite, tipo ou bônus da liquidação; aprovado que muda algo disso volta
+   * a PENDENTE (os outros itens do grupo ficam como estão). Grupo de campanha não troca o
+   * tipo; virar liquidação sem bônus = 5%, sair dela zera o bônus. Tipo ou bônus não mudam
+   * depois de venda faturada no item. O par (agarradinho) tem de existir e estar ativo no
+   * ERP; a descrição é copiada e a proporção nasce 1; null remove o par.
+   */
   async alterarItem(userId: string | undefined, itemId: number, dto: AlterarItemOfertaDto) {
     const u = await this.exigirTela(userId, TELA_OFERTAS, 'gravar');
     const { i, o } = await this.itemComGrupo(itemId);
     if (i.status === 'ENCERRADO') throw new BadRequestException('Item encerrado não pode ser alterado.');
+    if (dto.tipo && o.tipo === 'CAMPANHA') throw new BadRequestException('Item de campanha é sempre campanha.');
+    const tipo: TipoOferta = dto.tipo ?? i.tipo;
+    if (dto.premio_valor !== undefined && tipo !== 'LIQUIDACAO') throw new BadRequestException('Só item de liquidação tem bônus.');
+    const premio_valor = tipo !== 'LIQUIDACAO' ? null : (dto.premio_valor ?? (i.tipo === 'LIQUIDACAO' ? i.premio_valor : null) ?? 0.05);
+    if (tipo !== i.tipo || Number(premio_valor) !== Number(i.premio_valor)) {
+      // nada vendido em orçamento fechado = nada faturado; só então lê o casamento com as NFs
+      const vendidas = await this.repo.vendidas([i.id]);
+      if ([...vendidas.values()].some((v) => v.qtd > 0) && (await this.vendasCasadas([{ id: o.id, itens: [{ id: i.id }] }])).some((v) => v.quantidade > 0)) {
+        throw new BadRequestException('Tipo e bônus não podem ser alterados: item já tem venda faturada.');
+      }
+    }
+    const par = dto.par_pro_codigo !== undefined ? dto.par_pro_codigo : i.par_pro_codigo;
+    let par_descricao = par == null ? null : i.par_descricao;
+    if (par != null && dto.par_pro_codigo != null) {
+      const e = (await this.dadosErp([par])).get(par);
+      if (!e || e.inativo) throw new BadRequestException(`Produto par ${par} não encontrado ou inativo no ERP.`);
+      par_descricao = e.descricao;
+    }
     const depois: ItemEditavel = {
+      tipo,
+      premio_valor,
       preco_t2: dto.preco_t2 !== undefined ? dto.preco_t2 : i.preco_t2,
       preco_t5: dto.preco_t5 !== undefined ? dto.preco_t5 : i.preco_t5,
       inicio: dto.inicio ?? i.inicio,
       fim: dto.fim ?? i.fim,
       limite_qtd: dto.limite_qtd !== undefined ? dto.limite_qtd : i.limite_qtd,
+      limite_cliente: dto.limite_cliente !== undefined ? dto.limite_cliente : i.limite_cliente,
+      qtd_minima: dto.qtd_minima ?? i.qtd_minima,
+      niveis: dto.niveis ? dto.niveis.map((n) => ({ a_partir_de: n.a_partir_de, preco_t2: n.preco_t2 ?? null, preco_t5: n.preco_t5 ?? null })) : i.niveis,
+      par_pro_codigo: par,
+      par_descricao,
+      par_proporcao: par == null ? null : (dto.par_proporcao ?? i.par_proporcao ?? 1),
     };
     const [erp, existentes] = await Promise.all([this.dadosErp([i.pro_codigo]), this.repo.naoEncerradosDosProdutos([i.pro_codigo])]);
-    const erros = conferir(o.tipo, erp.get(i.pro_codigo), depois, pisoOferta());
+    const erros = conferir(tipo, erp.get(i.pro_codigo), { ...depois, pro_codigo: i.pro_codigo }, pisoOferta());
     const choque = conflito({ id: i.id, pro_codigo: i.pro_codigo, inicio: depois.inicio, fim: depois.fim }, existentes);
     if (choque) erros.push(choque);
     if (erros.length) throw new BadRequestException(erros);
@@ -341,7 +380,7 @@ export class OfertaService {
     const piso = pisoOferta();
     const ok: number[] = [];
     for (const i of alvos) {
-      const erros = conferir(o.tipo, erp.get(i.pro_codigo), i, piso);
+      const erros = conferir(i.tipo, erp.get(i.pro_codigo), i, piso);
       if (erros.length) recusados.push({ item_id: i.id, pro_codigo: i.pro_codigo, motivo: erros.join(' ') });
       else ok.push(i.id);
     }
@@ -403,20 +442,21 @@ export class OfertaService {
     }
   }
 
-  /** Grupo com os itens: dados do ERP, mínimos por tabela, vendidas, restam e as conferências. */
+  /** Grupo com os itens: dados do ERP, mínimos por tabela, vendidas, restam, saldo do par e as conferências. */
   private async montarDetalhe(id: number, u: { pode_aprovar: boolean; pode_ver_ganhos: boolean }) {
     const o = await this.repo.detalhe(id);
     if (!o) throw new NotFoundException(`Oferta ${id} não encontrada.`);
     const [erp, vendidas] = await Promise.all([
-      this.dadosErp([...new Set(o.itens.map((i) => i.pro_codigo))]),
+      this.dadosErp([...new Set(o.itens.flatMap((i) => (i.par_pro_codigo != null ? [i.pro_codigo, i.par_pro_codigo] : [i.pro_codigo])))]),
       this.repo.vendidas(o.itens.map((i) => i.id)),
     ]);
     const piso = pisoOferta();
     const itens = o.itens.map((i) => {
       const e = erp.get(i.pro_codigo);
-      const { minimo_t2, minimo_t5 } = minimos(o.tipo, e, piso);
+      const { minimo_t2, minimo_t5 } = minimos(i.tipo, e, piso);
       const vendidasQtd = vendidas.get(i.id)?.qtd ?? 0;
-      const erros = i.status === 'ENCERRADO' ? [] : conferir(o.tipo, e, i, piso);
+      const par_saldo = i.par_pro_codigo != null ? (erp.get(i.par_pro_codigo)?.saldo ?? null) : null;
+      const erros = i.status === 'ENCERRADO' ? [] : conferir(i.tipo, e, i, piso);
       return {
         ...i,
         custo: e?.custo ?? null,
@@ -427,6 +467,9 @@ export class OfertaService {
         minimo_t5,
         vendidas: vendidasQtd,
         restam: restam(i.limite_qtd, vendidasQtd),
+        /** par sem saldo: a oferta não vale no orçamento até o par voltar (não encerra) */
+        par_saldo,
+        par_sem_saldo: i.par_pro_codigo != null && !(Number(par_saldo) > 0),
         erros,
       };
     });
@@ -451,8 +494,8 @@ export class OfertaService {
 
   /**
    * Resultado do grupo: faturado por item (venda casada com NF) e, para quem tem
-   * /estoque/promocoes/ganhos, o ganho de cada vendedor; promoção não tem prêmio
-   * (vendedores = null). O fim do grupo é o maior fim dos itens fora do rascunho.
+   * /estoque/promocoes/ganhos, o ganho de cada vendedor; grupo que não é campanha e não
+   * tem item de liquidação não tem prêmio (vendedores = null). O fim do grupo é o maior fim dos itens fora do rascunho.
    */
   async resultado(userId: string | undefined, id: number) {
     const u = await this.exigirTela(userId, TELA_OFERTAS, 'visualizar');
@@ -463,20 +506,20 @@ export class OfertaService {
     const r = resultadoDoGrupo(grupo, await this.vendasCasadas([o]), hojeYmd());
     const descricao = new Map(o.itens.map((i) => [i.id, i.descricao]));
     const faturado = r.faturado.map((f) => ({ ...f, descricao: descricao.get(f.oferta_item_id) ?? null }));
-    if (!u.pode_ver_ganhos || o.tipo === 'PROMOCAO') return { faturado, vendedores: null };
+    if (!u.pode_ver_ganhos || (o.tipo !== 'CAMPANHA' && !o.itens.some((i) => i.tipo === 'LIQUIDACAO'))) return { faturado, vendedores: null };
     const nomes = await this.orcamento.nomesDosVendedores();
     return { faturado, vendedores: r.vendedores.map((v) => ({ ...v, rep_nome: nomes.get(v.rep_codigo) ?? null })) };
   }
 
   /**
-   * Troca o prêmio do grupo (só a gestão). Liquidação só muda o percentual (PCT_CUSTO);
-   * campanha mantém a origem. Recusa se o grupo já tem venda faturada. Não mexe nos itens.
+   * Troca o prêmio da campanha (só a gestão); o bônus da liquidação é do item (alterarItem).
+   * Campanha mantém a origem. Recusa se o grupo já tem venda faturada. Não mexe nos itens.
    */
   async alterarPremio(userId: string | undefined, id: number, dto: AlterarPremioDto) {
     const u = await this.exigirTela(userId, TELA_OFERTAS_APROVAR, 'gravar');
     const o = await this.repo.detalhe(id);
     if (!o) throw new NotFoundException(`Oferta ${id} não encontrada.`);
-    if (o.tipo === 'PROMOCAO') throw new BadRequestException('Promoção não tem prêmio.');
+    if (o.tipo !== 'CAMPANHA') throw new BadRequestException('Só campanha tem prêmio de grupo; o bônus da liquidação é do item.');
     const premio = { premio_tipo: dto.premio_tipo ?? o.premio_tipo ?? '', premio_valor: dto.premio_valor, premio_faixas: dto.premio_faixas ?? o.premio_faixas ?? [] };
     const erros = conferirPremio({ tipo: o.tipo, origem: o.origem, fornecedor_codigo: o.fornecedor_codigo, premio_tipo: premio.premio_tipo, premio_valor: premio.premio_valor, faixas: premio.premio_faixas });
     if (erros.length) throw new BadRequestException(erros);

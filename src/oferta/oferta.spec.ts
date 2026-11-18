@@ -8,7 +8,13 @@ import {
   foraDaBolsa,
   ItemExistente,
   minimoOferta,
+  niveisDaTabela,
+  resolverCondicoes,
+  NivelOferta,
+  precoNoNivel,
   montarPorMarca,
+  msgPar,
+  msgTeto,
   motivoEncerramento,
   precoDaOferta,
   precoT5Sugerido,
@@ -25,7 +31,20 @@ const base = {
   t5: { preco: null, tabela: 220, minimoRegua: 160 },
   inicio: '2026-11-17',
   fim: '2026-12-16',
+  qtd_minima: 1,
+  niveis: [] as NivelOferta[],
+  pro_codigo: 1,
+  par_pro_codigo: null as number | null,
+  par_proporcao: null as number | null,
 };
+
+describe('agarradinho: cadastro do par (critério 10)', () => {
+  it('par igual ao item e proporção 0 recusam; par válido passa', () => {
+    expect(conferirItem({ ...base, par_pro_codigo: 1, par_proporcao: 1 })).toEqual(['O par não pode ser o próprio produto.']);
+    expect(conferirItem({ ...base, par_pro_codigo: 2, par_proporcao: 0 })).toEqual(['Proporção do par deve ser maior que zero.']);
+    expect(conferirItem({ ...base, par_pro_codigo: 2, par_proporcao: 2 })).toEqual([]);
+  });
+});
 
 describe('tipo e mínimo', () => {
   it('liquidação e campanha ficam fora da bolsa; promoção não', () => {
@@ -123,13 +142,23 @@ describe('vigência e limite', () => {
 });
 
 describe('reaprova', () => {
-  const a = { preco_t2: 130, preco_t5: 140, inicio: '2026-11-17', fim: '2026-12-16', limite_qtd: 10 };
-  it('mudou preço, datas ou limite', () => {
+  const a = { preco_t2: 130, preco_t5: 140, inicio: '2026-11-17', fim: '2026-12-16', limite_qtd: 10, tipo: 'LIQUIDACAO' as const, premio_valor: 0.05, limite_cliente: null, qtd_minima: 1, niveis: [] as NivelOferta[], par_pro_codigo: null as number | null, par_descricao: null, par_proporcao: null as number | null };
+  it('mudou preço, datas, limite, tipo ou bônus', () => {
+    expect(reaprova(a, { ...a, tipo: 'PROMOCAO' })).toBe(true);
+    expect(reaprova(a, { ...a, premio_valor: 0.08 })).toBe(true);
     expect(reaprova(a, { ...a })).toBe(false);
     expect(reaprova(a, { ...a, preco_t2: 131 })).toBe(true);
     expect(reaprova(a, { ...a, preco_t5: null })).toBe(true);
     expect(reaprova(a, { ...a, fim: '2026-12-20' })).toBe(true);
     expect(reaprova(a, { ...a, limite_qtd: null })).toBe(true);
+    expect(reaprova(a, { ...a, limite_cliente: 10 })).toBe(true);
+    expect(reaprova(a, { ...a, qtd_minima: 6 })).toBe(true);
+    expect(reaprova(a, { ...a, niveis: [{ a_partir_de: 6, preco_t2: 125, preco_t5: null }] })).toBe(true);
+    expect(reaprova({ ...a, niveis: [{ a_partir_de: 6, preco_t2: 125, preco_t5: null }] }, { ...a, niveis: [{ a_partir_de: 6, preco_t2: 125, preco_t5: null }] })).toBe(false);
+    // jsonb devolve as chaves em outra ordem: mesmo nível não reaprova
+    expect(reaprova({ ...a, niveis: [{ preco_t2: 85, preco_t5: 88, a_partir_de: 6 }] }, { ...a, niveis: [{ a_partir_de: 6, preco_t2: 85, preco_t5: 88 }] })).toBe(false);
+    expect(reaprova(a, { ...a, par_pro_codigo: 2, par_proporcao: 1 })).toBe(true);
+    expect(reaprova({ ...a, par_pro_codigo: 2, par_proporcao: 1 }, { ...a, par_pro_codigo: 2, par_proporcao: 2 })).toBe(true);
   });
 });
 
@@ -151,7 +180,7 @@ describe('comOfertas (orçamento lê as ofertas)', () => {
   const hoje = '2026-11-20';
   const oferta = (o: Partial<OfertaParaOrcamento> = {}): OfertaParaOrcamento => ({
     id: 7, pro_codigo: 1, preco_t2: 80, preco_t5: 90, inicio: '2026-11-17', fim: '2026-12-16',
-    limite_qtd: null, status: 'APROVADO', tipo: 'LIQUIDACAO', grupo: 'Liquida verão', vendidas: 0, premio: null, ...o,
+    limite_qtd: null, status: 'APROVADO', tipo: 'LIQUIDACAO', grupo: 'Liquida verão', vendidas: 0, limite_cliente: null, qtd_minima: 1, niveis: [], par_pro_codigo: null, par_descricao: null, par_proporcao: null, vendidas_cliente: 0, premio: null, ...o,
   });
   const prod = (o: Record<string, number> = {}) => ({ PRO_CODIGO: 1, ESTOQUE_DISPONIVEL: 5, PRECO2: 100, PRECO5: 110, PRECO_VENDA: 150, ...o });
   const rodar = (ofertas: OfertaParaOrcamento[], tabela = '2', p = prod(), promos = new Map()) =>
@@ -170,6 +199,26 @@ describe('comOfertas (orçamento lê as ofertas)', () => {
     expect(rodar([oferta()], '2', prod({ ESTOQUE_DISPONIVEL: 0 }))).toBeNull();
     expect(rodar([oferta({ limite_qtd: 10, vendidas: 10 })])).toBeNull();
     expect(rodar([oferta({ limite_qtd: 10, vendidas: 7 })])?.oferta?.restam).toBe(3);
+  });
+
+  it('máximo por cliente: leva o teto e o que resta para o cliente', () => {
+    expect(rodar([oferta({ limite_cliente: 10, vendidas_cliente: 6 })])?.oferta).toMatchObject({ limite_cliente: 10, restam_cliente: 4 });
+    expect(rodar([oferta()])?.oferta).toMatchObject({ limite_cliente: null, restam_cliente: null });
+  });
+
+  it('preço progressivo: leva qtd_minima e os níveis da tabela do cliente', () => {
+    const niveis = [{ a_partir_de: 6, preco_t2: 75, preco_t5: null }];
+    expect(rodar([oferta({ qtd_minima: 2, niveis })])?.oferta).toMatchObject({ qtd_minima: 2, niveis: [{ a_partir_de: 6, preco: 75 }] });
+    expect(rodar([oferta({ qtd_minima: 2, niveis })], '5')?.oferta).toMatchObject({ qtd_minima: 2, niveis: [] });
+  });
+
+  it('critério 10: par sem saldo não entra (sem encerrar); com saldo leva o par', () => {
+    const casada = oferta({ par_pro_codigo: 2, par_descricao: 'Cola', par_proporcao: 2 });
+    expect(comOfertas(new Map(), [casada], [prod()], '2', hoje).get(1)).toBeUndefined();
+    expect(comOfertas(new Map(), [casada], [prod()], '2', hoje, new Map([[2, 0]])).get(1)).toBeUndefined();
+    expect(comOfertas(new Map(), [casada], [prod()], '2', hoje, new Map([[2, 3]])).get(1)?.oferta?.par).toEqual({ pro_codigo: 2, descricao: 'Cola', proporcao: 2 });
+    expect(motivoEncerramento(casada, hoje, 0, 5)).toBeNull();
+    expect(rodar([oferta()])?.oferta?.par).toBeNull();
   });
 
   it('critério 14: produto já no mapa pelo portal fica com o portal', () => {
@@ -196,6 +245,20 @@ describe('comOfertas (orçamento lê as ofertas)', () => {
     expect(promo).toBeDefined();
     expect(promo).not.toHaveProperty('ganho_unit');
     expect(promo).not.toHaveProperty('proxima_faixa');
+  });
+
+  it('critérios 1 e 2: grupo misto — cada item sai com o seu tipo e o bônus do seu percentual', () => {
+    const ofertas = [
+      oferta({ id: 7, pro_codigo: 1, tipo: 'PROMOCAO' }),
+      oferta({ id: 8, pro_codigo: 2, premio: { tipo: 'PCT_CUSTO', valor: 0.08, faixas: [] } }),
+      oferta({ id: 9, pro_codigo: 3, premio: { tipo: 'PCT_CUSTO', valor: 0.05, faixas: [] } }),
+    ];
+    const ps = [1, 2, 3].map((c) => prod({ PRO_CODIGO: c, PRECO_CUSTO: 180 }));
+    const r = comOfertas(new Map(), ofertas, ps, '2', hoje);
+    expect(r.get(1)?.oferta?.tipo).toBe('PROMOCAO');
+    expect(r.get(1)?.oferta).not.toHaveProperty('ganho_unit');
+    expect(r.get(2)?.oferta).toMatchObject({ tipo: 'LIQUIDACAO', ganho_unit: 14.4 });
+    expect(r.get(3)?.oferta).toMatchObject({ tipo: 'LIQUIDACAO', ganho_unit: 9 });
   });
 });
 
@@ -240,5 +303,102 @@ describe('montarPorMarca', () => {
       { pro_codigo: 4, descricao: 'A', motivo: 'Produto sem custo no ERP.' },
     ]);
     expect(r.incluidos.map((i) => [i.pro_codigo, i.preco_t5])).toEqual([[5, null], [6, null]]);
+  });
+});
+
+describe('máximo por cliente (critérios 4 e 5)', () => {
+  // teto 10; o cliente A já fechou 6, o cliente B nenhum; item 6 sem teto
+  const teto = new Map<number, number | null>([[5, 10], [6, null]]);
+  const doCliente = (fechadas: number) => new Map<number, number | null>([[5, restam(10, fechadas)], [6, null]]);
+  const linha = (quantidade: number, extra = {}) => ({ item: 1, descricao: 'Palheta', quantidade, oferta_item_id: 5, ...extra });
+  const recusa = (linhas: ReturnType<typeof linha>[], fechadas: number) => excedeLimite(linhas, doCliente(fechadas), msgTeto(teto));
+
+  it('cliente com 6 fechadas: 5 recusa dizendo restam 4; 4 passa', () => {
+    expect(recusa([linha(5)], 6)).toEqual(['Item 1 (Palheta): máximo de 10 por cliente na oferta — restam 4 para este cliente; reduza a quantidade ou venda fora da oferta.']);
+    expect(recusa([linha(4)], 6)).toEqual([]);
+  });
+
+  it('outro cliente (0 fechadas) passa; item sem teto passa; linha fora da oferta não conta', () => {
+    expect(recusa([linha(5)], 0)).toEqual([]);
+    expect(recusa([linha(99, { oferta_item_id: 6 })], 6)).toEqual([]);
+    expect(recusa([linha(4), linha(9, { item: 2, fora_promocao: true })], 6)).toEqual([]);
+  });
+});
+
+describe('preço progressivo', () => {
+  const niveis = [{ a_partir_de: 6, preco: 85 }, { a_partir_de: 12, preco: 80 }];
+  it('critério 6: tabela 100, 90 a partir de 1, 85 de 6, 80 de 12', () => {
+    expect(precoNoNivel(90, 1, niveis, 5)).toBe(90);
+    expect(precoNoNivel(90, 1, niveis, 6)).toBe(85);
+    expect(precoNoNivel(90, 1, niveis, 12)).toBe(80);
+    expect(precoNoNivel(90, 1, niveis, 30)).toBe(80);
+  });
+  it('critério 7: primeiro nível em 6, 5 un fica fora da oferta', () => {
+    expect(precoNoNivel(90, 6, [], 5)).toBeNull();
+    expect(precoNoNivel(90, 6, [], 6)).toBe(90);
+  });
+  it('níveis da tabela do cliente, só os com preço', () => {
+    const item = { niveis: [{ a_partir_de: 6, preco_t2: 85, preco_t5: null }, { a_partir_de: 12, preco_t2: 80, preco_t5: 95 }] };
+    expect(niveisDaTabela(item, 'PRECO2', 100)).toEqual([{ a_partir_de: 6, preco: 85 }, { a_partir_de: 12, preco: 80 }]);
+    expect(niveisDaTabela(item, 'PRECO5', 110)).toEqual([{ a_partir_de: 12, preco: 95 }]);
+    expect(niveisDaTabela(item, 'PRECO1', 100)).toEqual([]);
+  });
+  describe('critério 8: cadastro dos níveis', () => {
+    const c = { ...base, t2: { ...base.t2, preco: 150 }, niveis: [{ a_partir_de: 6, preco_t2: 140, preco_t5: null }, { a_partir_de: 12, preco_t2: 135, preco_t5: null }] };
+    it('níveis válidos passam', () => expect(conferirItem(c)).toEqual([]));
+    it('quantidade não crescente recusa', () => {
+      expect(conferirItem({ ...c, niveis: [c.niveis[0], { ...c.niveis[1], a_partir_de: 6 }] })[0]).toContain('maior que a do nível anterior');
+      expect(conferirItem({ ...c, qtd_minima: 6 })[0]).toContain('Nível 2: a quantidade (6)');
+    });
+    it('preço maior ou igual ao anterior recusa', () => {
+      expect(conferirItem({ ...c, niveis: [c.niveis[0], { ...c.niveis[1], preco_t2: 140 }] })[0]).toContain('menor que o do nível anterior (140.00)');
+      expect(conferirItem({ ...c, niveis: [{ ...c.niveis[0], preco_t2: 150 }] })[0]).toContain('menor que o do nível anterior (150.00)');
+    });
+    it('preço abaixo do mínimo recusa', () => {
+      expect(conferirItem({ ...c, niveis: [{ ...c.niveis[0], preco_t2: 129.99 }] })[0]).toContain('abaixo do mínimo (130.00)');
+    });
+    it('nível sem preço, preço sem base, mais de 2 níveis e quantidade mínima < 1', () => {
+      expect(conferirItem({ ...c, niveis: [{ ...c.niveis[0], preco_t2: null }] })).toContain('Nível 2 sem preço na tabela 2.');
+      expect(conferirItem({ ...c, niveis: [{ ...c.niveis[0], preco_t5: 140 }] })[0]).toContain('tabela 5, que não tem preço');
+      expect(conferirItem({ ...c, niveis: [...c.niveis, { a_partir_de: 20, preco_t2: 131, preco_t5: null }] })).toContain('No máximo 2 níveis além do primeiro.');
+      expect(conferirItem({ ...c, qtd_minima: 0 })).toContain('Quantidade do primeiro nível deve ser ao menos 1.');
+    });
+  });
+});
+
+describe('resolverCondicoes (preço do item no orçamento)', () => {
+  const cond = (o = {}) => ({ item_id: 7, preco: 90, qtd_minima: 1, niveis: [{ a_partir_de: 6, preco: 85 }, { a_partir_de: 12, preco: 80 }], par: null, ...o });
+  it('critério 6: duas linhas do mesmo item com 4 e 8 saem a 80', () => {
+    const r = resolverCondicoes([{ pro_codigo: 1, quantidade: 4, oferta_item_id: 7 }, { pro_codigo: 1, quantidade: 8, oferta_item_id: 7 }], [cond()]);
+    expect(r.get(7)).toEqual({ preco: 80, liberado: null });
+  });
+  it('critério 7: primeiro nível em 6 com 5 un fica fora da oferta', () => {
+    expect(resolverCondicoes([{ pro_codigo: 1, quantidade: 5, oferta_item_id: 7 }], [cond({ qtd_minima: 6, niveis: [] })]).get(7)?.preco).toBeNull();
+  });
+  it('linha pedida fora (sem oferta_item_id) não soma', () => {
+    const r = resolverCondicoes([{ pro_codigo: 1, quantidade: 5, oferta_item_id: 7 }, { pro_codigo: 1, quantidade: 10, oferta_item_id: null }], [cond()]);
+    expect(r.get(7)?.preco).toBe(90);
+  });
+});
+
+describe('agarradinho no orçamento (critério 9)', () => {
+  const cond = (item_id: number) => ({ item_id, preco: 90, qtd_minima: 1, niveis: [], par: { pro_codigo: 50, proporcao: 2 } });
+  const par = { pro_codigo: 50, quantidade: 3, oferta_item_id: null };
+  it('1 para 2 com 3 do par e 6 do item fica na oferta', () => {
+    const r = resolverCondicoes([par, { pro_codigo: 1, quantidade: 6, oferta_item_id: 7 }], [cond(7)]);
+    expect(r.get(7)).toEqual({ preco: 90, liberado: 6 });
+    expect(excedeLimite([{ item: 2, descricao: 'X', quantidade: 6, oferta_item_id: 7 }], new Map([[7, 6]]))).toEqual([]);
+  });
+  it('7 do item recusa dizendo que o par libera 6', () => {
+    const liberado = resolverCondicoes([par, { pro_codigo: 1, quantidade: 7, oferta_item_id: 7 }], [cond(7)]).get(7)!.liberado;
+    const erros = excedeLimite([{ item: 2, descricao: 'X', quantidade: 7, oferta_item_id: 7 }], new Map([[7, liberado]]), msgPar(new Map([[7, { pro_codigo: 50, descricao: 'PAR' }]])));
+    expect(erros).toEqual(['Item 2 (X): o par 50 (PAR) libera 6 unidades na oferta — inclua mais do par ou reduza a quantidade.']);
+  });
+  it('sem o par a linha sai da oferta', () => {
+    expect(resolverCondicoes([{ pro_codigo: 1, quantidade: 6, oferta_item_id: 7 }], [cond(7)]).get(7)).toEqual({ preco: null, liberado: 0 });
+  });
+  it('duas ofertas com o mesmo par são liberadas pelas mesmas unidades', () => {
+    const r = resolverCondicoes([par, { pro_codigo: 1, quantidade: 6, oferta_item_id: 7 }, { pro_codigo: 2, quantidade: 6, oferta_item_id: 8 }], [cond(7), cond(8)]);
+    expect([r.get(7)!.liberado, r.get(8)!.liberado]).toEqual([6, 6]);
   });
 });

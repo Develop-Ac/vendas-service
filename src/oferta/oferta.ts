@@ -40,8 +40,19 @@ export interface PrecoTabelaOferta {
   minimoRegua: number | null;
 }
 
+/** Nível adicional do preço progressivo: a partir dessa quantidade, o preço de cada tabela. */
+export type NivelOferta = { a_partir_de: number; preco_t2: number | null; preco_t5: number | null };
+
 export interface ConferenciaOferta {
   tipo: TipoOferta;
+  pro_codigo: number;
+  /** agarradinho: produto par (null = sem par) e unidades liberadas por unidade do par */
+  par_pro_codigo: number | null;
+  par_proporcao: number | null;
+  /** quantidade do primeiro nível (preço = o da tabela) */
+  qtd_minima: number;
+  /** até 2 níveis adicionais, quantidade crescente e preço decrescente */
+  niveis: NivelOferta[];
   custo: number | null;
   piso: number;
   t2: PrecoTabelaOferta;
@@ -66,6 +77,33 @@ export function conferirItem(c: ConferenciaOferta): string[] {
     if (preco >= tabela) erros.push(`Preço da tabela ${n} (${preco.toFixed(2)}) deve ser menor que a tabela (${tabela.toFixed(2)}).`);
     const minimo = custo > 0 ? minimoOferta(c.tipo, custo, t.minimoRegua, c.piso) : null;
     if (minimo != null && preco < minimo) erros.push(`Preço da tabela ${n} (${preco.toFixed(2)}) abaixo do mínimo (${minimo.toFixed(2)}).`);
+  }
+  const qtdMinima = Number(c.qtd_minima);
+  if (!(qtdMinima >= 1)) erros.push('Quantidade do primeiro nível deve ser ao menos 1.');
+  if (c.niveis.length > 2) erros.push('No máximo 2 níveis além do primeiro.');
+  c.niveis.forEach((nv, k) => {
+    const anterior = k ? Number(c.niveis[k - 1].a_partir_de) : qtdMinima;
+    if (!(Number(nv.a_partir_de) > anterior)) erros.push(`Nível ${k + 2}: a quantidade (${nv.a_partir_de}) deve ser maior que a do nível anterior (${anterior}).`);
+  });
+  for (const [n, t] of tabelas) {
+    const campo = n === '2' ? 'preco_t2' : 'preco_t5';
+    let anterior = t.preco != null ? Number(t.preco) : null;
+    const minimo = custo > 0 && anterior != null ? minimoOferta(c.tipo, custo, t.minimoRegua, c.piso) : null;
+    c.niveis.forEach((nv, k) => {
+      const preco = nv[campo] == null ? null : Number(nv[campo]);
+      if (anterior == null) {
+        if (t.preco == null && preco != null) erros.push(`Nível ${k + 2} com preço na tabela ${n}, que não tem preço na oferta.`);
+        return;
+      }
+      if (preco == null) erros.push(`Nível ${k + 2} sem preço na tabela ${n}.`);
+      else if (preco >= anterior) erros.push(`Nível ${k + 2}: preço da tabela ${n} (${preco.toFixed(2)}) deve ser menor que o do nível anterior (${anterior.toFixed(2)}).`);
+      else if (minimo != null && preco < minimo) erros.push(`Nível ${k + 2}: preço da tabela ${n} (${preco.toFixed(2)}) abaixo do mínimo (${minimo.toFixed(2)}).`);
+      if (preco != null) anterior = preco;
+    });
+  }
+  if (c.par_pro_codigo != null) {
+    if (c.par_pro_codigo === c.pro_codigo) erros.push('O par não pode ser o próprio produto.');
+    if (!(Number(c.par_proporcao) > 0)) erros.push('Proporção do par deve ser maior que zero.');
   }
   if (c.inicio > c.fim) erros.push('Início depois do fim.');
   return erros;
@@ -153,7 +191,28 @@ export interface LinhaComOferta {
  * fora não contam) e recusa a linha em que a soma passa do que resta. Item sem
  * limite (restam null ou ausente no mapa) passa sempre.
  */
-export function excedeLimite(linhas: LinhaComOferta[], restamPorItem: Map<number, number | null>): string[] {
+export const msgLimite = (l: LinhaComOferta, r: number) =>
+  `Item ${l.item} (${l.descricao}): restam ${r} unidades na oferta — reduza a quantidade ou venda fora da oferta.`;
+
+/** Recusa do máximo por cliente; recebe o teto de cada item. */
+export const msgTeto = (teto: Map<number, number | null>) => (l: LinhaComOferta, r: number) =>
+  `Item ${l.item} (${l.descricao}): máximo de ${teto.get(l.oferta_item_id!)} por cliente na oferta — restam ${r} para este cliente; reduza a quantidade ou venda fora da oferta.`;
+
+/** Recusa do agarradinho; recebe o par de cada item. */
+export const msgPar = (par: Map<number, { pro_codigo: number; descricao: string | null }>) => (l: LinhaComOferta, r: number) =>
+  `Item ${l.item} (${l.descricao}): o par ${par.get(l.oferta_item_id!)?.pro_codigo} (${par.get(l.oferta_item_id!)?.descricao}) libera ${r} unidades na oferta — inclua mais do par ou reduza a quantidade.`;
+
+/** Unidades que o par libera: soma de todas as linhas do produto par × proporção; null = sem par. */
+export function liberadoPeloPar(linhas: { pro_codigo: number; quantidade: number }[], par: { pro_codigo: number; proporcao: number } | null): number | null {
+  if (!par) return null;
+  return linhas.reduce((s, l) => s + (Number(l.pro_codigo) === par.pro_codigo ? Number(l.quantidade) : 0), 0) * par.proporcao;
+}
+
+export function excedeLimite(
+  linhas: LinhaComOferta[],
+  restamPorItem: Map<number, number | null>,
+  mensagem: (l: LinhaComOferta, restam: number) => string = msgLimite,
+): string[] {
   const soma = new Map<number, number>();
   const erros: string[] = [];
   for (const l of linhas) {
@@ -163,7 +222,7 @@ export function excedeLimite(linhas: LinhaComOferta[], restamPorItem: Map<number
     const antes = soma.get(l.oferta_item_id) ?? 0;
     const depois = antes + Number(l.quantidade);
     soma.set(l.oferta_item_id, depois);
-    if (depois > r && antes <= r) erros.push(`Item ${l.item} (${l.descricao}): restam ${r} unidades na oferta — reduza a quantidade ou venda fora da oferta.`);
+    if (depois > r && antes <= r) erros.push(mensagem(l, r));
   }
   return erros;
 }
@@ -189,15 +248,51 @@ export interface ItemEditavel extends Periodo {
   preco_t2: number | null;
   preco_t5: number | null;
   limite_qtd: number | null;
+  /** tipo do item; no grupo de campanha é sempre CAMPANHA */
+  tipo: TipoOferta;
+  /** bônus da liquidação, fração do custo; nulo nos outros tipos */
+  premio_valor: number | null;
+  /** máximo por cliente (soma dos orçamentos fechados do cliente); null = sem teto */
+  limite_cliente: number | null;
+  /** quantidade do primeiro nível do preço progressivo */
+  qtd_minima: number;
+  /** níveis adicionais do preço progressivo (até 2) */
+  niveis: NivelOferta[];
+  /** agarradinho: produto par (null = sem venda casada), descrição copiada do ERP e proporção */
+  par_pro_codigo: number | null;
+  par_descricao: string | null;
+  par_proporcao: number | null;
 }
 
 const num = (v: number | null) => (v == null ? null : Number(v));
 
-/** Mudou preço, datas ou limite: item aprovado volta para aprovação. */
+/** Níveis iguais campo a campo (o jsonb do Postgres reordena as chaves, então não dá para comparar o texto). */
+const mesmosNiveis = (a: NivelOferta[] | null, b: NivelOferta[] | null) => {
+  const x = a ?? [];
+  const y = b ?? [];
+  return (
+    x.length === y.length &&
+    x.every(
+      (n, i) =>
+        num(n.a_partir_de) === num(y[i].a_partir_de) &&
+        num(n.preco_t2) === num(y[i].preco_t2) &&
+        num(n.preco_t5) === num(y[i].preco_t5),
+    )
+  );
+};
+
+/** Mudou preço, níveis, par, datas, limite, tipo ou bônus: item aprovado volta para aprovação. */
 export const reaprova = (antes: ItemEditavel, depois: ItemEditavel) =>
+  antes.tipo !== depois.tipo ||
+  num(antes.premio_valor) !== num(depois.premio_valor) ||
   num(antes.preco_t2) !== num(depois.preco_t2) ||
   num(antes.preco_t5) !== num(depois.preco_t5) ||
   num(antes.limite_qtd) !== num(depois.limite_qtd) ||
+  num(antes.limite_cliente) !== num(depois.limite_cliente) ||
+  num(antes.qtd_minima) !== num(depois.qtd_minima) ||
+  !mesmosNiveis(antes.niveis, depois.niveis) ||
+  (antes.par_pro_codigo ?? null) !== (depois.par_pro_codigo ?? null) ||
+  num(antes.par_proporcao) !== num(depois.par_proporcao) ||
   antes.inicio !== depois.inicio ||
   antes.fim !== depois.fim;
 
@@ -211,6 +306,25 @@ export function precoDaOferta(item: { preco_t2: number | null; preco_t5: number 
   return preco != null && Number(preco) > 0 && Number(preco) < precoNormal ? Number(preco) : null;
 }
 
+/**
+ * Preço progressivo: abaixo de qtdMinima → null (fora da oferta); senão o preço do maior
+ * nível alcançado pela quantidade (níveis em ordem crescente de a_partir_de, já conferidos).
+ */
+export function precoNoNivel(precoBase: number, qtdMinima: number, niveis: { a_partir_de: number; preco: number }[], qtd: number): number | null {
+  if (qtd < qtdMinima) return null;
+  let preco = precoBase;
+  for (const nv of niveis) if (qtd >= nv.a_partir_de) preco = nv.preco;
+  return preco;
+}
+
+/** Níveis adicionais do item na tabela do cliente (mesma escolha de precoDaOferta), só os com preço. */
+export function niveisDaTabela(item: { niveis: NivelOferta[] }, coluna: string, precoNormal: number): { a_partir_de: number; preco: number }[] {
+  return item.niveis.flatMap((nv) => {
+    const preco = precoDaOferta(nv, coluna, precoNormal);
+    return preco == null ? [] : [{ a_partir_de: Number(nv.a_partir_de), preco }];
+  });
+}
+
 /** Item aprovado lido para o orçamento: com tipo, nome do grupo e o que já foi vendido nele. */
 export interface OfertaParaOrcamento extends ItemVigencia {
   id: number;
@@ -220,6 +334,14 @@ export interface OfertaParaOrcamento extends ItemVigencia {
   tipo: TipoOferta;
   grupo: string;
   vendidas: number;
+  limite_cliente: number | null;
+  qtd_minima: number;
+  niveis: NivelOferta[];
+  par_pro_codigo: number | null;
+  par_descricao: string | null;
+  par_proporcao: number | null;
+  /** já fechado pelo cliente do orçamento neste item (0 sem cliente) */
+  vendidas_cliente: number;
   /** prêmio do vendedor no grupo (liquidação e campanha); null = sem prêmio */
   premio: Premio | null;
 }
@@ -231,6 +353,8 @@ export interface OfertaParaOrcamento extends ItemVigencia {
  * com a substituição do atacado); oferta que não fica abaixo dele não entra.
  * Liquidação e campanha levam o ganho do vendedor por unidade (e a próxima
  * faixa), calculado sobre o custo do ERP e o preço da oferta.
+ * Agarradinho: oferta com par sem saldo (saldoPar, empresa 3) deixa de valer
+ * enquanto faltar o par, sem encerrar; com saldo, leva o par.
  */
 export function comOfertas(
   promos: Map<number, PromocaoItem>,
@@ -238,10 +362,12 @@ export function comOfertas(
   produtos: Array<{ PRO_CODIGO: number; ESTOQUE_DISPONIVEL: number; PRECO_CUSTO?: number | null }>,
   tabelaPreco: string | null,
   hoje: string,
+  saldoPar: Map<number, number> = new Map(),
 ) {
   for (const p of produtos) {
     if (promos.has(p.PRO_CODIGO)) continue;
     const o = ofertas.find((x) => x.pro_codigo === p.PRO_CODIGO && vigente(x, hoje, x.vendidas, Number(p.ESTOQUE_DISPONIVEL)));
+    if (o?.par_pro_codigo != null && !((saldoPar.get(o.par_pro_codigo) ?? 0) > 0)) continue;
     if (!o) continue;
     const normal = precoDaTabela(p as unknown as Record<string, unknown>, tabelaPreco);
     const valor = precoDaOferta(o, normal.coluna, normal.preco);
@@ -256,8 +382,45 @@ export function comOfertas(
       durar_estoque: false,
       valor,
       valor_balcao: null,
-      oferta: { item_id: o.id, tipo: o.tipo, restam: restam(o.limite_qtd, o.vendidas), ...(ganho ?? {}) },
+      oferta: { item_id: o.id, tipo: o.tipo, restam: restam(o.limite_qtd, o.vendidas),
+        limite_cliente: o.limite_cliente,
+        restam_cliente: restam(o.limite_cliente, o.vendidas_cliente),
+        qtd_minima: Number(o.qtd_minima ?? 1),
+        niveis: niveisDaTabela({ niveis: o.niveis ?? [] }, normal.coluna, normal.preco),
+        par: o.par_pro_codigo != null ? { pro_codigo: o.par_pro_codigo, descricao: o.par_descricao, proporcao: Number(o.par_proporcao ?? 1) } : null,
+        ...(ganho ?? {}) },
     });
   }
   return promos;
+}
+
+/** Condição do item de oferta no orçamento: preço do primeiro nível, níveis na tabela do cliente e o par. */
+export interface CondicaoOferta {
+  item_id: number;
+  preco: number;
+  qtd_minima: number;
+  niveis: { a_partir_de: number; preco: number }[];
+  par: { pro_codigo: number; proporcao: number } | null;
+}
+
+/**
+ * Preço de cada item de oferta no orçamento: a quantidade do item é a soma das
+ * linhas com aquele oferta_item_id (quem vende fora manda a linha sem ele) e o
+ * preço é o do nível alcançado; null = abaixo do primeiro nível, linha fora da oferta.
+ * `liberado` = unidades que o par libera (qualquer linha do produto par conta, e as
+ * mesmas unidades liberam cada oferta que aponte para ele); liberado 0 = fora da oferta.
+ */
+export function resolverCondicoes(
+  linhas: { pro_codigo: number; quantidade: number; oferta_item_id: number | null }[],
+  condicoes: CondicaoOferta[],
+): Map<number, { preco: number | null; liberado: number | null }> {
+  const qtd = new Map<number, number>();
+  for (const l of linhas) if (l.oferta_item_id != null) qtd.set(l.oferta_item_id, (qtd.get(l.oferta_item_id) ?? 0) + Number(l.quantidade));
+  return new Map(
+    condicoes.map((c) => {
+      const liberado = liberadoPeloPar(linhas, c.par);
+      const preco = liberado === 0 ? null : precoNoNivel(c.preco, c.qtd_minima, c.niveis, qtd.get(c.item_id) ?? 0);
+      return [c.item_id, { preco, liberado }];
+    }),
+  );
 }

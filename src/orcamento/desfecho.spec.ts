@@ -112,12 +112,14 @@ describe('desfecho com data de retorno', () => {
   });
 
   it('FECHADO com oferta: sob a trava dos itens, recusa item não aprovado e o que passa do limite', async () => {
-    const linha = (item: number, oferta_item_id: number, quantidade: number) => ({ item, descricao: 'P', pro_codigo: item, quantidade, oferta_item_id, fora_promocao: false });
-    const itens: Record<number, { status: string; limite_qtd: number | null }> = { 1: { status: 'APROVADO', limite_qtd: 10 }, 2: { status: 'ENCERRADO', limite_qtd: null } };
+    const linha = (item: number, oferta_item_id: number, quantidade: number) => ({ item, descricao: 'P', pro_codigo: item, quantidade, oferta_item_id, fora_promocao: false, preco_tabela: 10 });
+    const cond = { limite_cliente: null, preco_t2: 10, preco_t5: null, qtd_minima: 1, niveis: [] };
+    const itens: Record<number, { status: string; limite_qtd: number | null }> = { 1: { status: 'APROVADO', limite_qtd: 10, ...cond }, 2: { status: 'ENCERRADO', limite_qtd: null, ...cond } };
     const ofertas = {
       comTrava: jest.fn(async (_ids: number[], fn: () => Promise<unknown>) => fn()),
       item: jest.fn(async (x: number) => itens[x]),
       vendidas: jest.fn(async () => new Map([[1, { qtd: 7, valor: 0 }]])),
+      vendidasDoCliente: jest.fn(async () => new Map<number, number>()),
     };
     const fechar = async (linhas: unknown[]) => {
       const { service, db } = montar('ENVIADO', { itens: linhas });

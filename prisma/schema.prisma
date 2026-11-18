@@ -2868,6 +2868,14 @@ model ven_oferta_item {
   encerrado_por    String?
   encerrado_em     DateTime? @db.Timestamptz(6)
   encerrado_motivo String?
+  tipo             String
+  premio_valor     Decimal?  @db.Decimal(15, 4)
+  limite_cliente   Decimal?  @db.Decimal(15, 3)
+  qtd_minima       Decimal   @default(1) @db.Decimal(15, 3)
+  niveis           Json?
+  par_pro_codigo   Int?
+  par_descricao    String?
+  par_proporcao    Decimal?  @db.Decimal(15, 3)
 
   @@index([pro_codigo], map: "ven_oferta_item_pro_idx")
   @@index([oferta_id], map: "ven_oferta_item_oferta_idx")

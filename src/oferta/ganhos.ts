@@ -9,7 +9,8 @@ import { OrigemOferta, Premio, premioDoVendedor, situacaoDaCampanha, valorNaFaix
    -----------------------------------------------------------------------------
    Conta a venda faturada casada (orçamento ↔ NF) com item de oferta. Devolução
    entra negativa. Unidade sem item de oferta não gera ganho; promoção não tem prêmio.
-   - Liquidação: bônus das notas emitidas dentro do mês comissional.
+   - Liquidação: o tipo e o % sobre o custo são do ITEM (um grupo de padrão promoção
+     pode ter item de liquidação); bônus das notas emitidas dentro do mês comissional.
    - Campanha: prêmio sobre todas as vendas do vendedor na campanha, pago no mês
      comissional em que cai o fim (PAGAR); antes disso aparece "em andamento",
      fora do total.
@@ -41,8 +42,18 @@ export interface GrupoGanho extends Periodo {
   origem: OrigemOferta | null;
   fornecedor_codigo: number | null;
   fornecedor_nome: string | null;
+  /** Prêmio do grupo: só a campanha usa. */
   premio: Premio | null;
+  itens: Array<{ id: number; tipo: TipoOferta; premio_valor: number | null }>;
 }
+
+/** Itens de liquidação do grupo (fora da campanha) com o prêmio do próprio item. */
+const liquidacoes = (grupo: GrupoGanho) =>
+  new Map(
+    grupo.tipo === 'CAMPANHA'
+      ? []
+      : grupo.itens.filter((i) => i.tipo === 'LIQUIDACAO').map((i) => [i.id, { tipo: 'PCT_CUSTO' as const, valor: i.premio_valor ?? 0, faixas: [] }]),
+  );
 
 export type SituacaoGanho = 'PAGAR' | 'ANDAMENTO';
 
@@ -160,24 +171,29 @@ export function apurarGanhos(
   const vendasDoGrupo = porChave(vendas, (v) => v.oferta_id);
 
   for (const grupo of grupos) {
-    const premio = grupo.premio;
-    if (!premio || grupo.tipo === 'PROMOCAO') continue;
     const doGrupo = vendasDoGrupo.get(grupo.id) ?? [];
-    const linha = (v: VendaOferta, ganho: number, situacao: SituacaoGanho): LinhaGanho => ({
+    const linha = (v: VendaOferta, ganho: number, situacao: SituacaoGanho, tipo: TipoOferta = grupo.tipo): LinhaGanho => ({
       nfs: v.nfs, empresa: v.empresa, serie: v.serie, emissao: v.emissao, devolucao: v.devolucao,
       pro_codigo: v.pro_codigo, oferta_item_id: v.oferta_item_id, quantidade: v.quantidade,
-      oferta_id: grupo.id, grupo: grupo.nome, tipo: grupo.tipo, ganho, situacao,
+      oferta_id: grupo.id, grupo: grupo.nome, tipo, ganho, situacao,
     });
 
-    if (grupo.tipo === 'LIQUIDACAO') {
-      for (const [rep, vs] of porChave(doGrupo.filter((v) => v.emissao >= mes.inicio && v.emissao <= mes.fim), (v) => v.rep_codigo)) {
+    if (grupo.tipo !== 'CAMPANHA') {
+      const liq = liquidacoes(grupo);
+      const doMes = doGrupo.filter((v) => liq.has(v.oferta_item_id) && v.emissao >= mes.inicio && v.emissao <= mes.fim);
+      for (const [rep, vsRep] of porChave(doMes, (v) => v.rep_codigo)) {
         const g = doRep(rep);
-        const r = ganhosDasLinhas(premio, vs);
-        g.bonus_liquidacao = round2(g.bonus_liquidacao + r.total);
-        g.linhas.push(...vs.map((v, k) => linha(v, r.linhas[k], 'PAGAR')));
+        for (const [item, vs] of porChave(vsRep, (v) => v.oferta_item_id)) {
+          const r = ganhosDasLinhas(liq.get(item)!, vs);
+          g.bonus_liquidacao = round2(g.bonus_liquidacao + r.total);
+          g.linhas.push(...vs.map((v, k) => linha(v, r.linhas[k], 'PAGAR', 'LIQUIDACAO')));
+        }
       }
       continue;
     }
+
+    const premio = grupo.premio;
+    if (!premio) continue;
 
     const situacao = situacaoDaCampanha(grupo, mes, hoje);
     if (!situacao) continue;
@@ -209,7 +225,10 @@ export function apurarGanhos(
   return { vendedores, fornecedores: [...fornecedores.values()] };
 }
 
-/** Faturado por item e ganho de cada vendedor no grupo inteiro (promoção: sem vendedores). */
+/**
+ * Faturado por item e ganho de cada vendedor no grupo inteiro. Fora da campanha, o ganho
+ * vem só dos itens de liquidação, cada um com o seu %; grupo sem eles = sem vendedores.
+ */
 export function resultadoDoGrupo(
   grupo: GrupoGanho,
   vendas: VendaOferta[],
@@ -226,9 +245,20 @@ export function resultadoDoGrupo(
     quantidade: somaQtd(vs),
     valor: valor(vs),
   }));
+  if (grupo.tipo !== 'CAMPANHA') {
+    const liq = liquidacoes(grupo);
+    const vendedores = [...porChave(doGrupo.filter((v) => liq.has(v.oferta_item_id)), (v) => v.rep_codigo)].map(([rep_codigo, vs]) => ({
+      rep_codigo,
+      quantidade: somaQtd(vs),
+      valor: valor(vs),
+      ganho: round2([...porChave(vs, (v) => v.oferta_item_id)].reduce((s, [item, vi]) => s + premioDoVendedor(liq.get(item)!, vi), 0)),
+      situacao: 'PAGAR' as SituacaoGanho,
+    }));
+    return { faturado, vendedores };
+  }
   const premio = grupo.premio;
-  if (!premio || grupo.tipo === 'PROMOCAO') return { faturado, vendedores: [] };
-  const situacao: SituacaoGanho = grupo.tipo === 'LIQUIDACAO' || hoje > grupo.fim ? 'PAGAR' : 'ANDAMENTO';
+  if (!premio) return { faturado, vendedores: [] };
+  const situacao: SituacaoGanho = hoje > grupo.fim ? 'PAGAR' : 'ANDAMENTO';
   const vendedores = [...porChave(doGrupo, (v) => v.rep_codigo)].map(([rep_codigo, vs]) => ({
     rep_codigo,
     quantidade: somaQtd(vs),

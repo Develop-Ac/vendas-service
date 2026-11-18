@@ -34,6 +34,11 @@ export class ItemOfertaDto {
   @IsNumber()
   @Min(0.001)
   qtd?: number;
+
+  @ApiProperty({ required: false, enum: ['PROMOCAO', 'LIQUIDACAO'], description: 'Tipo do item; ausente = o do grupo. Grupo de campanha ignora (sempre CAMPANHA).' })
+  @IsOptional()
+  @IsIn(['PROMOCAO', 'LIQUIDACAO'])
+  tipo?: 'PROMOCAO' | 'LIQUIDACAO';
 }
 
 /** Faixa do prêmio da campanha: a partir dessa quantidade total do vendedor, vale este valor (pct ou R$/un). */
@@ -45,6 +50,23 @@ export class FaixaPremioDto {
   @ApiProperty({ example: 4 })
   @IsNumber()
   valor!: number;
+}
+
+/** Nível adicional do preço progressivo: a partir dessa quantidade, o preço de cada tabela (null = sem preço nela). */
+export class NivelOfertaDto {
+  @ApiProperty({ example: 6 })
+  @IsNumber()
+  a_partir_de!: number;
+
+  @ApiProperty({ required: false, nullable: true, example: 85 })
+  @IsOptional()
+  @IsNumber()
+  preco_t2?: number | null;
+
+  @ApiProperty({ required: false, nullable: true, example: 88 })
+  @IsOptional()
+  @IsNumber()
+  preco_t5?: number | null;
 }
 
 export class CriarOfertaDto {
@@ -174,6 +196,49 @@ export class AlterarItemOfertaDto {
   @IsNumber()
   @Min(0.001)
   limite_qtd?: number | null;
+
+  @ApiProperty({ required: false, nullable: true, description: 'Máximo por cliente (soma dos orçamentos fechados do cliente); null = sem teto.' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0.001)
+  limite_cliente?: number | null;
+
+  @ApiProperty({ required: false, enum: ['PROMOCAO', 'LIQUIDACAO'], description: 'Fora do grupo de campanha; virar liquidação sem bônus = 5%.' })
+  @IsOptional()
+  @IsIn(['PROMOCAO', 'LIQUIDACAO'])
+  tipo?: 'PROMOCAO' | 'LIQUIDACAO';
+
+  @ApiProperty({ required: false, example: 0.05, description: 'Bônus da liquidação, fração do custo (0 = sem bônus); só item LIQUIDACAO.' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  @Max(0.9999)
+  premio_valor?: number;
+
+  @ApiProperty({ required: false, example: 1, description: 'Quantidade do primeiro nível do preço progressivo (preço = o da tabela).' })
+  @IsOptional()
+  @IsNumber()
+  @Min(1)
+  qtd_minima?: number;
+
+  @ApiProperty({ type: [NivelOfertaDto], required: false, description: 'Até 2 níveis adicionais; [] remove.' })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(2)
+  @ValidateNested({ each: true })
+  @Type(() => NivelOfertaDto)
+  niveis?: NivelOfertaDto[];
+
+  @ApiProperty({ required: false, nullable: true, description: 'Agarradinho: produto que precisa ir junto no orçamento; null remove o par.' })
+  @IsOptional()
+  @IsInt()
+  par_pro_codigo?: number | null;
+
+  @ApiProperty({ required: false, example: 1, description: 'Unidades da oferta liberadas por unidade do par (padrão 1).' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0.001)
+  par_proporcao?: number;
 }
 
 export class ReplicarDatasOfertaDto {

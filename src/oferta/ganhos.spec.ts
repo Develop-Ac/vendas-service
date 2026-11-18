@@ -17,12 +17,22 @@ const venda = (o: Partial<VendaOferta>): VendaOferta => ({
 });
 const grupo = (o: Partial<GrupoGanho>): GrupoGanho => ({
   id: 1, nome: 'G', tipo: 'CAMPANHA', origem: 'EMPRESA', fornecedor_codigo: null, fornecedor_nome: null,
-  premio: null, inicio: '2026-11-01', fim: '2026-11-20', ...o,
+  premio: null, itens: [], inicio: '2026-11-01', fim: '2026-11-20', ...o,
 });
 
 const novembro = periodoComissional(2026, 11); // 26/10 a 25/11
 const hoje = '2026-11-21';
-const liquidacao = grupo({ id: 1, nome: 'Liq', tipo: 'LIQUIDACAO', origem: null, premio: { tipo: 'PCT_CUSTO', valor: 0.05, faixas: [] } });
+const liquidacao = grupo({ id: 1, nome: 'Liq', tipo: 'LIQUIDACAO', origem: null, itens: [{ id: 11, tipo: 'LIQUIDACAO', premio_valor: 0.05 }] });
+// padrão promoção com dois itens de liquidação (8% e 5%) e um de promoção
+const misto = grupo({
+  id: 6, nome: 'Misto', tipo: 'PROMOCAO', origem: null,
+  itens: [{ id: 61, tipo: 'LIQUIDACAO', premio_valor: 0.08 }, { id: 62, tipo: 'LIQUIDACAO', premio_valor: 0.05 }, { id: 63, tipo: 'PROMOCAO', premio_valor: null }],
+});
+const vendasMisto = [
+  venda({ oferta_id: 6, oferta_item_id: 61, quantidade: 2 }),
+  venda({ oferta_id: 6, oferta_item_id: 62, quantidade: 2 }),
+  venda({ oferta_id: 6, oferta_item_id: 63, quantidade: 10 }),
+];
 const porUnidade = grupo({ id: 2, nome: 'Camp R$', premio: { tipo: 'VALOR_UNIDADE', valor: 3, faixas: [{ a_partir_de: 50, valor: 4 }] } });
 const pctVenda = grupo({ id: 3, nome: 'Camp 2%', premio: { tipo: 'PCT_VENDA', valor: 0.02, faixas: [] } });
 
@@ -82,6 +92,19 @@ describe('apurarGanhos', () => {
     expect(r.vendedores).toEqual([]);
   });
 
+  it('critério 2: liquidação pelo % do item em grupo de padrão promoção; item de promoção não gera ganho', () => {
+    const r = apurarGanhos([misto], vendasMisto, novembro, hoje);
+    // 2 × 180 × 8% = 28,80; 2 × 180 × 5% = 18,00
+    expect(r.vendedores[0]).toMatchObject({ bonus_liquidacao: 46.8, premios_campanha: 0, total: 46.8 });
+    expect(r.vendedores[0].linhas.map((l) => [l.oferta_item_id, l.ganho, l.tipo])).toEqual([[61, 28.8, 'LIQUIDACAO'], [62, 18, 'LIQUIDACAO']]);
+  });
+
+  it('critério 11: campanha com item de liquidação cadastrado apura pelo prêmio do grupo, como antes', () => {
+    const camp = grupo({ ...porUnidade, itens: [{ id: 11, tipo: 'LIQUIDACAO', premio_valor: 0.08 }] });
+    const vendas = [venda({ oferta_id: 2, quantidade: 48 })];
+    expect(apurarGanhos([camp], vendas, novembro, hoje)).toEqual(apurarGanhos([porUnidade], vendas, novembro, hoje));
+  });
+
   it('critério 9: campanha 01/12–31/12 em andamento em dezembro (fora do total) e inteira em janeiro', () => {
     const dez = grupo({ id: 2, inicio: '2026-12-01', fim: '2026-12-31', premio: porUnidade.premio });
     const vendas = [venda({ oferta_id: 2, quantidade: 30, emissao: '2026-12-05' }), venda({ oferta_id: 2, quantidade: 30, emissao: '2026-12-28' })];
@@ -127,5 +150,9 @@ describe('resultadoDoGrupo', () => {
       ],
     });
     expect(resultadoDoGrupo(grupo({ id: 2, tipo: 'PROMOCAO' }), vendas, hoje).vendedores).toEqual([]);
+  });
+
+  it('grupo de padrão promoção: ganho só dos itens de liquidação, cada um com o seu %', () => {
+    expect(resultadoDoGrupo(misto, vendasMisto, hoje).vendedores).toEqual([{ rep_codigo: 7, quantidade: 4, valor: 200, ganho: 46.8, situacao: 'PAGAR' }]);
   });
 });

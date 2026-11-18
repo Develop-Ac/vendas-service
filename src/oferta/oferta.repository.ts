@@ -58,6 +58,16 @@ export class OfertaRepository {
       aprovado_em: r.aprovado_em,
       encerrado_por: r.encerrado_por,
       encerrado_em: r.encerrado_em,
+      tipo: r.tipo as TipoOferta,
+      /** bônus da liquidação, fração do custo; nulo nos outros tipos */
+      premio_valor: nn(r.premio_valor),
+      /** teto por cliente; nulo = sem teto */
+      limite_cliente: nn(r.limite_cliente),
+      qtd_minima: nn(r.qtd_minima) ?? 1,
+      niveis: Array.isArray(r.niveis) ? (r.niveis as unknown as Array<{ a_partir_de: number; preco_t2: number | null; preco_t5: number | null }>) : [],
+      par_pro_codigo: r.par_pro_codigo,
+      par_descricao: r.par_descricao,
+      par_proporcao: nn(r.par_proporcao),
     };
   }
 
@@ -95,7 +105,7 @@ export class OfertaRepository {
   async grupos() {
     const [ofertas, itens] = await Promise.all([
       this.prisma.ven_oferta.findMany({ orderBy: { id: 'desc' } }),
-      this.prisma.ven_oferta_item.findMany({ select: { id: true, oferta_id: true, status: true, inicio: true, fim: true } }),
+      this.prisma.ven_oferta_item.findMany({ select: { id: true, oferta_id: true, status: true, inicio: true, fim: true, tipo: true } }),
     ]);
     return ofertas.map((o) => {
       const meus = itens.filter((i) => i.oferta_id === o.id);
@@ -108,6 +118,8 @@ export class OfertaRepository {
         inicio_min: inicios[0] ?? null,
         fim_max: fins[fins.length - 1] ?? null,
         item_ids: meus.map((i) => i.id),
+        /** tipos presentes nos itens; grupo vazio = o tipo do grupo */
+        tipos: (meus.length ? [...new Set(meus.map((i) => i.tipo))] : [o.tipo]) as TipoOferta[],
       };
     });
   }
@@ -163,21 +175,42 @@ export class OfertaRepository {
     return saida;
   }
 
+  /** Unidades que o cliente já fechou na oferta, por item (máximo por cliente). */
+  async vendidasDoCliente(itemIds: number[], cli: number) {
+    const saida = new Map<number, number>();
+    if (!itemIds.length) return saida;
+    const rows = await this.prisma.ven_orcamento_item.groupBy({
+      by: ['oferta_item_id'],
+      where: { oferta_item_id: { in: itemIds }, fora_promocao: false, ven_orcamento: { status: 'FECHADO', cli_codigo: cli } },
+      _sum: { quantidade: true },
+    });
+    for (const r of rows) if (r.oferta_item_id != null) saida.set(r.oferta_item_id, Number(r._sum.quantidade ?? 0));
+    return saida;
+  }
+
   /**
    * Liquidações e campanhas com os itens; o período do grupo vai do menor início
    * ao maior fim dos itens que já saíram do rascunho (ver `contaNoPeriodo`).
    */
   async gruposComPremio() {
-    const ofertas = await this.prisma.ven_oferta.findMany({ where: { tipo: { in: ['LIQUIDACAO', 'CAMPANHA'] } }, orderBy: { id: 'asc' } });
+    // não há relação Prisma entre as tabelas: grupos com item de liquidação saem dos itens
+    const comLiquidacao = await this.prisma.ven_oferta_item.findMany({ where: { tipo: 'LIQUIDACAO' }, select: { oferta_id: true }, distinct: ['oferta_id'] });
+    const ofertas = await this.prisma.ven_oferta.findMany({
+      where: { OR: [{ tipo: 'CAMPANHA' }, { id: { in: comLiquidacao.map((i) => i.oferta_id) } }] },
+      orderBy: { id: 'asc' },
+    });
     if (!ofertas.length) return [];
     const itens = await this.prisma.ven_oferta_item.findMany({
       where: { oferta_id: { in: ofertas.map((o) => o.id) } },
-      select: { id: true, oferta_id: true, pro_codigo: true, descricao: true, inicio: true, fim: true, status: true },
+      select: { id: true, oferta_id: true, pro_codigo: true, descricao: true, inicio: true, fim: true, status: true, tipo: true, premio_valor: true },
     });
     return ofertas.map((o) => {
       const meus = itens
         .filter((i) => i.oferta_id === o.id)
-        .map((i) => ({ id: i.id, pro_codigo: i.pro_codigo, descricao: i.descricao, inicio: ymd(i.inicio), fim: ymd(i.fim), status: i.status as StatusOfertaItem }));
+        .map((i) => ({
+          id: i.id, pro_codigo: i.pro_codigo, descricao: i.descricao, inicio: ymd(i.inicio), fim: ymd(i.fim), status: i.status as StatusOfertaItem,
+          tipo: i.tipo as TipoOferta, premio_valor: nn(i.premio_valor),
+        }));
       const valeram = meus.filter(contaNoPeriodo);
       const inicios = valeram.map((i) => i.inicio).sort();
       const fins = valeram.map((i) => i.fim).sort();
@@ -229,12 +262,27 @@ export class OfertaRepository {
     });
   }
 
-  /** Itens aprovados dos produtos, com tipo e nome do grupo — o que o orçamento pode aplicar. */
+  /**
+   * Itens aprovados dos produtos, com o tipo do item e o nome do grupo — o que o orçamento pode aplicar.
+   * Prêmio: liquidação = percentual do item sobre o custo (0 = sem prêmio); campanha = o do grupo; promoção, nenhum.
+   */
   async aprovadosDosProdutos(codigos: number[]) {
     if (!codigos.length) return [];
     const rows = await this.prisma.ven_oferta_item.findMany({ where: { pro_codigo: { in: codigos }, status: 'APROVADO' } });
     const grupos = await this.nomesDosGrupos(rows.map((r) => r.oferta_id));
-    return rows.map((r) => ({ ...this.mapItem(r), tipo: (grupos.get(r.oferta_id)?.tipo ?? 'PROMOCAO') as TipoOferta, grupo: grupos.get(r.oferta_id)?.nome ?? '', premio: premioDe(grupos.get(r.oferta_id) ?? { premio_tipo: null, premio_valor: null }) }));
+    return rows.map((r) => {
+      const i = this.mapItem(r);
+      const g = grupos.get(r.oferta_id);
+      const premio =
+        i.tipo === 'LIQUIDACAO'
+          ? i.premio_valor
+            ? { tipo: 'PCT_CUSTO' as const, valor: i.premio_valor, faixas: [] }
+            : null
+          : i.tipo === 'CAMPANHA'
+            ? premioDe(g ?? { premio_tipo: null, premio_valor: null })
+            : null;
+      return { ...i, grupo: g?.nome ?? '', premio };
+    });
   }
 
   async item(id: number) {
@@ -245,7 +293,7 @@ export class OfertaRepository {
   async incluirItens(ofertaId: number, rows: Array<{ pro_codigo: number; descricao: string | null } & ItemEditavel>) {
     if (!rows.length) return;
     await this.prisma.ven_oferta_item.createMany({
-      data: rows.map((r) => ({ oferta_id: ofertaId, ...r, inicio: dataDb(r.inicio), fim: dataDb(r.fim), status: 'RASCUNHO' })),
+      data: rows.map((r) => ({ oferta_id: ofertaId, ...r, niveis: r.niveis.map((n) => ({ a_partir_de: n.a_partir_de, preco_t2: n.preco_t2, preco_t5: n.preco_t5 })), inicio: dataDb(r.inicio), fim: dataDb(r.fim), status: 'RASCUNHO' })),
     });
   }
 
@@ -258,6 +306,7 @@ export class OfertaRepository {
           where: { id },
           data: {
             ...dados,
+            niveis: dados.niveis ? dados.niveis.map((n) => ({ a_partir_de: n.a_partir_de, preco_t2: n.preco_t2, preco_t5: n.preco_t5 })) : undefined,
             inicio: dados.inicio ? dataDb(dados.inicio) : undefined,
             fim: dados.fim ? dataDb(dados.fim) : undefined,
             ...(voltaPendente ? { status: 'PENDENTE', aprovado_por: null, aprovado_em: null } : {}),

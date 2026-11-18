@@ -242,7 +242,7 @@ export interface PromocaoItem {
    * Oferta da intranet (ven_oferta_item): item, tipo e quanto resta do limite (null = sem limite).
    * Liquidação e campanha com prêmio: ganho do vendedor por unidade e a próxima faixa (só intranet).
    */
-  oferta?: { item_id: number; tipo: TipoOferta; restam: number | null; ganho_unit?: number; proxima_faixa?: { valor: number; a_partir_de: number } | null };
+  oferta?: { item_id: number; tipo: TipoOferta; restam: number | null; limite_cliente?: number | null; restam_cliente?: number | null; qtd_minima?: number; niveis?: { a_partir_de: number; preco: number }[]; par?: { pro_codigo: number; descricao: string | null; proporcao: number } | null; ganho_unit?: number; proxima_faixa?: { valor: number; a_partir_de: number } | null };
 }
 
 /**
