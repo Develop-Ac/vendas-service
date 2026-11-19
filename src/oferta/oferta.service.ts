@@ -160,8 +160,8 @@ export class OfertaService {
     const u = await this.exigirTela(userId, dto.tipo === 'CAMPANHA' ? TELA_OFERTAS_APROVAR : TELA_OFERTAS, 'gravar');
     const campanha = dto.tipo === 'CAMPANHA' ? await this.dadosDaCampanha(dto) : undefined;
     const o = await this.repo.criar({ nome: dto.nome.trim(), tipo: dto.tipo, criado_por: u.nome, campanha });
-    const recusados = dto.itens?.length ? await this.incluirNoGrupo(o, dto.itens) : [];
-    return { ...(await this.montarDetalhe(o.id, u)), recusados };
+    const inclusao = dto.itens?.length ? await this.incluirNoGrupo(o, dto.itens) : { recusados: [], ajustados: [] };
+    return { ...(await this.montarDetalhe(o.id, u)), ...inclusao };
   }
 
   /** Origem e prêmio da campanha conferidos; fornecedor resolvido no ERP. Erro = 400. */
@@ -204,15 +204,17 @@ export class OfertaService {
     const u = await this.exigirTela(userId, TELA_OFERTAS, 'gravar');
     const o = await this.repo.detalhe(id);
     if (!o) throw new NotFoundException(`Oferta ${id} não encontrada.`);
-    const recusados = await this.incluirNoGrupo(o, itens);
-    return { ...(await this.montarDetalhe(id, u)), recusados };
+    const inclusao = await this.incluirNoGrupo(o, itens);
+    return { ...(await this.montarDetalhe(id, u)), ...inclusao };
   }
 
   /**
    * Inclui os itens em RASCUNHO, de hoje a hoje + 30 dias (Cuiabá). Com preço da
    * tabela 2 (sugestão), a tabela 5 sai pelo mesmo desconto e o limite = qtd; só
-   * com o código, cada tabela nasce no mínimo. Item com erro ou sobreposição é
-   * recusado com o motivo; os demais entram.
+   * com o código, cada tabela nasce no mínimo. Preço proposto abaixo do mínimo de
+   * agora (a sugestão é calculada com o custo de outro dia) entra no mínimo e volta
+   * em `ajustados`, para o montador rever na linha. Item com outro erro ou
+   * sobreposição é recusado com o motivo; os demais entram.
    */
   private async incluirNoGrupo(o: { id: number; nome: string; tipo: TipoOferta }, itens: ItemOfertaDto[]) {
     const codigos = [...new Set(itens.map((i) => i.pro_codigo))];
@@ -223,6 +225,7 @@ export class OfertaService {
     const fim = somaDias(inicio, 30);
     const novos: Parameters<OfertaRepository['incluirItens']>[1] = [];
     const recusados: Array<{ pro_codigo: number; motivo: string }> = [];
+    const ajustados: Array<{ pro_codigo: number; tabela: 2 | 5; de: number; para: number }> = [];
     for (const it of itens) {
       const e = erp.get(it.pro_codigo);
       if (!e) {
@@ -231,8 +234,15 @@ export class OfertaService {
       }
       const tipo: TipoOferta = o.tipo === 'CAMPANHA' ? 'CAMPANHA' : (it.tipo ?? o.tipo);
       const { minimo_t2, minimo_t5 } = minimos(tipo, e, piso);
-      const preco_t2 = it.preco_t2 ?? abaixoDa(minimo_t2, e.tabela_2);
-      const preco_t5 = abaixoDa(it.preco_t5 ?? (it.preco_t2 != null ? precoT5Sugerido(it.preco_t2, e.tabela_2 ?? 0, e.tabela_5, minimo_t5) : minimo_t5), e.tabela_5);
+      const subidos: typeof ajustados = [];
+      const noMinimo = (tabela: 2 | 5, preco: number | undefined, minimo: number | null) => {
+        if (preco == null || minimo == null || preco >= minimo) return preco;
+        subidos.push({ pro_codigo: it.pro_codigo, tabela, de: preco, para: minimo });
+        return minimo;
+      };
+      const t2 = noMinimo(2, it.preco_t2, minimo_t2);
+      const preco_t2 = t2 ?? abaixoDa(minimo_t2, e.tabela_2);
+      const preco_t5 = abaixoDa(noMinimo(5, it.preco_t5, minimo_t5) ?? (t2 != null ? precoT5Sugerido(t2, e.tabela_2 ?? 0, e.tabela_5, minimo_t5) : minimo_t5), e.tabela_5);
       const novo = { pro_codigo: it.pro_codigo, descricao: e.descricao, preco_t2, preco_t5, inicio, fim, limite_qtd: it.qtd ?? null, tipo, premio_valor: tipo === 'LIQUIDACAO' ? 0.05 : null, limite_cliente: null, qtd_minima: 1, niveis: [], par_pro_codigo: null, par_descricao: null, par_proporcao: null };
       const erros = conferir(tipo, e, novo, piso);
       const choque = conflito(novo, outros);
@@ -242,10 +252,11 @@ export class OfertaService {
         continue;
       }
       novos.push(novo);
+      ajustados.push(...subidos);
       outros.push({ id: -novos.length, pro_codigo: it.pro_codigo, status: 'RASCUNHO', grupo: o.nome, inicio, fim });
     }
     await this.repo.incluirItens(o.id, novos);
-    return recusados;
+    return { recusados, ajustados };
   }
 
   /**

@@ -153,6 +153,14 @@ describe('OfertaService', () => {
       expect(r.recusados).toEqual([{ pro_codigo: 300, motivo: 'Produto 300 já está na oferta "Outra" de 01/11/2026 a 31/12/2026.' }]);
     });
 
+    it('sugestão abaixo do mínimo de agora entra no mínimo e é avisada (a tabela 5 segue o preço ajustado)', async () => {
+      const { service, repo } = montar(gravar, 'PROMOCAO', grupo([]));
+      const r = await service.incluirItens('u1', 7, [{ pro_codigo: 100, preco_t2: 140, qtd: 5 }]);
+      expect(repo.incluirItens.mock.calls[0][1]).toEqual([expect.objectContaining({ pro_codigo: 100, preco_t2: 150, preco_t5: 165, limite_qtd: 5 })]);
+      expect(r.recusados).toEqual([]);
+      expect(r.ajustados).toEqual([{ pro_codigo: 100, tabela: 2, de: 140, para: 150 }]);
+    });
+
     it('critério 7: aprovado com preço alterado volta a PENDENTE; os outros itens ficam intactos', async () => {
       const { service, repo } = montar(gravar);
       await service.alterarItem('u1', 1, { preco_t2: 170 });

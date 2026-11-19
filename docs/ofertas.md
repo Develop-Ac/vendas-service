@@ -72,7 +72,9 @@ abas.
 `PRECO2`, `PRECO5`, saldo e o mínimo da régua de cada tabela (avaliação sem promoção). Datas padrão:
 hoje e hoje + 30 dias. Vindo da sugestão (`preco_t2` + `qtd`): o preço da tabela 5 é o mesmo
 percentual de desconto da tabela 2 aplicado sobre a tabela 5, limitado ao mínimo, e `limite_qtd = qtd`.
-Só por código: cada tabela nasce no mínimo e o montador ajusta na linha. Preço que não fica abaixo da
+Só por código: cada tabela nasce no mínimo e o montador ajusta na linha. Preço proposto abaixo do mínimo
+de agora (a sugestão usa o custo do dia da análise) entra no mínimo e volta em `ajustados:
+[{ pro_codigo, tabela, de, para }]`, para a tela avisar e o montador rever na linha. Preço que não fica abaixo da
 tabela vira nulo (a oferta não vale naquela tabela). Produto fora do ERP, com erro de conferência ou
 em sobreposição é recusado com o motivo; os demais entram.
 
