@@ -33,6 +33,8 @@ import { WhatsappRepository } from './whatsapp.repository';
  * cada instância, insere as novas, marca AUSENTE as que sumiram, grava evento de
  * mudança de status, reinicia FAILED/STOPPED uma vez por queda e avisa a tela
  * /sistema/whatsapp na 2ª leitura seguida fora de WORKING (ou da instância sem resposta).
+ * No fim de cada tick chama `aoFimDoTick` (registrado pelo ReconexaoService), que marca
+ * a reconexão da sessão com usuário caída e a conclui quando ela volta a WORKING.
  *
  * Ações da tela /sistema/whatsapp (criar, editar, QR, reiniciar, deslogar, trocar
  * vendedor) exigem a permissão da tela em sis_permissoes: visualizar para ler, editar
@@ -76,6 +78,8 @@ export class SessoesService implements OnModuleInit {
   private instanciasLidas = new Set<string>();
   private rodando = false;
   private readonly lista: InstanciaWaha[];
+  /** Roda no fim do tick com as linhas do banco de antes dele (ReconexaoService registra; gancho evita o ciclo de injeção). */
+  aoFimDoTick?: (antes: Map<string, ven_wa_sessao>) => Promise<void>;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -226,6 +230,7 @@ export class SessoesService implements OnModuleInit {
       }
     }
     await this.recarregar();
+    await this.aoFimDoTick?.(porNome);
   }
 
   /** `me` undefined = sessão ausente da lista (não mexe em telefone/nome/visto_em). */
@@ -309,6 +314,23 @@ export class SessoesService implements OnModuleInit {
     return { id: u.id, nome: u.nome };
   }
 
+  /** Usuário da intranet que reconecta a sessão; código inexistente ou na lixeira = 400. */
+  private async usuarioDoCodigo(codigo: string) {
+    const u = await this.prisma.sis_usuarios.findFirst({ where: { codigo, trash: 0 }, select: { codigo: true, nome: true } });
+    if (!u) throw new BadRequestException(`Usuário ${codigo} não existe.`);
+    return u;
+  }
+
+  /** Usuários ativos para o seletor "Usuário da intranet" da sessão. */
+  async usuarios(userId?: string) {
+    await this.exigirTela(userId, 'editar');
+    return this.prisma.sis_usuarios.findMany({
+      where: { trash: 0 },
+      select: { codigo: true, nome: true, setor: true },
+      orderBy: { nome: 'asc' },
+    });
+  }
+
   private async linha(sessao: string) {
     const row = await this.prisma.ven_wa_sessao.findUnique({ where: { sessao } });
     if (!row) throw new NotFoundException(`Sessão ${sessao} não encontrada.`);
@@ -316,7 +338,7 @@ export class SessoesService implements OnModuleInit {
   }
 
   /** Chamada ao WAHA da instância da sessão; falha do WAHA vira 502 com o texto dele. */
-  private async waha(sessao: string, caminho: string, init: { method?: string; body?: unknown } = {}) {
+  async waha(sessao: string, caminho: string, init: { method?: string; body?: unknown } = {}) {
     const { url, key } = this.wahaDe(sessao);
     let r: Response;
     try {
@@ -333,10 +355,13 @@ export class SessoesService implements OnModuleInit {
     return r;
   }
 
-  /** Instâncias (sem a chave) com as sessões, a última mensagem recebida e desde quando estão com o vendedor. */
+  /**
+   * Instâncias (sem a chave) com as sessões, a última mensagem recebida, desde quando estão com o vendedor,
+   * o nome do usuário que reconecta e a última reconexão.
+   */
   async listar(userId?: string) {
     await this.exigirTela(userId, 'visualizar');
-    const [linhas, recebidas, trocas] = await Promise.all([
+    const [linhas, recebidas, trocas, reconexoes] = await Promise.all([
       this.prisma.ven_wa_sessao.findMany({ orderBy: { apelido: 'asc' } }),
       this.prisma.ven_wa_mensagem.groupBy({ by: ['sessao'], where: { direcao: 'RECEBIDA' }, _max: { timestamp: true } }),
       this.prisma.ven_wa_sessao_evento.findMany({
@@ -345,15 +370,28 @@ export class SessoesService implements OnModuleInit {
         distinct: ['sessao'],
         select: { sessao: true, detalhe: true },
       }),
+      this.prisma.ven_wa_reconexao.findMany({ orderBy: { marcada_em: 'desc' }, distinct: ['sessao'] }),
     ]);
+    const codigos = [...new Set(linhas.map((l) => l.usuario_codigo).filter((c): c is string => !!c))];
+    const usuarios = codigos.length
+      ? await this.prisma.sis_usuarios.findMany({ where: { codigo: { in: codigos } }, select: { codigo: true, nome: true } })
+      : [];
+    const nomes = new Map(usuarios.map((u) => [u.codigo, u.nome]));
     const ultima = new Map(recebidas.map((g) => [g.sessao, g._max.timestamp]));
     const desde = new Map(trocas.map((t) => [t.sessao, t.detalhe]));
+    const reconexao = new Map(reconexoes.map((r) => [r.sessao, r]));
     return this.instancias().map(({ id, nome }) => ({
       id,
       nome,
       sessoes: linhas
         .filter((l) => l.instancia === id)
-        .map((l) => ({ ...l, ultima_recebida_em: ultima.get(l.sessao) ?? null, vendedor_desde: desde.get(l.sessao) ?? null })),
+        .map((l) => ({
+          ...l,
+          ultima_recebida_em: ultima.get(l.sessao) ?? null,
+          vendedor_desde: desde.get(l.sessao) ?? null,
+          usuario_nome: l.usuario_codigo ? (nomes.get(l.usuario_codigo) ?? null) : null,
+          reconexao: reconexao.get(l.sessao) ?? null,
+        })),
     }));
   }
 
@@ -370,9 +408,17 @@ export class SessoesService implements OnModuleInit {
   async qr(userId: string | undefined, sessao: string) {
     await this.exigirTela(userId, 'editar');
     await this.linha(sessao);
+    const r = await this.qrAoVivo(sessao);
+    if (!r.imagem) throw new ConflictException(`A sessão está ${r.status}, não aguardando QR.`);
+    await this.reconexaoPelaTela(sessao);
+    return r;
+  }
+
+  /** Status ao vivo da sessão no WAHA; a imagem do QR só vem com a sessão em SCAN_QR_CODE. */
+  async qrAoVivo(sessao: string): Promise<{ status: string; imagem?: string }> {
     const atual = (await (await this.waha(sessao, `/api/sessions/${encodeURIComponent(sessao)}`)).json()) as { status?: string };
     const status = atual?.status ?? 'DESCONHECIDO';
-    if (status !== 'SCAN_QR_CODE') throw new ConflictException(`A sessão está ${status}, não aguardando QR.`);
+    if (status !== 'SCAN_QR_CODE') return { status };
     const r = await this.waha(sessao, `/api/${encodeURIComponent(sessao)}/auth/qr?format=image`);
     return { status, imagem: `data:image/png;base64,${Buffer.from(await r.arrayBuffer()).toString('base64')}` };
   }
@@ -380,7 +426,13 @@ export class SessoesService implements OnModuleInit {
   /** Nova sessão na instância local (`wa-<apelido>`), já com o webhook de mensagens. */
   async criar(
     userId: string | undefined,
-    dto: { apelido?: string; rep_codigo?: number | null; rep_nome?: string | null; guarda_corpo?: boolean },
+    dto: {
+      apelido?: string;
+      rep_codigo?: number | null;
+      rep_nome?: string | null;
+      guarda_corpo?: boolean;
+      usuario_codigo?: string | null;
+    },
   ) {
     const u = await this.exigirTela(userId, 'editar');
     const apelido = (dto?.apelido ?? '').trim();
@@ -393,6 +445,7 @@ export class SessoesService implements OnModuleInit {
     if (!slug) throw new BadRequestException('Informe o apelido da sessão.');
     const rep_codigo = dto.rep_codigo ?? null;
     if (rep_codigo !== null && !Number.isInteger(rep_codigo)) throw new BadRequestException('rep_codigo inválido.');
+    const usuario_codigo = dto.usuario_codigo ? (await this.usuarioDoCodigo(String(dto.usuario_codigo))).codigo : null;
     const webhook = process.env.WA_WEBHOOK_URL;
     if (!webhook) throw new BadRequestException('WA_WEBHOOK_URL não configurada no vendas-service.');
     const sessao = `wa-${slug}`;
@@ -423,6 +476,7 @@ export class SessoesService implements OnModuleInit {
       rep_codigo,
       rep_nome: rep_codigo == null ? null : dto.rep_nome?.trim() || null,
       guarda_corpo: dto.guarda_corpo ?? true,
+      usuario_codigo,
     };
     // upsert: o monitor pode ter inserido a sessão recém-criada no WAHA (sem vendedor) antes daqui.
     const [row] = await this.prisma.$transaction([
@@ -435,8 +489,15 @@ export class SessoesService implements OnModuleInit {
     return row;
   }
 
-  /** Ligar/desligar a guarda de conteúdo fica no histórico (evento `guarda_corpo`, com quem mudou). */
-  async editar(userId: string | undefined, sessao: string, dto: { apelido?: string; guarda_corpo?: boolean }) {
+  /**
+   * Ligar/desligar a guarda de conteúdo e trocar o usuário que reconecta ficam no histórico
+   * (eventos `guarda_corpo` e `usuario`, com quem mudou). `usuario_codigo` null limpa; ausente não mexe.
+   */
+  async editar(
+    userId: string | undefined,
+    sessao: string,
+    dto: { apelido?: string; guarda_corpo?: boolean; usuario_codigo?: string | null },
+  ) {
     const u = await this.exigirTela(userId, 'editar');
     const atual = await this.linha(sessao);
     const data: Prisma.ven_wa_sessaoUpdateInput = { updated_at: new Date() };
@@ -446,6 +507,11 @@ export class SessoesService implements OnModuleInit {
     }
     const guarda = dto?.guarda_corpo === undefined ? atual.guarda_corpo : !!dto.guarda_corpo;
     data.guarda_corpo = guarda;
+    let usuario = atual.usuario_codigo;
+    if (dto?.usuario_codigo !== undefined) {
+      usuario = dto.usuario_codigo ? (await this.usuarioDoCodigo(String(dto.usuario_codigo))).codigo : null;
+      data.usuario_codigo = usuario;
+    }
     const [row] = await this.prisma.$transaction([
       this.prisma.ven_wa_sessao.update({ where: { sessao }, data }),
       ...(guarda === atual.guarda_corpo
@@ -453,6 +519,13 @@ export class SessoesService implements OnModuleInit {
         : [
             this.prisma.ven_wa_sessao_evento.create({
               data: { sessao, tipo: 'guarda_corpo', de: String(atual.guarda_corpo), para: String(guarda), usuario: u.nome },
+            }),
+          ]),
+      ...(usuario === atual.usuario_codigo
+        ? []
+        : [
+            this.prisma.ven_wa_sessao_evento.create({
+              data: { sessao, tipo: 'usuario', de: atual.usuario_codigo, para: usuario, usuario: u.nome },
             }),
           ]),
     ]);
@@ -472,8 +545,20 @@ export class SessoesService implements OnModuleInit {
       }),
       this.prisma.ven_wa_sessao_evento.create({ data: { sessao, tipo: acao, usuario: u.nome } }),
     ]);
+    await this.reconexaoPelaTela(sessao);
     await this.recarregar();
     return { ok: true };
+  }
+
+  /**
+   * QR ou Reiniciar/Deslogar pela tela limpa `qr_por` da reconexão em aberto: se a sessão voltar
+   * depois disso, a reconexão fica "pela tela" (reconectada_por nulo), até o usuário ver o QR de novo.
+   */
+  private reconexaoPelaTela(sessao: string) {
+    return this.prisma.ven_wa_reconexao.updateMany({
+      where: { sessao, reconectada_em: null, qr_por: { not: null } },
+      data: { qr_por: null },
+    });
   }
 
   /** O que a troca de vendedor leva junto: tarefas abertas e resgates em andamento do vendedor atual. */

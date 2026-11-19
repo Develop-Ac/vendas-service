@@ -5,6 +5,12 @@ import { hojeCuiabaYmd } from '../orcamento/orcamento.prisma.repository';
 describe('SessoesService (monitor do WAHA)', () => {
   let rows: Map<string, any>;
   let eventos: any[];
+  let reconexoes: any[];
+  const usuarios = [
+    { codigo: '37', nome: 'ALISSON', setor: 'ATACADO', trash: 0 },
+    { codigo: '83', nome: 'FERNANDO', setor: 'ATACADO', trash: 0 },
+    { codigo: '99', nome: 'DEMITIDO', setor: null, trash: 1 },
+  ];
   let lista: any[] | Error;
   let svc: SessoesService;
 
@@ -23,6 +29,7 @@ describe('SessoesService (monitor do WAHA)', () => {
     leituras_fora: 0,
     avisada: false,
     restart_em: null,
+    usuario_codigo: null,
     ...extra,
   });
 
@@ -44,6 +51,7 @@ describe('SessoesService (monitor do WAHA)', () => {
       update: jest.fn(async ({ where, data }: any) => Object.assign(rows.get(where.sessao), data)),
     },
     ven_wa_sessao_evento: {
+      findMany: jest.fn(async () => []),
       createMany: jest.fn(async ({ data }: any) => {
         eventos.push(...data);
         return { count: data.length };
@@ -53,7 +61,26 @@ describe('SessoesService (monitor do WAHA)', () => {
         return data;
       }),
     },
-    ven_wa_mensagem: { updateMany: jest.fn(async () => ({ count: 12 })) },
+    ven_wa_reconexao: {
+      findMany: jest.fn(async () => {
+        const ultima = new Map<string, any>();
+        for (const r of [...reconexoes].sort((a, b) => b.marcada_em - a.marcada_em)) if (!ultima.has(r.sessao)) ultima.set(r.sessao, r);
+        return [...ultima.values()];
+      }),
+    },
+    sis_usuarios: {
+      findFirst: jest.fn(async ({ where }: any) => usuarios.find((u) => u.codigo === where.codigo && u.trash === where.trash) ?? null),
+      findMany: jest.fn(async ({ where }: any) =>
+        usuarios
+          .filter((u) => (where.codigo ? where.codigo.in.includes(u.codigo) : u.trash === where.trash))
+          .map(({ codigo, nome, setor }) => ({ codigo, nome, setor }))
+          .sort((a, b) => a.nome.localeCompare(b.nome)),
+      ),
+    },
+    ven_wa_mensagem: {
+      updateMany: jest.fn(async () => ({ count: 12 })),
+      groupBy: jest.fn(async () => []),
+    },
     ven_fila_tarefa: { updateMany: jest.fn(async () => ({ count: 3 })) },
     ven_resgate: { updateMany: jest.fn(async () => ({ count: 2 })) },
     $transaction: jest.fn(async (arg: any) => (typeof arg === 'function' ? arg(prisma) : Promise.all(arg))),
@@ -77,6 +104,7 @@ describe('SessoesService (monitor do WAHA)', () => {
     process.env.WA_API_KEY = 'k';
     rows = new Map([['rep-7', linha('rep-7', { rep_codigo: 7, rep_nome: 'JOAO' })]]);
     eventos = [];
+    reconexoes = [];
     lista = [];
     fetchMock.mockImplementation(async (url: string) => {
       if (url.endsWith('/restart')) return { ok: true, json: async () => ({}) };
@@ -142,6 +170,54 @@ describe('SessoesService (monitor do WAHA)', () => {
       expect(r).toMatchObject({ sessao: 'wa-loja', rep_codigo: 9, guarda_corpo: true });
       const corpo = JSON.parse(fetchMock.mock.calls[0][1].body);
       expect(corpo.config.webhooks[0].events).toEqual(['message.any', 'message.ack']);
+    });
+
+    it('criar grava o usuário da intranet', async () => {
+      process.env.WA_WEBHOOK_URL = 'http://vendas/whatsapp/webhook';
+      const r = await svc.criar('u1', { apelido: 'Loja', usuario_codigo: '37' });
+      expect(r).toMatchObject({ sessao: 'wa-loja', usuario_codigo: '37' });
+    });
+
+    it('editar troca o usuário e grava evento usuario de→para com quem trocou; null limpa', async () => {
+      await svc.editar('u1', 'rep-7', { usuario_codigo: '37' });
+      expect(rows.get('rep-7').usuario_codigo).toBe('37');
+      expect(eventos).toEqual([expect.objectContaining({ tipo: 'usuario', de: null, para: '37', usuario: 'LUCAS' })]);
+      await svc.editar('u1', 'rep-7', { usuario_codigo: '37' });
+      expect(eventos).toHaveLength(1);
+      await svc.editar('u1', 'rep-7', { usuario_codigo: null });
+      expect(rows.get('rep-7').usuario_codigo).toBeNull();
+      expect(eventos[1]).toMatchObject({ tipo: 'usuario', de: '37', para: null });
+    });
+
+    it('usuário inexistente ou na lixeira → 400, sem gravar', async () => {
+      await expect(svc.editar('u1', 'rep-7', { usuario_codigo: '404' })).rejects.toBeInstanceOf(BadRequestException);
+      await expect(svc.editar('u1', 'rep-7', { usuario_codigo: '99' })).rejects.toBeInstanceOf(BadRequestException);
+      expect(prisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('listar devolve usuario_nome e a última reconexão da sessão', async () => {
+      rows.set('rep-8', linha('rep-8'));
+      rows.get('rep-7').usuario_codigo = '83';
+      reconexoes = [
+        { sessao: 'rep-7', marcada_em: new Date('2026-11-01T12:00:00Z') },
+        { sessao: 'rep-7', marcada_em: new Date('2026-11-18T12:00:00Z') },
+      ];
+      const [{ sessoes }] = await svc.listar('u1');
+      expect(sessoes.find((s: any) => s.sessao === 'rep-7')).toMatchObject({
+        usuario_codigo: '83',
+        usuario_nome: 'FERNANDO',
+        reconexao: { marcada_em: new Date('2026-11-18T12:00:00Z') },
+      });
+      expect(sessoes.find((s: any) => s.sessao === 'rep-8')).toMatchObject({ usuario_nome: null, reconexao: null });
+    });
+
+    it('usuarios exige editar e devolve só os ativos por nome', async () => {
+      expect(await svc.usuarios('u1')).toEqual([
+        { codigo: '37', nome: 'ALISSON', setor: 'ATACADO' },
+        { codigo: '83', nome: 'FERNANDO', setor: 'ATACADO' },
+      ]);
+      permissao = { visualizar: true, editar: false };
+      await expect(svc.usuarios('u1')).rejects.toBeInstanceOf(ForbiddenException);
     });
 
     it('QR com a sessão fora de SCAN_QR_CODE → 409', async () => {

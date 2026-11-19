@@ -4,7 +4,7 @@ import { SoPeloProxy } from '../common/so-pelo-proxy.guard';
 
 /**
  * Tela /sistema/whatsapp: sessões do WAHA por instância, eventos, QR de pareamento,
- * nova sessão, reiniciar/deslogar e troca de vendedor. Quem age vem do `x-user-id`
+ * nova sessão, reiniciar/deslogar, troca de vendedor e usuário da intranet que reconecta. Quem age vem do `x-user-id`
  * que o proxy da intranet injeta (conferido por SoPeloProxy); a permissão é a da tela
  * em sis_permissoes (visualizar para ler, editar para agir).
  */
@@ -20,10 +20,22 @@ export class SessoesController {
 
   @Post()
   criar(
-    @Body() dto: { apelido?: string; rep_codigo?: number | null; rep_nome?: string | null; guarda_corpo?: boolean },
+    @Body()
+    dto: {
+      apelido?: string;
+      rep_codigo?: number | null;
+      rep_nome?: string | null;
+      guarda_corpo?: boolean;
+      usuario_codigo?: string | null;
+    },
     @Headers('x-user-id') usuario?: string,
   ) {
     return this.service.criar(usuario, dto ?? {});
+  }
+
+  @Get('usuarios')
+  usuarios(@Headers('x-user-id') usuario?: string) {
+    return this.service.usuarios(usuario);
   }
 
   @Get(':sessao/eventos')
@@ -39,7 +51,7 @@ export class SessoesController {
   @Put(':sessao')
   editar(
     @Param('sessao') sessao: string,
-    @Body() dto: { apelido?: string; guarda_corpo?: boolean },
+    @Body() dto: { apelido?: string; guarda_corpo?: boolean; usuario_codigo?: string | null },
     @Headers('x-user-id') usuario?: string,
   ) {
     return this.service.editar(usuario, sessao, dto ?? {});

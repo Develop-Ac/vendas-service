@@ -2596,6 +2596,8 @@ model ven_wa_sessao {
   avisada       Boolean   @default(false)
   /// restart automático já tentado nesta queda
   restart_em    DateTime? @db.Timestamptz(6)
+  /// sis_usuarios.codigo de quem lê o QR quando a sessão cai
+  usuario_codigo String?
   created_at    DateTime  @default(now()) @db.Timestamptz(6)
   updated_at    DateTime  @default(now()) @db.Timestamptz(6)
 
@@ -2603,7 +2605,7 @@ model ven_wa_sessao {
   @@index([rep_codigo], map: "idx_ven_wa_sessao_rep")
 }
 
-/// histórico da sessão: status | restart | logout | criada | vendedor | instancia
+/// histórico da sessão: status | restart | logout | criada | vendedor | instancia | guarda_corpo | usuario | reconexao | reconectada | recarga
 model ven_wa_sessao_evento {
   id      String   @id @default(cuid())
   sessao  String
@@ -2615,6 +2617,32 @@ model ven_wa_sessao_evento {
   detalhe String?
 
   @@index([sessao, quando(sort: Desc)], map: "idx_ven_wa_sessao_evt")
+}
+
+/// queda de sessão com usuário: espera o usuário ler o QR e depois recarrega o período fora do ar
+model ven_wa_reconexao {
+  id                 String    @id @default(cuid())
+  sessao             String
+  /// quando saiu de WORKING
+  caiu_em            DateTime  @db.Timestamptz(6)
+  marcada_em         DateTime  @db.Timestamptz(6)
+  modal_visto_em     DateTime? @db.Timestamptz(6)
+  /// nome de quem pediu o QR pelo aviso da intranet
+  qr_por             String?
+  reconectada_em     DateTime? @db.Timestamptz(6)
+  /// nulo = reconectada pela tela /sistema/whatsapp
+  reconectada_por    String?
+  /// início do período recarregado (caiu_em - 1 h)
+  recarga_de         DateTime? @db.Timestamptz(6)
+  /// próxima rodada da recarga; nulo = sem rodada pendente
+  recarga_proxima_em DateTime? @db.Timestamptz(6)
+  recarga_rodadas    Int       @default(0)
+  recarga_lidas      Int       @default(0)
+  recarga_gravadas   Int       @default(0)
+  recarga_erro       String?
+  concluida_em       DateTime? @db.Timestamptz(6)
+
+  @@index([sessao, marcada_em(sort: Desc)], map: "idx_ven_wa_reconexao_sessao")
 }
 
 /// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
