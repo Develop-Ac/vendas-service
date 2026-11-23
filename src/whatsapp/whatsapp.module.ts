@@ -7,11 +7,13 @@ import { SessoesService } from './sessoes.service';
 import { SessoesController } from './sessoes.controller';
 import { ReconexaoService } from './reconexao.service';
 import { MinhaSessaoController } from './minha-sessao.controller';
+import { AssistenteService } from './assistente.service';
+import { AssistenteController } from './assistente.controller';
 
 @Module({
   imports: [S3Module],
-  controllers: [WhatsappController, SessoesController, MinhaSessaoController],
-  providers: [WhatsappService, WhatsappRepository, SessoesService, ReconexaoService],
+  controllers: [WhatsappController, SessoesController, MinhaSessaoController, AssistenteController],
+  providers: [WhatsappService, WhatsappRepository, SessoesService, ReconexaoService, AssistenteService],
   exports: [WhatsappRepository, WhatsappService, SessoesService],
 })
 export class WhatsappModule {}
