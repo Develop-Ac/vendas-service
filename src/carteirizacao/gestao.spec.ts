@@ -66,6 +66,12 @@ describe('ritmo e previsão', () => {
     expect(ritmoPrevisao({ faturado: 30, faturado_hoje: 10, dias, encerrado: false }).ritmo).toBe(10);
   });
 
+  it('hoje acima do ritmo: previsão = faturado + ritmo dos dias restantes (caso de 24/11/2026)', () => {
+    // 23 fechados, hoje e mais 1: 465,7 até ontem + 42,3 hoje → 508 + 20,25 (antes dava 506,2 < faturado)
+    const dias = contarDias(DIAS25, '2026-10-26', '2026-11-25', DIAS25[23]);
+    expect(ritmoPrevisao({ faturado: 508, faturado_hoje: 42.3, dias, encerrado: false }).previsao).toBeCloseTo(528.2, 1);
+  });
+
   it('primeiro dia útil: sem base', () => {
     const dias = contarDias(DIAS25, '2026-10-26', '2026-11-25', DIAS25[0]);
     expect(ritmoPrevisao({ faturado: 8, faturado_hoje: 8, dias, encerrado: false })).toEqual({ ritmo: null, previsao: null });

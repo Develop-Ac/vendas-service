@@ -48,6 +48,10 @@ export function contarDias(diasUteis: string[], inicio: string, fim: string, hoj
 /**
  * Ritmo = faturado até ontem ÷ dias úteis fechados; previsão = ritmo × total.
  * Sem dia fechado (primeiro dia útil) não há base. Mês encerrado: previsão = faturado.
+ *
+ * O dia de hoje entra pelo ritmo enquanto vende menos que ele; quando já vendeu
+ * mais, vale o que vendeu — a previsão nunca fica abaixo do já faturado mais o
+ * ritmo dos dias que restam.
  */
 export function ritmoPrevisao(p: { faturado: number; faturado_hoje: number; dias: Dias; encerrado: boolean }): {
   ritmo: number | null;
@@ -57,7 +61,7 @@ export function ritmoPrevisao(p: { faturado: number; faturado_hoje: number; dias
   if (encerrado) return { ritmo: dias.total > 0 ? faturado / dias.total : null, previsao: faturado };
   if (dias.fechados <= 0) return { ritmo: null, previsao: null };
   const ritmo = (faturado - faturado_hoje) / dias.fechados;
-  return { ritmo, previsao: ritmo * dias.total };
+  return { ritmo, previsao: Math.max(ritmo * dias.total, faturado + ritmo * dias.restantes) };
 }
 
 /** Quanto falta vender por dia útil restante para chegar no alvo. Sem dia restante, nulo. */
