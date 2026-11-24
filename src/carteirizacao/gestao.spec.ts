@@ -140,25 +140,14 @@ describe('pontos e disciplina', () => {
     expect(pontosIndicador(null, 25)).toBe(0);
   });
 
-  it('disciplina composta', () => {
-    const metas = { metaSla: 90, metaMotivos: 80 };
-    expect(disciplina({ sla: 95, motivos: 80, ...metas }).cor).toBe('verde');
-    expect(disciplina({ sla: 85, motivos: 72, ...metas }).cor).toBe('amarelo');
-    expect(disciplina({ sla: 95, motivos: 69, ...metas }).cor).toBe('vermelho');
-    expect(disciplina({ sla: 90, motivos: 72, ...metas }).valor).toBe(95);
-    expect(disciplina({ sla: null, motivos: 80, ...metas })).toEqual({ valor: null, cor: null, bonus: 0 });
-  });
-
-  it('disciplina: fila de contatos na meta soma 10 p.p. ao resgate (só na disciplina, teto 100)', () => {
-    const metas = { metaSla: 90, metaMotivos: 80, metaFila: 80 };
-    // 72,7% de resgate é vermelho (< 80); com o bônus vira 82,7% = amarelo
-    expect(disciplina({ sla: 72.7, motivos: 86, fila: 91.9, ...metas })).toMatchObject({ cor: 'amarelo', bonus: 10 });
-    expect(disciplina({ sla: 72.7, motivos: 86, fila: 79.9, ...metas })).toMatchObject({ cor: 'vermelho', bonus: 0 });
-    expect(disciplina({ sla: 72.7, motivos: 86, fila: null, ...metas })).toMatchObject({ cor: 'vermelho', bonus: 0 });
-    // longe da faixa o bônus não muda a cor: 36,4 + 10 continua vermelho
-    expect(disciplina({ sla: 36.4, motivos: 86, fila: 91.9, ...metas })).toMatchObject({ cor: 'vermelho', bonus: 10 });
-    // teto: 95 + 10 conta como 100 → (111,1 + 100) / 2
-    expect(disciplina({ sla: 95, motivos: 80, fila: 80, ...metas }).valor).toBe(105.6);
+  it('disciplina: média simples dos três contra 80% (amarelo até 70%)', () => {
+    // caso de 24/11/2026: (45,5 + 91 + 75) / 3
+    expect(disciplina({ sla: 45.5, motivos: 91, fila: 75 })).toEqual({ valor: 70.5, cor: 'amarelo' });
+    expect(disciplina({ sla: 70, motivos: 90, fila: 80 })).toEqual({ valor: 80, cor: 'verde' });
+    expect(disciplina({ sla: 40, motivos: 90, fila: 79 })).toEqual({ valor: 69.7, cor: 'vermelho' });
+    // sem medida fica fora da média; sem nenhum, sem medida
+    expect(disciplina({ sla: null, motivos: 90, fila: 80 })).toEqual({ valor: 85, cor: 'verde' });
+    expect(disciplina({ sla: null, motivos: null, fila: null })).toEqual({ valor: null, cor: null });
   });
 });
 

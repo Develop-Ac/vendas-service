@@ -26,6 +26,7 @@ import {
   contarDias,
   disciplina,
   margemMes,
+  META_DISCIPLINA,
   nivel,
   notasDoOrcamento,
   PESOS,
@@ -127,7 +128,7 @@ export class GestaoService {
 
   /**
    * Bloco do prêmio do supervisor: os quatro indicadores com peso (disciplina =
-   * SLA de resgate + motivos apontados), pontos pelo semáforo e a trava da
+   * média de resgates, motivos e contatos no prazo), pontos pelo semáforo e a trava da
    * bolsa do canal (saldo < 0 zera o valor, não o nível).
    */
   private blocoPremio(kpis: Kpi[], bolsaCanal: number | null) {
@@ -150,14 +151,7 @@ export class GestaoService {
     const sla = kpi('RESGATE_SLA_PCT');
     const motivos = kpi('MOTIVOS_APONTADOS_PCT');
     const fila = kpi('FILA_NO_PRAZO_PCT');
-    const d = disciplina({
-      sla: sla?.valor ?? null,
-      metaSla: sla?.meta ?? 0,
-      motivos: motivos?.valor ?? null,
-      metaMotivos: motivos?.meta ?? 0,
-      fila: fila?.valor ?? null,
-      metaFila: fila?.meta ?? 0,
-    });
+    const d = disciplina({ sla: sla?.valor ?? null, motivos: motivos?.valor ?? null, fila: fila?.valor ?? null });
     const indicadores = [
       medido('CLIENTES_ATIVOS_MES'),
       medido('RECUPERACAO_AB_PCT', 'recuperados', 'fechados'),
@@ -167,18 +161,15 @@ export class GestaoService {
         nome: 'Disciplina da equipe',
         unidade: 'pct' as const,
         valor: d.valor,
-        meta: 100,
+        meta: META_DISCIPLINA,
         peso: PESOS.DISCIPLINA,
         semaforo: d.cor,
         pontos: pontosIndicador(d.cor, PESOS.DISCIPLINA),
-        componentes: [sla, motivos].map((k, i) => ({
-          chave: i === 0 ? 'RESGATE_SLA_PCT' : 'MOTIVOS_APONTADOS_PCT',
-          nome: k?.nome ?? '',
-          valor: k?.valor ?? null,
-          meta: k?.meta ?? 0,
-        })),
-        // Fila de contatos no prazo: não é componente, só dá o bônus ao resgate.
-        bonus_contatos: { pp: d.bonus, valor: fila?.valor ?? null, meta: fila?.meta ?? 0 },
+        // Os três percentuais que entram na média do geral.
+        componentes: (['RESGATE_SLA_PCT', 'MOTIVOS_APONTADOS_PCT', 'FILA_NO_PRAZO_PCT'] as const).map((chave, i) => {
+          const k = [sla, motivos, fila][i];
+          return { chave, nome: k?.nome ?? '', valor: k?.valor ?? null, meta: k?.meta ?? 0 };
+        }),
       },
     ];
     return {

@@ -5,7 +5,7 @@
  *
  * Dias úteis vêm de `d_calendario.is_dia_util` do BI (datas aaaa-mm-dd).
  */
-import { Cor, pct, piorCor, semaforo } from './supervisao.indicadores';
+import { Cor, pct, semaforo } from './supervisao.indicadores';
 
 export type Veredito = 'VAI_BATER' | 'EM_RISCO' | 'NAO_BATE' | 'ABAIXO_DO_PISO';
 export type Nivel = 0 | 1 | 2 | 3;
@@ -117,41 +117,27 @@ export function pontosIndicador(cor: Cor | null, peso: number): number {
   return cor === 'amarelo' ? peso / 2 : 0;
 }
 
-/** Pontos percentuais somados ao resgate na disciplina quando a fila de contatos bate a meta. */
-export const BONUS_CONTATOS_PP = 10;
+/** Meta do geral da disciplina, em %. */
+export const META_DISCIPLINA = 80;
 
 /**
- * Disciplina da equipe = média do atingimento do SLA de resgate e dos motivos
- * apontados. Verde: os dois batem; amarelo: os dois até 10 p.p. abaixo; resto vermelho.
+ * Disciplina da equipe = média simples de três percentuais: resgates no prazo,
+ * motivos apontados e contatos no prazo. Vale o geral contra META_DISCIPLINA
+ * (decisão de 24/11/2026): 80% ou mais é verde (pontos cheios), de 70% a 79,9%
+ * amarelo (metade), abaixo vermelho. As metas próprias de cada um (90/80/80)
+ * seguem valendo no painel da Carteira, mas não entram mais nesta conta.
  *
- * Bônus dos contatos (decisão de 12/11/2026): quando a fila de contatos fecha no
- * prazo na meta (`fila` ≥ `metaFila`), o resgate ganha BONUS_CONTATOS_PP pontos
- * percentuais SÓ aqui na disciplina (teto 100) — reconhece a equipe que está
- * tentando. O indicador "Resgates no prazo" em si continua com a regra das 48h.
+ * Indicador sem medida no mês (ex.: nenhum resgate aberto) fica fora da média;
+ * sem nenhum dos três, a disciplina fica sem medida.
  */
-export function disciplina(p: {
-  sla: number | null;
-  metaSla: number;
-  motivos: number | null;
-  metaMotivos: number;
-  fila?: number | null;
-  metaFila?: number;
-}): {
+export function disciplina(p: { sla: number | null; motivos: number | null; fila: number | null }): {
   valor: number | null;
   cor: Cor | null;
-  bonus: number;
 } {
-  const bonus = p.fila != null && !!p.metaFila && p.fila >= p.metaFila ? BONUS_CONTATOS_PP : 0;
-  if (p.sla == null || p.motivos == null) return { valor: null, cor: null, bonus };
-  const sla = Math.min(100, p.sla + bonus);
-  const a = pct(sla, p.metaSla);
-  const b = pct(p.motivos, p.metaMotivos);
-  const valor = a == null || b == null ? null : Math.round(((a + b) / 2) * 10) / 10;
-  const cor = piorCor([
-    semaforo(sla, p.metaSla, 10, 'pct', 'MAIOR'),
-    semaforo(p.motivos, p.metaMotivos, 10, 'pct', 'MAIOR'),
-  ]);
-  return { valor, cor, bonus };
+  const medidos = [p.sla, p.motivos, p.fila].filter((v): v is number => v != null);
+  if (!medidos.length) return { valor: null, cor: null };
+  const valor = Math.round((medidos.reduce((s, v) => s + v, 0) / medidos.length) * 10) / 10;
+  return { valor, cor: semaforo(valor, META_DISCIPLINA, 10, 'pct', 'MAIOR') };
 }
 
 /** Valor do nível × pontos ÷ 100; bolsa do canal negativa zera. Sem proporcional entre níveis. */

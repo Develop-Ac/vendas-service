@@ -875,6 +875,8 @@ export class OrcamentoErpRepository {
         campos: ['PRO_CODIGO', 'ALIQUOTA'],
         filtros: [{ campo: 'UF', op: 'igual', valor: uf }, { campo: 'PRO_CODIGO', op: 'em', valor: lote }],
         limite: lote.length + FOLGA,
+        // o fiscal cadastra a alíquota com o vendedor esperando na tela: o "sem alíquota" não pode ficar 5 min no cache
+        semCache: true,
       });
       for (const x of r) out.set(Number(x.PRO_CODIGO), Number(x.ALIQUOTA ?? 0) / 100);
     }

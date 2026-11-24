@@ -169,7 +169,9 @@ describe('GestaoService.visaoGeral', () => {
     expect(r.premio.indicadores[1]).toMatchObject({ num: 8, den: 25, peso: 30 });
     expect(r.premio.indicadores[3]).toMatchObject({
       chave: 'DISCIPLINA',
-      componentes: [{ chave: 'RESGATE_SLA_PCT' }, { chave: 'MOTIVOS_APONTADOS_PCT' }],
+      valor: 90,
+      meta: 80,
+      componentes: [{ chave: 'RESGATE_SLA_PCT' }, { chave: 'MOTIVOS_APONTADOS_PCT' }, { chave: 'FILA_NO_PRAZO_PCT' }],
     });
     expect(r.premio.trava_bolsa).toBe(false);
   });
