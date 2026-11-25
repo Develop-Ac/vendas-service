@@ -183,7 +183,7 @@ export class GestaoService {
    * Reps ativos do atacado (código → nome) e suas metas de `ven_meta_vendedor`; a meta
    * do canal é a soma dessas metas (sem fallback do DW).
    */
-  private async metasDoCanal(ano: number, mes: number) {
+  async metasDoCanal(ano: number, mes: number) {
     const [reps, metas] = await Promise.all([this.bi.vendedoresAtivosComissao(), this.repo.listarMetasPeriodo(ano, mes)]);
     const atacado = new Map(
       reps
@@ -196,7 +196,7 @@ export class GestaoService {
   }
 
   /** Mês pedido (ou o comissional corrente); 400 para mês inválido ou que ainda não começou. */
-  private validarPeriodo(ano?: number, mes?: number) {
+  validarPeriodo(ano?: number, mes?: number) {
     const hoje = hojeYmd();
     const atual = mesComissionalDe(hoje);
     ano = ano ?? atual.ano;
@@ -210,7 +210,7 @@ export class GestaoService {
   }
 
   /** Período da resposta a partir do calendário do BI (sem calendário, as datas padrão do mês comissional). */
-  private montarPeriodo(
+  montarPeriodo(
     p: ReturnType<GestaoService['validarPeriodo']>,
     cal: { inicio: string; fim: string; dias: string[] } | null,
   ) {

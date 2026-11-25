@@ -15,6 +15,9 @@ import { TrocaVendedorService } from './troca-vendedor.service';
 import { CarteirizacaoCeltaClient } from './carteirizacao.celta.client';
 import { SupervisaoService } from './supervisao.service';
 import { GestaoService } from './gestao.service';
+import { PainelVendedorService } from './painel-vendedor.service';
+// Só depende do PrismaService global; importar o OfertaModule fecharia um ciclo de módulos.
+import { OfertaRepository } from '../oferta/oferta.repository';
 import { GestaoFechamentoScheduler } from './gestao-fechamento.scheduler';
 import { OrcamentoModule } from '../orcamento/orcamento.module';
 import { MssqlService } from 'src/common/mssql/mssql.service';
@@ -36,6 +39,8 @@ import { MssqlService } from 'src/common/mssql/mssql.service';
     CarteirizacaoCeltaClient,
     SupervisaoService,
     GestaoService,
+    PainelVendedorService,
+    OfertaRepository,
     GestaoFechamentoScheduler,
     MssqlService
   ],

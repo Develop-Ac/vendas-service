@@ -418,9 +418,12 @@ export class FilaService {
   }
 
   // ------------------------------------------------------------------ listar
-  /** A fila do dia de um vendedor (ou de todos, no gerencial). */
-  async listar(params: { rep_codigo?: number }) {
-    const clientes = await this.carteirizacao.snapshotCarteira();
+  /**
+   * A fila do dia de um vendedor (ou de todos, no gerencial). Quem já montou a
+   * carteira (painel do vendedor) passa o snapshot para não montar de novo.
+   */
+  async listar(params: { rep_codigo?: number }, clientes?: ClienteCarteira[]) {
+    clientes ??= await this.carteirizacao.snapshotCarteira();
     await this.reconciliar(clientes);
 
     const hoje0h = new Date();

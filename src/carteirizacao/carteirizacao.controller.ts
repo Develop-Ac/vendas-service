@@ -23,6 +23,7 @@ import { WhatsappService } from '../whatsapp/whatsapp.service';
 import { TrocaVendedorService } from './troca-vendedor.service';
 import { SupervisaoService } from './supervisao.service';
 import { GestaoService } from './gestao.service';
+import { PainelVendedorService } from './painel-vendedor.service';
 import {
   ConfigVendedorDto,
   ConfirmarCarteirizacaoDto,
@@ -57,6 +58,7 @@ export class CarteirizacaoController {
     private readonly supervisao: SupervisaoService,
     private readonly gestao: GestaoService,
     private readonly retornos: RetornoVendaPerdidaService,
+    private readonly painelVendedor: PainelVendedorService,
   ) {}
 
   @Get('clientes')
@@ -297,6 +299,13 @@ export class CarteirizacaoController {
     @Headers('x-user-id') usuario?: string,
   ) {
     return this.gestao.equipe(toNum(ano), toNum(mes), semanaDesde, semanaAte, usuario);
+  }
+
+  /** Painel do vendedor do atacado (tela inicial) do mês comissional corrente. O rep sai do usuário do x-user-id. */
+  @Get('painel-vendedor')
+  @UseGuards(SoPeloProxy)
+  painelDoVendedor(@Headers('x-user-id') usuario?: string) {
+    return this.painelVendedor.painelDoUsuario(usuario);
   }
 
   /** Motivos de perda dos orçamentos emitidos no mês calendário `mes` (AAAA-MM), para a aba Canal. */

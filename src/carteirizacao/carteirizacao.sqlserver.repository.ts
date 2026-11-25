@@ -643,6 +643,25 @@ export class CarteirizacaoSqlServerRepository {
     return rows.map((r) => ({ dia: r.dia, venda: Number(r.venda), custo: Number(r.custo), mix1: Number(r.mix1) }));
   }
 
+  /** Faturado oficial de um vendedor (`vendedor_venda`) no canal atacado, no mês comissional, por dia de emissão. */
+  async faturadoVendedorPorDia(ano: number, mes: number, rep: number): Promise<Array<{ dia: string; valor: number }>> {
+    const rows = await this.mssql.query<{ dia: string; valor: number }>(
+      `
+      SELECT CONVERT(varchar(10), v.dt_emissao_convertida, 23) AS dia,
+             COALESCE(SUM(v.liquido_produto), 0) AS valor
+      FROM dbo.vw_analise_vendas v
+      WHERE v.local_venda = 'ATACADO'
+        AND v.DT_CANCELAMENTO IS NULL
+        AND v.ano_comissional = @ano AND v.mes_comissional = @mes
+        AND v.vendedor_venda = @rep
+      GROUP BY CONVERT(varchar(10), v.dt_emissao_convertida, 23)
+      ORDER BY dia
+      `,
+      { ano, mes, rep },
+    );
+    return rows.map((r) => ({ dia: r.dia, valor: Number(r.valor) }));
+  }
+
   /** Faturado oficial do canal atacado por mês comissional, de `de` a `ate` (inclusive). */
   async faturadoCanalMeses(
     de: { ano: number; mes: number },

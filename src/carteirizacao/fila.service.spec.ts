@@ -4,67 +4,9 @@ import { FilaService } from './fila.service';
 import { RetornoVendaPerdidaService } from './retorno-venda-perdida.service';
 import { CarteirizacaoService, ClienteCarteira } from './carteirizacao.service';
 import { CarteirizacaoPrismaRepository } from './carteirizacao.prisma.repository';
+import { cliente } from '../../test/mocks/cliente-carteira';
 
 const DIA_MS = 86_400_000;
-
-/** Cliente mínimo para a régua: só os campos que a fila lê. */
-function cliente(over: Partial<ClienteCarteira>): ClienteCarteira {
-  return {
-    cli_codigo: 1,
-    cli_nome: 'CLIENTE TESTE',
-    uf: 'MT',
-    cidade: 'CUIABA',
-    fone: '65999990000',
-    contato: null,
-    localizacao: null,
-    tabela_preco: '2',
-    em_carteira: true,
-    rep_codigo: 10,
-    rep_nome: 'VENDEDOR',
-    origem: 'SYNC_ERP',
-    rep_codigo_cadastro: 10,
-    rep_nome_cadastro: 'VENDEDOR',
-    data_ult_compra: null,
-    dias_sem_compra: null,
-    faturamento_total: 1000,
-    faturamento_3m: 0,
-    faturamento_3m_ant: 0,
-    faturamento_12m: 0,
-    ticket_medio: 0,
-    ticket_dia: 0,
-    dias_com_venda: 0,
-    qtd_pedidos: 0,
-    participacao_carteira_pct: 0,
-    margem_custo_pct: 0,
-    lucro_12m: 0,
-    crediario: null,
-    crediario_liberado: false,
-    limite_credito: 0,
-    limite_disponivel: 0,
-    con_codigo: null,
-    conceito: null,
-    status: 'ATIVO',
-    alto_faturamento: false,
-    queda: false,
-    novo: false,
-    score: 50,
-    score_faixa: 'B',
-    curva_abc: 'A',
-    curva_criterio: 'FINANCEIRO',
-    curva_pontos: null,
-    curva_motivo: null,
-    financeiro: null,
-    risco_inativacao: false,
-    revisao: false,
-    revisao_motivo: null,
-    ult_orcamento: null,
-    dias_sem_orcamento: null,
-    orcamentos_90d: 0,
-    valor_orcado_90d: 0,
-    quadrante: 'PERDA_SILENCIOSA',
-    ...over,
-  };
-}
 
 describe('FilaService', () => {
   let clientes: ClienteCarteira[];

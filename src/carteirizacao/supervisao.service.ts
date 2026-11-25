@@ -33,9 +33,9 @@ export const envNum = (nome: string, padrao: number): number => {
   return Number.isFinite(n) && n > 0 ? n : padrao;
 };
 
-const menosDias = (ymd: string, n: number) => somarDias(ymd, -n);
+export const menosDias = (ymd: string, n: number) => somarDias(ymd, -n);
 /** Dia (aaaa-mm-dd) da emissão como o ERP gravou — sem passar por fuso. */
-const diaEmissao = (o: { emissao: Date; emissao_ymd?: string }) => o.emissao_ymd ?? hojeYmd(o.emissao);
+export const diaEmissao = (o: { emissao: Date; emissao_ymd?: string }) => o.emissao_ymd ?? hojeYmd(o.emissao);
 const mesAtual = () => {
   const m = mesComissionalDe(hojeYmd());
   return periodoComissional(m.ano, m.mes);

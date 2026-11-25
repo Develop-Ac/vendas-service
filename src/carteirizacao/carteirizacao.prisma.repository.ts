@@ -156,6 +156,36 @@ export class CarteirizacaoPrismaRepository {
     return this.prisma.ven_meta_vendedor.findMany({ where: { ano, mes } });
   }
 
+  /**
+   * Orçamentos do vendedor para retornar hoje: adiados com retorno hoje ou atrasado e
+   * enviados que vencem em até 2 dias. `hoje` é a coluna DATE do dia de Cuiabá (`hojeRetorno()`).
+   */
+  async orcamentosParaRetornar(rep: number, hoje: Date) {
+    const ate = new Date(hoje.getTime() + 2 * 86_400_000);
+    const rows = await this.prisma.ven_orcamento.findMany({
+      where: {
+        rep_codigo: rep,
+        OR: [
+          { status: 'ADIADO', retorno_em: { lte: hoje } },
+          { status: 'ENVIADO', validade: { gte: hoje, lte: ate } },
+        ],
+      },
+      select: { id: true, numero: true, cli_codigo: true, cli_nome: true, total: true, status: true, retorno_em: true, validade: true },
+    });
+    return rows.map((r) => ({ ...r, total: Number(r.total) }));
+  }
+
+  /** Os 8 orçamentos mais recentes do vendedor (painel do vendedor). */
+  async ultimosOrcamentos(rep: number) {
+    const rows = await this.prisma.ven_orcamento.findMany({
+      where: { rep_codigo: rep },
+      orderBy: { created_at: 'desc' },
+      take: 8,
+      select: { id: true, numero: true, cli_nome: true, status: true, total: true, created_at: true },
+    });
+    return rows.map((r) => ({ ...r, total: Number(r.total) }));
+  }
+
   /** Orçamentos em negociação (ENVIADO dentro da validade) somados por vendedor do orçamento. */
   async emNegociacaoPorRep(hoje: string): Promise<Array<{ rep_codigo: number | null; valor: number; quantidade: number }>> {
     const rows = await this.prisma.ven_orcamento.groupBy({
@@ -561,7 +591,7 @@ export class CarteirizacaoPrismaRepository {
     if (!r) return null;
     return this.prisma.sis_usuarios.findFirst({
       where: { trash: 0, id: r },
-      select: { id: true, codigo: true, nome: true, setor: true, vendas_hub_inicial: true },
+      select: { id: true, codigo: true, nome: true, setor: true, vendas_hub_inicial: true, vendas_rep_codigo: true },
     });
   }
 
