@@ -50,8 +50,11 @@ export class PainelVendedorService {
     const p = this.gestao.validarPeriodo();
     const { ano, mes, hoje } = p;
     // Sem calendário do BI, as datas padrão do mês comissional e nenhum dia útil (como na gestão).
-    const cal = await this.bi.diasUteisPeriodo(ano, mes).catch(() => null);
-    const { inicio, fim, diasUteis } = this.gestao.montarPeriodo(p, cal);
+    // Nada espera o calendário para começar: só meta, positivação e carteira dependem dele.
+    const periodoLido = this.bi
+      .diasUteisPeriodo(ano, mes)
+      .catch(() => null)
+      .then((cal) => this.gestao.montarPeriodo(p, cal));
 
     // Uma leitura da bolsa serve bolsa, comissão e o "em aberto" da conversão.
     const bolsaLida = this.orcamento.bolsa(rep);
@@ -65,8 +68,8 @@ export class PainelVendedorService {
     const avisos: Array<{ bloco: string; motivo: string }> = [];
 
     const blocos = {
-      meta: this.meta(rep, ano, mes, { inicio, fim, diasUteis, hoje }),
-      positivacao: this.carteirizacao.painelCarteira(rep, inicio, fim).then((r) => ({
+      meta: periodoLido.then(({ inicio, fim, diasUteis }) => this.meta(rep, ano, mes, { inicio, fim, diasUteis, hoje })),
+      positivacao: periodoLido.then(({ inicio, fim }) => this.carteirizacao.painelCarteira(rep, inicio, fim)).then((r) => ({
         clientes_carteira: r.clientes_carteira,
         clientes_com_venda: r.clientes_com_venda,
         positivacao: r.positivacao,
@@ -77,7 +80,7 @@ export class PainelVendedorService {
       contatos,
       retornar: this.retornar(rep, snapshot, avisos),
       // Quem já está nos contatos de hoje conta na situação, mas sai da lista.
-      carteira: Promise.all([snapshot, contatos.catch(() => [])]).then(([s, c]) =>
+      carteira: Promise.all([snapshot, contatos.catch(() => []), periodoLido]).then(([s, c, { inicio }]) =>
         montarCarteira({ clientes: s, rep, inicioMes: inicio, foraDaLista: new Set(c.map((x) => x.cli_codigo)) }),
       ),
       ofertas: this.ofertas(),
@@ -85,6 +88,7 @@ export class PainelVendedorService {
     };
     const nomes = Object.keys(blocos) as Array<keyof typeof blocos>;
     const lidos = await Promise.allSettled(nomes.map((n) => blocos[n]));
+    const { inicio, fim, diasUteis } = await periodoLido;
     const valor = <K extends keyof typeof blocos>(n: K) => {
       const r = lidos[nomes.indexOf(n)];
       if (r.status === 'fulfilled') return r.value as Awaited<(typeof blocos)[K]>;
@@ -181,9 +185,12 @@ export class PainelVendedorService {
    * vendeu pelos orçamentos fechados, o mesmo `vendeu` da aba Equipe.
    */
   private async meta(rep: number, ano: number, mes: number, per: { inicio: string; fim: string; diasUteis: string[]; hoje: string }) {
+    // A série do BI sai junto com as metas, sem esperar por elas; só quem tem meta a usa.
+    const serieLida = this.bi.faturadoVendedorPorDia(ano, mes, rep);
+    serieLida.catch(() => undefined);
     const { metas } = await this.gestao.metasDoCanal(ano, mes);
     const meta = metas.get(rep);
-    if (meta) return blocoMeta({ meta, serie: await this.bi.faturadoVendedorPorDia(ano, mes, rep), ...per });
+    if (meta) return blocoMeta({ meta, serie: await serieLida, ...per });
 
     const [fechados, casamento] = await Promise.all([
       this.repo.orcamentosFechadosNoMes(inicioDia(per.inicio), fimDia(per.fim)),

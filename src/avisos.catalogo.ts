@@ -95,6 +95,14 @@ export const CATALOGO_VENDAS: Catalogo = {
     prioridade: 'alta',
     alvo: { tipo: 'usuario' },
   },
+  'gestao.aviso_vendedor': {
+    descricao: 'Recado do gestor do atacado ao vendedor, escrito na tela inicial do gestor.',
+    titulo: 'Aviso de {gestor}',
+    corpo: '{texto}',
+    canais: ['badge', 'whatsapp'],
+    prioridade: 'normal',
+    alvo: { tipo: 'usuario' },
+  },
   'orcamento.vencendo': {
     descricao: 'Orçamento enviado vence amanhã sem venda nem desfecho.',
     titulo: 'Orçamento {numero} vence amanhã sem resposta',

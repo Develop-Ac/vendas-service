@@ -169,6 +169,17 @@ export class AvisosVendasService {
     });
   }
 
+  /** Recado do gestor ao vendedor (tela inicial do gestor). Cada envio tem ref própria: nada agrupa. */
+  avisoDoGestor(p: { usuarios: string[]; gestor: string; texto: string; canais: ('badge' | 'whatsapp')[]; link?: string; ref: string }) {
+    this.avisos.emitir('gestao.aviso_vendedor', {
+      ref: p.ref,
+      vars: { gestor: p.gestor, texto: p.texto },
+      usuarios: p.usuarios,
+      link: p.link,
+      canais: p.canais,
+    });
+  }
+
   /**
    * Quem APROVA orçamento acima da alçada — a mesma regra de `aprovaOrcamento()`
    * da tela: hub GERENCIA ou setor Admin/Administrador/Diretoria (cache de 10 min).

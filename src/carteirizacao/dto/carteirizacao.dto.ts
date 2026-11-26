@@ -183,3 +183,12 @@ export class RedistribuirDto {
   usuario_id?: string;
   usuario_nome?: string;
 }
+
+/** Recado do gestor ao vendedor (POST gestao/avisar-vendedor); validado em `validarAviso`. */
+export class AvisarVendedorDto {
+  rep_codigo: number;
+  texto: string;
+  canais: ('badge' | 'whatsapp')[];
+  // tela da intranet que o aviso abre (começa com "/")
+  link?: string;
+}

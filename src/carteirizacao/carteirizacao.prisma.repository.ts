@@ -157,20 +157,21 @@ export class CarteirizacaoPrismaRepository {
   }
 
   /**
-   * Orçamentos do vendedor para retornar hoje: adiados com retorno hoje ou atrasado e
-   * enviados que vencem em até 2 dias. `hoje` é a coluna DATE do dia de Cuiabá (`hojeRetorno()`).
+   * Orçamentos para retornar hoje — do vendedor (`rep`) ou da equipe toda (`rep` null):
+   * adiados com retorno hoje ou atrasado e enviados que vencem em até 2 dias.
+   * `hoje` é a coluna DATE do dia de Cuiabá (`hojeRetorno()`).
    */
-  async orcamentosParaRetornar(rep: number, hoje: Date) {
+  async orcamentosParaRetornar(rep: number | null, hoje: Date) {
     const ate = new Date(hoje.getTime() + 2 * 86_400_000);
     const rows = await this.prisma.ven_orcamento.findMany({
       where: {
-        rep_codigo: rep,
+        ...(rep != null ? { rep_codigo: rep } : {}),
         OR: [
           { status: 'ADIADO', retorno_em: { lte: hoje } },
           { status: 'ENVIADO', validade: { gte: hoje, lte: ate } },
         ],
       },
-      select: { id: true, numero: true, cli_codigo: true, cli_nome: true, total: true, status: true, retorno_em: true, validade: true },
+      select: { id: true, numero: true, cli_codigo: true, cli_nome: true, rep_codigo: true, rep_nome: true, total: true, status: true, retorno_em: true, validade: true },
     });
     return rows.map((r) => ({ ...r, total: Number(r.total) }));
   }
@@ -655,6 +656,14 @@ export class CarteirizacaoPrismaRepository {
       by: ['rep_codigo'],
       where: { status: 'ESCALADA' },
       _count: { _all: true },
+    });
+  }
+
+  /** Tarefas escaladas em aberto agora, uma linha por tarefa (clientes em risco na tela do gestor). */
+  async tarefasEscaladas() {
+    return this.prisma.ven_fila_tarefa.findMany({
+      where: { status: 'ESCALADA' },
+      select: { cli_codigo: true, cli_nome: true, rep_codigo: true, rep_nome: true, curva: true, motivo_geracao: true, escalada_em: true },
     });
   }
 

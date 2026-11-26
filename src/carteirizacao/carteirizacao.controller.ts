@@ -24,7 +24,9 @@ import { TrocaVendedorService } from './troca-vendedor.service';
 import { SupervisaoService } from './supervisao.service';
 import { GestaoService } from './gestao.service';
 import { PainelVendedorService } from './painel-vendedor.service';
+import { GestaoHojeService } from './gestao-hoje.service';
 import {
+  AvisarVendedorDto,
   ConfigVendedorDto,
   ConfirmarCarteirizacaoDto,
   ConfirmarExclusaoDto,
@@ -59,6 +61,7 @@ export class CarteirizacaoController {
     private readonly gestao: GestaoService,
     private readonly retornos: RetornoVendaPerdidaService,
     private readonly painelVendedor: PainelVendedorService,
+    private readonly gestaoHoje: GestaoHojeService,
   ) {}
 
   @Get('clientes')
@@ -299,6 +302,20 @@ export class CarteirizacaoController {
     @Headers('x-user-id') usuario?: string,
   ) {
     return this.gestao.equipe(toNum(ano), toNum(mes), semanaDesde, semanaAte, usuario);
+  }
+
+  /** Tela inicial do gestor do atacado (mês comissional corrente). Só gestão de vendas pelo x-user-id. */
+  @Get('gestao/hoje')
+  @UseGuards(SoPeloProxy)
+  gestaoHojeDoGestor(@Headers('x-user-id') usuario?: string) {
+    return this.gestaoHoje.hoje(usuario);
+  }
+
+  /** Recado do gestor a um vendedor do atacado (badge e/ou WhatsApp). Só gestão de vendas pelo x-user-id. */
+  @Post('gestao/avisar-vendedor')
+  @UseGuards(SoPeloProxy)
+  gestaoAvisarVendedor(@Body() body: AvisarVendedorDto, @Headers('x-user-id') usuario?: string) {
+    return this.gestaoHoje.avisarVendedor(usuario, body);
   }
 
   /** Painel do vendedor do atacado (tela inicial) do mês comissional corrente. O rep sai do usuário do x-user-id. */
