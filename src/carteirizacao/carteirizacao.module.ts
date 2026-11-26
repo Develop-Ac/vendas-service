@@ -17,6 +17,7 @@ import { SupervisaoService } from './supervisao.service';
 import { GestaoService } from './gestao.service';
 import { PainelVendedorService } from './painel-vendedor.service';
 import { GestaoHojeService } from './gestao-hoje.service';
+import { GestaoEmpresaService } from './gestao-empresa.service';
 // Só depende do PrismaService global; importar o OfertaModule fecharia um ciclo de módulos.
 import { OfertaRepository } from '../oferta/oferta.repository';
 import { GestaoFechamentoScheduler } from './gestao-fechamento.scheduler';
@@ -42,6 +43,7 @@ import { MssqlService } from 'src/common/mssql/mssql.service';
     GestaoService,
     PainelVendedorService,
     GestaoHojeService,
+    GestaoEmpresaService,
     OfertaRepository,
     GestaoFechamentoScheduler,
     MssqlService

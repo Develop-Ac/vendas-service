@@ -13,7 +13,7 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
-import { SoPeloProxy } from '../common/so-pelo-proxy.guard';
+import { SoPeloProxy, veioPeloProxy } from '../common/so-pelo-proxy.guard';
 import type { FastifyReply } from 'fastify';
 import { CarteirizacaoService } from './carteirizacao.service';
 import { FilaService } from './fila.service';
@@ -25,6 +25,7 @@ import { SupervisaoService } from './supervisao.service';
 import { GestaoService } from './gestao.service';
 import { PainelVendedorService } from './painel-vendedor.service';
 import { GestaoHojeService } from './gestao-hoje.service';
+import { GestaoEmpresaService } from './gestao-empresa.service';
 import {
   AvisarVendedorDto,
   ConfigVendedorDto,
@@ -62,6 +63,7 @@ export class CarteirizacaoController {
     private readonly retornos: RetornoVendaPerdidaService,
     private readonly painelVendedor: PainelVendedorService,
     private readonly gestaoHoje: GestaoHojeService,
+    private readonly gerenciaEmpresa: GestaoEmpresaService,
   ) {}
 
   @Get('clientes')
@@ -292,6 +294,13 @@ export class CarteirizacaoController {
     return this.gestao.visaoGeral(toNum(ano), toNum(mes), usuario);
   }
 
+  // Tela inicial da gerência: empresa toda, todos os canais (só gerência/diretoria).
+  @Get('gestao/empresa')
+  @UseGuards(SoPeloProxy)
+  gestaoEmpresa(@Query('ano') ano?: string, @Query('mes') mes?: string, @Headers('x-user-id') usuario?: string) {
+    return this.gerenciaEmpresa.empresa(toNum(ano), toNum(mes), usuario);
+  }
+
   @Get('gestao/equipe')
   @UseGuards(SoPeloProxy)
   gestaoEquipe(
@@ -378,9 +387,17 @@ export class CarteirizacaoController {
   }
 
   // ------------------------------------------------- Fase 3: metas & perform.
+  // Lucro, lucratividade e markup só saem para a gerência. Quem é o usuário só vale quando
+  // a chamada veio do proxy da intranet; chamada direta recebe a lista sem esses campos.
   @Get('metas')
-  metas(@Query('ano') ano?: string, @Query('mes') mes?: string, @Query('canal') canal?: string) {
-    return this.service.metasVendedores(toNum(ano), toNum(mes), canal);
+  metas(
+    @Query('ano') ano?: string,
+    @Query('mes') mes?: string,
+    @Query('canal') canal?: string,
+    @Headers('x-app-token') token?: string,
+    @Headers('x-user-id') usuario?: string,
+  ) {
+    return this.service.metasVendedores(toNum(ano), toNum(mes), canal, veioPeloProxy(token) ? usuario : undefined);
   }
 
   @Put('metas/:rep')

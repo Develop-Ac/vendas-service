@@ -13,6 +13,7 @@ import {
 } from './carteirizacao.erp.repository';
 import { PerfilFinanceiro, TituloBoleto, perfilFinanceiro } from './curva-financeira';
 import { fimDia, hojeYmd, inicioDia } from './supervisao.indicadores';
+import { ehGerenciaVendas } from './papel';
 import {
   AtribuirDto,
   AtribuirLoteDto,
@@ -1478,7 +1479,13 @@ export class CarteirizacaoService {
   // =================================================================
   // FASE 3 — Metas & Performance (todos os vendedores; gerencial)
   // =================================================================
-  async metasVendedores(ano?: number, mes?: number, canal?: string) {
+  /**
+   * `usuarioId` = usuário da intranet que pediu (só chega quando a chamada veio do proxy).
+   * Lucro, lucratividade e markup saem apenas para a gerência; para os demais, e para a
+   * chamada sem usuário, vêm nulos e `ve_margem` vem falso.
+   */
+  async metasVendedores(ano?: number, mes?: number, canal?: string, usuarioId?: string) {
+    const veMargem = usuarioId ? ehGerenciaVendas(await this.overlay.usuarioVendas(usuarioId)) : false;
     const hoje = new Date();
     const a = ano ?? hoje.getFullYear();
     const m = mes ?? hoje.getMonth() + 1;
@@ -1545,9 +1552,9 @@ export class CarteirizacaoService {
         meta_diaria: meta > 0 ? meta / diasNoMes : 0,
         realizado: realizadoV,
         pedidos: this.num(r?.pedidos),
-        lucro,
-        lucratividade_pct: realizadoV > 0 ? (lucro / realizadoV) * 100 : null,
-        markup_pct: custo > 0 ? (lucro / custo) * 100 : null,
+        lucro: veMargem ? lucro : null,
+        lucratividade_pct: veMargem && realizadoV > 0 ? (lucro / realizadoV) * 100 : null,
+        markup_pct: veMargem && custo > 0 ? (lucro / custo) * 100 : null,
         atingimento_pct: meta > 0 ? (realizadoV / meta) * 100 : null,
         gap: meta - realizadoV,
         ritmo_diario: ritmoDiario,
@@ -1595,6 +1602,7 @@ export class CarteirizacaoService {
         realizado_total: totalRealizado,
         atingimento_total_pct: totalMeta > 0 ? (totalRealizado / totalMeta) * 100 : null,
       },
+      ve_margem: veMargem,
       vendedores: linhas,
     };
   }

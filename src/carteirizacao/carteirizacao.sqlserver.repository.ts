@@ -557,6 +557,52 @@ export class CarteirizacaoSqlServerRepository {
     return Array.from(new Set(rows.map((r) => r.nome).filter(Boolean)));
   }
 
+  /**
+   * Venda, custo, lucro e notas por vendedor e dia de emissão no mês comissional, todos os
+   * canais (tela inicial da gerência). `nome` no mesmo formato de `vendedoresComVendaNomes`.
+   * Cada NF conta em um grupo só (o do menor vendedor dela): somar `notas` dá o total da empresa
+   * mesmo quando a NF tem itens de mais de um vendedor.
+   */
+  async vendaVendedoresPorDia(
+    ano: number,
+    mes: number,
+  ): Promise<Array<{ rep: number | null; dia: string; nome: string | null; venda: number; custo: number; lucro: number; notas: number }>> {
+    const rows = await this.mssql.query<{
+      rep: number | null; dia: string; nome: string | null; venda: number; custo: number; lucro: number; notas: number;
+    }>(
+      `
+      SELECT v.vendedor_venda AS rep,
+             CONVERT(varchar(10), v.dt_emissao_convertida, 23) AS dia,
+             MAX(LTRIM(RTRIM(UPPER(v.nome_representante)))) AS nome,
+             COALESCE(SUM(v.liquido_produto), 0) AS venda,
+             COALESCE(SUM(v.custo_produto), 0) AS custo,
+             COALESCE(SUM(v.lucro), 0) AS lucro,
+             SUM(v.primeira_da_nf) AS notas
+      FROM (
+        SELECT x.vendedor_venda, x.dt_emissao_convertida, x.nome_representante,
+               x.liquido_produto, x.custo_produto, x.lucro,
+               CASE WHEN x.NFS IS NOT NULL
+                     AND ROW_NUMBER() OVER (PARTITION BY x.NFS ORDER BY x.vendedor_venda) = 1 THEN 1 ELSE 0 END AS primeira_da_nf
+        FROM dbo.vw_analise_vendas x
+        WHERE x.DT_CANCELAMENTO IS NULL
+          AND x.ano_comissional = @ano AND x.mes_comissional = @mes
+      ) v
+      GROUP BY v.vendedor_venda, CONVERT(varchar(10), v.dt_emissao_convertida, 23)
+      ORDER BY dia
+      `,
+      { ano, mes },
+    );
+    return rows.map((r) => ({
+      rep: r.rep == null ? null : Number(r.rep),
+      dia: r.dia,
+      nome: r.nome,
+      venda: Number(r.venda),
+      custo: Number(r.custo),
+      lucro: Number(r.lucro),
+      notas: Number(r.notas),
+    }));
+  }
+
   /** Nome do representante (UPPER/TRIM) para casar com o filtro `vendedor` do Metabase. */
   async nomeRepresentanteComissao(repCodigo: number): Promise<string | null> {
     const rows = await this.mssql.query<{ nome: string }>(

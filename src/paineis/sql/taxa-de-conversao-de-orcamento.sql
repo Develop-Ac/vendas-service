@@ -67,6 +67,8 @@ QtdVend AS (
 
 SELECT
   CASE WHEN qo.qtd_orcamentos = 0 THEN NULL
-       ELSE CONVERT(decimal(18,4), 1.0 * qv.qtd_vendas / qo.qtd_orcamentos) END AS conversao_rel  -- 0–1
+       ELSE CONVERT(decimal(18,4), 1.0 * qv.qtd_vendas / qo.qtd_orcamentos) END AS conversao_rel,  -- 0–1
+  qv.qtd_vendas,      -- numerador e denominador da taxa (tela da gerência);
+  qo.qtd_orcamentos   -- o card escalar lê só a primeira coluna
 FROM QtdVend qv
 CROSS JOIN QtdOrc qo;

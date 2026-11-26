@@ -7,9 +7,17 @@ import { CanActivate, ExecutionContext, ForbiddenException } from '@nestjs/commo
  */
 export class SoPeloProxy implements CanActivate {
   canActivate(ctx: ExecutionContext): boolean {
-    const esperado = process.env.APP_TOKEN;
     const token = ctx.switchToHttp().getRequest<{ headers: Record<string, unknown> }>().headers['x-app-token'];
-    if (!esperado || token !== esperado) throw new ForbiddenException('Esta rota só responde pela intranet.');
+    if (!veioPeloProxy(token)) throw new ForbiddenException('Esta rota só responde pela intranet.');
     return true;
   }
+}
+
+/**
+ * A chamada passou pelo proxy da intranet? Para a rota que responde a todos mas só
+ * confia no `x-user-id` (e libera dado sensível) quando ele veio do proxy.
+ */
+export function veioPeloProxy(token: unknown): boolean {
+  const esperado = process.env.APP_TOKEN;
+  return !!esperado && token === esperado;
 }
