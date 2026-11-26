@@ -18,8 +18,8 @@ describe('GestaoEmpresaService.empresa', () => {
   const bi = {
     diasUteisPeriodo: jest.fn(async () => null),
     vendaVendedoresPorDia: jest.fn(async () => [
-      { rep: 1, dia: hoje, nome: 'ANA', venda: 1_000, custo: 600, lucro: 400, notas: 2 },
-      { rep: 2, dia: hoje, nome: 'BIA', venda: 500, custo: 300, lucro: 200, notas: 1 },
+      { rep: 1, dia: hoje, nome: 'ANA', venda: 1_000, servico: 0, custo: 600, lucro: 400, notas: 2 },
+      { rep: 2, dia: hoje, nome: 'BIA', venda: 500, servico: 200, custo: 300, lucro: 200, notas: 1 },
     ]),
     metasDw: jest.fn(async () => [{ cod_vendedor: 2, vendedor: 'BIA', valor_total: 100_000 }]),
     papeisPorRep: jest.fn(async () => [

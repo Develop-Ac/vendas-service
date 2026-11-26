@@ -6,6 +6,12 @@
  * Meta, universo, nome e inativo seguem a regra do quadro Meta & Performance
  * (`CarteirizacaoService.metasVendedores`): meta manual > DW > 0; universo = ativos da
  * comissão + quem tem meta + quem vendeu; inativo sai da lista e continua nos totais.
+ *
+ * Canal: o vendedor pertence a um grupo pelo papel (atacado, varejo ou outros). Serviço não é
+ * grupo de vendedor: é a venda com ordem de serviço (canal VAREJO-SERVIÇO do BI) feita pelo
+ * grupo do varejo. Ela conta na meta do vendedor e do varejo, porque a meta é uma só, e sai
+ * separada em `servico` (no vendedor, no canal varejo e na série por dia) para a tela pintar
+ * as duas partes.
  */
 import { type Dias, ritmoNecessario, ritmoPrevisao, veredito } from './gestao';
 import { pct } from './supervisao.indicadores';
@@ -13,17 +19,22 @@ import { pct } from './supervisao.indicadores';
 export type Canal = 'atacado' | 'varejo' | 'servico' | 'outros';
 export type VereditoSimples = 'VAI_BATER' | 'EM_RISCO' | 'NAO_BATE' | null;
 
-const CANAIS: Canal[] = ['atacado', 'varejo', 'servico', 'outros'];
+/** Grupo do vendedor (dono da meta). */
+export type Grupo = Exclude<Canal, 'servico'>;
 
-/** Canal pelo papel na comissão; papel desconhecido, vazio ou rep sem cadastro = outros. */
-export function canalDoPapel(papel: string | null | undefined): Canal {
+const GRUPOS: Grupo[] = ['atacado', 'varejo', 'outros'];
+
+/**
+ * Grupo pelo papel na comissão; papel desconhecido, vazio ou rep sem cadastro = outros.
+ * O técnico fica no varejo: a venda dele é serviço ou balcão, e a meta é a do varejo.
+ */
+export function canalDoPapel(papel: string | null | undefined): Grupo {
   switch ((papel ?? '').trim().toUpperCase()) {
     case 'VENDEDOR_ATACADO':
       return 'atacado';
     case 'VENDEDOR':
-      return 'varejo';
     case 'TECNICO':
-      return 'servico';
+      return 'varejo';
     default:
       return 'outros';
   }
@@ -34,6 +45,8 @@ export interface LinhaVendaDia {
   dia: string;
   nome: string | null;
   venda: number;
+  /** parte de `venda` com ordem de serviço (canal VAREJO-SERVIÇO do BI) */
+  servico: number;
   custo: number;
   lucro: number;
   notas: number;
@@ -66,11 +79,11 @@ export function montarEmpresa(p: {
     };
   };
 
-  const porRep = new Map<number, { nome: string | null; venda: number; hoje: number; custo: number; lucro: number }>();
+  const porRep = new Map<number, { nome: string | null; venda: number; servico: number; hoje: number; custo: number; lucro: number }>();
   const semVendedor = { venda: 0, hoje: 0 };
   const porDia = new Map<string, Record<Canal, number>>();
   const papelMap = new Map(p.papeis.map((x) => [Number(x.rep_codigo), x.papel ?? null]));
-  const canalDoRep = (rep: number | null) => (rep == null ? 'outros' : canalDoPapel(papelMap.get(rep)));
+  const canalDoRep = (rep: number | null): Grupo => (rep == null ? 'outros' : canalDoPapel(papelMap.get(rep)));
   let custo = 0;
   let lucro = 0;
   let notas = 0;
@@ -80,16 +93,21 @@ export function montarEmpresa(p: {
     lucro += l.lucro;
     notas += l.notas;
     const dia = porDia.get(l.dia) ?? { atacado: 0, varejo: 0, servico: 0, outros: 0 };
-    dia[canalDoRep(l.rep)] += l.venda;
+    const grupo = canalDoRep(l.rep);
+    // Só o varejo separa o serviço; no atacado e em outros a venda fica inteira no grupo.
+    const servico = grupo === 'varejo' ? l.servico : 0;
+    dia[grupo] += l.venda - servico;
+    dia.servico += servico;
     porDia.set(l.dia, dia);
     if (l.rep == null) {
       semVendedor.venda += l.venda;
       if (hojeConta(l.dia)) semVendedor.hoje += l.venda;
       continue;
     }
-    const r = porRep.get(l.rep) ?? { nome: null, venda: 0, hoje: 0, custo: 0, lucro: 0 };
+    const r = porRep.get(l.rep) ?? { nome: null, venda: 0, servico: 0, hoje: 0, custo: 0, lucro: 0 };
     r.nome = r.nome ?? (l.nome?.trim() ? l.nome.trim().toUpperCase() : null);
     r.venda += l.venda;
+    r.servico += servico;
     r.custo += l.custo;
     r.lucro += l.lucro;
     if (hojeConta(l.dia)) r.hoje += l.venda;
@@ -122,6 +140,7 @@ export function montarEmpresa(p: {
       canal: canalDoRep(rep),
       posicao: 0,
       ...s,
+      servico: r?.servico ?? 0,
       margem: r ? pct(r.lucro, faturado) : null,
       markup: r ? pct(r.lucro, r.custo) : null,
     };
@@ -129,19 +148,22 @@ export function montarEmpresa(p: {
 
   // Totais antes de tirar os inativos: a venda de quem saiu continua sendo da empresa.
   const soma = (f: (v: (typeof todos)[number]) => boolean) =>
-    todos.filter(f).reduce((a, v) => ({ meta: a.meta + v.meta, faturado: a.faturado + v.faturado, hoje: a.hoje + v.faturado_hoje }), {
-      meta: 0,
-      faturado: 0,
-      hoje: 0,
-    });
-  const canais = CANAIS.map((canal) => {
+    todos
+      .filter(f)
+      .reduce((a, v) => ({ meta: a.meta + v.meta, faturado: a.faturado + v.faturado, servico: a.servico + v.servico, hoje: a.hoje + v.faturado_hoje }), {
+        meta: 0,
+        faturado: 0,
+        servico: 0,
+        hoje: 0,
+      });
+  const canais = GRUPOS.map((canal) => {
     const t = soma((v) => v.canal === canal);
     if (canal === 'outros') {
       t.faturado += semVendedor.venda;
       t.hoje += semVendedor.hoje;
     }
     const { ritmo: _ritmo, ...s } = situacao(t.meta, t.faturado, t.hoje);
-    return { canal, ...s };
+    return { canal, ...s, servico: t.servico };
   }).filter((c) => c.canal !== 'outros' || c.faturado > 0 || c.meta > 0);
 
   const t = soma(() => true);

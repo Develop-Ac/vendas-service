@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { MssqlService } from '../common/mssql/mssql.service';
+import { CANAIS } from '../paineis/painel-sql';
 
 export interface ClienteBaseRow {
   cli_codigo: number;
@@ -560,26 +561,29 @@ export class CarteirizacaoSqlServerRepository {
   /**
    * Venda, custo, lucro e notas por vendedor e dia de emissão no mês comissional, todos os
    * canais (tela inicial da gerência). `nome` no mesmo formato de `vendedoresComVendaNomes`.
+   * `servico` é a parte da venda com ordem de serviço: canal VAREJO-SERVIÇO em `local_venda_1`,
+   * a mesma classificação do filtro de canal dos painéis.
    * Cada NF conta em um grupo só (o do menor vendedor dela): somar `notas` dá o total da empresa
    * mesmo quando a NF tem itens de mais de um vendedor.
    */
   async vendaVendedoresPorDia(
     ano: number,
     mes: number,
-  ): Promise<Array<{ rep: number | null; dia: string; nome: string | null; venda: number; custo: number; lucro: number; notas: number }>> {
+  ): Promise<Array<{ rep: number | null; dia: string; nome: string | null; venda: number; servico: number; custo: number; lucro: number; notas: number }>> {
     const rows = await this.mssql.query<{
-      rep: number | null; dia: string; nome: string | null; venda: number; custo: number; lucro: number; notas: number;
+      rep: number | null; dia: string; nome: string | null; venda: number; servico: number; custo: number; lucro: number; notas: number;
     }>(
       `
       SELECT v.vendedor_venda AS rep,
              CONVERT(varchar(10), v.dt_emissao_convertida, 23) AS dia,
              MAX(LTRIM(RTRIM(UPPER(v.nome_representante)))) AS nome,
              COALESCE(SUM(v.liquido_produto), 0) AS venda,
+             COALESCE(SUM(CASE WHEN v.local_venda_1 = @servico THEN v.liquido_produto ELSE 0 END), 0) AS servico,
              COALESCE(SUM(v.custo_produto), 0) AS custo,
              COALESCE(SUM(v.lucro), 0) AS lucro,
              SUM(v.primeira_da_nf) AS notas
       FROM (
-        SELECT x.vendedor_venda, x.dt_emissao_convertida, x.nome_representante,
+        SELECT x.vendedor_venda, x.dt_emissao_convertida, x.nome_representante, x.local_venda_1,
                x.liquido_produto, x.custo_produto, x.lucro,
                CASE WHEN x.NFS IS NOT NULL
                      AND ROW_NUMBER() OVER (PARTITION BY x.NFS ORDER BY x.vendedor_venda) = 1 THEN 1 ELSE 0 END AS primeira_da_nf
@@ -590,13 +594,14 @@ export class CarteirizacaoSqlServerRepository {
       GROUP BY v.vendedor_venda, CONVERT(varchar(10), v.dt_emissao_convertida, 23)
       ORDER BY dia
       `,
-      { ano, mes },
+      { ano, mes, servico: CANAIS['varejo-servico'] },
     );
     return rows.map((r) => ({
       rep: r.rep == null ? null : Number(r.rep),
       dia: r.dia,
       nome: r.nome,
       venda: Number(r.venda),
+      servico: Number(r.servico),
       custo: Number(r.custo),
       lucro: Number(r.lucro),
       notas: Number(r.notas),

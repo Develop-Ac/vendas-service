@@ -7,6 +7,9 @@ const DIAS: Dias = { total: 22, fechados: 13, restantes: 9, dia_util_corrente: 1
 const FECHADO: Dias = { total: 22, fechados: 22, restantes: 0, dia_util_corrente: null, corrente: false };
 
 // Massa do critério 2: [rep, nome, papel, vendido (mil), meta (mil)].
+// Parte com ordem de serviço: metade da venda do vendedor do varejo, tudo do técnico e 10% do
+// atacado (que não separa serviço: fica inteira no atacado).
+const PARTE_SERVICO: Record<string, number> = { VENDEDOR: 0.5, TECNICO: 1, VENDEDOR_ATACADO: 0.1 };
 const MASSA: Array<[number, string, string, number, number]> = [
   [1, 'Alisson', 'VENDEDOR_ATACADO', 141, 220],
   [2, 'Fernando', 'VENDEDOR_ATACADO', 86, 180],
@@ -26,12 +29,13 @@ const MASSA: Array<[number, string, string, number, number]> = [
 function entrada(encerrado = false) {
   return {
     // Venda partida em dois dias anteriores a hoje (nada vendido hoje).
-    linhas: MASSA.flatMap(([rep, nome, , v]) =>
+    linhas: MASSA.flatMap(([rep, nome, papel, v]) =>
       ['2026-11-03', '2026-10-28'].map((dia) => ({
         rep,
         dia,
         nome: ` ${nome.toLowerCase()} `,
         venda: (v * MIL) / 2,
+        servico: ((v * MIL) / 2) * PARTE_SERVICO[papel],
         custo: (v * MIL * 0.69) / 2,
         lucro: (v * MIL * 0.31) / 2,
         notas: 5,
@@ -67,13 +71,14 @@ describe('gestão empresa — critério 2 (empresa e canais)', () => {
     expect(r.empresa.ritmo_para_meta).toBeCloseTo((1_430_000 - 822_000) / 9);
   });
 
-  it('atacado, varejo e serviço; outros fora sem venda nem meta', () => {
-    expect(r.canais.map((c) => c.canal)).toEqual(['atacado', 'varejo', 'servico']);
-    expect(canal(r, 'atacado')).toMatchObject({ meta: 680_000, faturado: 380_000 });
+  it('atacado e varejo; o serviço é parte do varejo e conta na mesma meta; outros fora sem venda nem meta', () => {
+    expect(r.canais.map((c) => c.canal)).toEqual(['atacado', 'varejo']);
+    expect(canal(r, 'atacado')).toMatchObject({ meta: 680_000, faturado: 380_000, servico: 0 });
     expect(Math.round(canal(r, 'atacado').previsao!)).toBe(643_077);
-    expect(canal(r, 'varejo')).toMatchObject({ meta: 750_000, faturado: 400_000 });
-    expect(Math.round(canal(r, 'varejo').previsao!)).toBe(676_923);
-    expect(canal(r, 'servico')).toMatchObject({ meta: 0, faturado: 42_000, veredito: null, atingimento: null });
+    // varejo = vendedores (400 mil) + técnicos (42 mil); serviço = metade dos vendedores + tudo dos técnicos
+    expect(canal(r, 'varejo')).toMatchObject({ meta: 750_000, faturado: 442_000, servico: 242_000 });
+    expect(Math.round(canal(r, 'varejo').previsao!)).toBe(748_000);
+    expect(canal(r, 'varejo').veredito).toBe('EM_RISCO');
   });
 
   it('kpis e série', () => {
@@ -84,7 +89,7 @@ describe('gestão empresa — critério 2 (empresa e canais)', () => {
     expect(r.kpis.ticket_medio).toBeCloseTo(822_000 / 130);
     expect(r.serie.meta_diaria).toBeCloseTo(1_430_000 / 22);
     expect(r.serie.dias.map((d) => d.dia)).toEqual(['2026-10-28', '2026-11-03']);
-    expect(r.serie.dias[0]).toMatchObject({ atacado: 190_000, varejo: 200_000, servico: 21_000, outros: 0 });
+    expect(r.serie.dias[0]).toMatchObject({ atacado: 190_000, varejo: 100_000, servico: 121_000, outros: 0 });
   });
 });
 
@@ -95,7 +100,9 @@ describe('gestão empresa — critério 3 (vendedores)', () => {
     expect(vend(r, 'Alisson')).toMatchObject({ meta: 220_000, faturado: 141_000, veredito: 'VAI_BATER', canal: 'atacado' });
     expect(vend(r, 'Fernando').veredito).toBe('NAO_BATE');
     expect(vend(r, 'Gabriel').veredito).toBe('EM_RISCO');
-    expect(vend(r, 'Tecnico 12').veredito).toBeNull();
+    expect(vend(r, 'Tecnico 12')).toMatchObject({ veredito: null, canal: 'varejo', servico: 24_000 });
+    expect(vend(r, 'Varejo 6')).toMatchObject({ faturado: 88_000, servico: 44_000 });
+    expect(vend(r, 'Alisson').servico).toBe(0);
   });
 
   it('ranking 1 a 13 pelo vendido, nome da venda e margem/markup', () => {
@@ -110,16 +117,17 @@ describe('gestão empresa — critério 4 (papel e inativo)', () => {
   it('canalDoPapel', () => {
     expect(canalDoPapel('VENDEDOR_ATACADO')).toBe('atacado');
     expect(canalDoPapel('VENDEDOR')).toBe('varejo');
-    expect(canalDoPapel('TECNICO')).toBe('servico');
+    expect(canalDoPapel('TECNICO')).toBe('varejo');
     expect(canalDoPapel('GERENTE')).toBe('outros');
     expect(canalDoPapel('')).toBe('outros');
     expect(canalDoPapel(null)).toBe('outros');
   });
 
   it('desconhecido, vazio, sem cadastro e sem vendedor vão para outros; inativo some da lista e fica no total', () => {
-    const linha = (rep: number | null, venda: number, nome: string | null = null) => ({ rep, dia: '2026-11-03', nome, venda, custo: 0, lucro: 0, notas: 1 });
+    const linha = (rep: number | null, venda: number, nome: string | null = null, servico = 0) => ({ rep, dia: '2026-11-03', nome, venda, servico, custo: 0, lucro: 0, notas: 1 });
     const r = montarEmpresa({
-      linhas: [linha(1, 100), linha(2, 200), linha(3, 300), linha(4, 400, 'Sem cadastro'), linha(5, 500), linha(null, 600)],
+      // serviço do técnico (rep 1) aparece no varejo; o do gerente (rep 2, outros) não é separado
+      linhas: [linha(1, 100, null, 100), linha(2, 200, null, 50), linha(3, 300), linha(4, 400, 'Sem cadastro'), linha(5, 500), linha(null, 600)],
       metasManuais: [],
       metasDw: [{ cod_vendedor: 5, vendedor: 'Saiu', valor_total: 1000 }],
       papeis: [
@@ -137,23 +145,23 @@ describe('gestão empresa — critério 4 (papel e inativo)', () => {
       [4, 'outros'],
       [3, 'outros'],
       [2, 'outros'],
-      [1, 'servico'],
+      [1, 'varejo'],
     ]);
     expect(r.vendedores.find((v) => v.rep_codigo === 4)).toMatchObject({ rep_nome: 'SEM CADASTRO', papel: null });
     expect(r.empresa).toMatchObject({ faturado: 2100, meta: 1000 });
-    expect(r.canais.map((c) => [c.canal, c.faturado, c.meta])).toEqual([
-      ['atacado', 0, 0],
-      ['varejo', 500, 1000],
-      ['servico', 100, 0],
-      ['outros', 1500, 0],
+    expect(r.canais.map((c) => [c.canal, c.faturado, c.meta, c.servico])).toEqual([
+      ['atacado', 0, 0, 0],
+      ['varejo', 600, 1000, 100],
+      ['outros', 1500, 0, 0],
     ]);
+    expect(r.serie.dias[0]).toMatchObject({ atacado: 0, varejo: 500, servico: 100, outros: 1500 });
   });
 
   it('venda líquida negativa sem meta nem cadastro ativo desconta da empresa e do canal', () => {
     const r = montarEmpresa({
       linhas: [
-        { rep: 1, dia: '2026-11-03', nome: 'A', venda: 5000, custo: 0, lucro: 0, notas: 1 },
-        { rep: 2, dia: '2026-11-03', nome: 'T', venda: -2000, custo: 0, lucro: 0, notas: 1 },
+        { rep: 1, dia: '2026-11-03', nome: 'A', venda: 5000, servico: 0, custo: 0, lucro: 0, notas: 1 },
+        { rep: 2, dia: '2026-11-03', nome: 'T', venda: -2000, servico: -2000, custo: 0, lucro: 0, notas: 1 },
       ],
       metasManuais: [],
       metasDw: [],
@@ -164,14 +172,14 @@ describe('gestão empresa — critério 4 (papel e inativo)', () => {
       hoje: HOJE,
     });
     expect(r.empresa.faturado).toBe(3000);
-    expect(r.canais.find((c) => c.canal === 'servico')?.faturado).toBe(-2000);
+    expect(r.canais.find((c) => c.canal === 'varejo')).toMatchObject({ faturado: -2000, servico: -2000 });
     const dia = r.serie.dias[0];
     expect(dia.atacado + dia.varejo + dia.servico + dia.outros).toBe(r.empresa.faturado);
   });
 
   it('venda de hoje entra em faturado_hoje', () => {
     const r = montarEmpresa({
-      linhas: [{ rep: 1, dia: HOJE, nome: 'A', venda: 50, custo: 0, lucro: 0, notas: 1 }],
+      linhas: [{ rep: 1, dia: HOJE, nome: 'A', venda: 50, servico: 0, custo: 0, lucro: 0, notas: 1 }],
       metasManuais: [],
       metasDw: [],
       papeis: [],
