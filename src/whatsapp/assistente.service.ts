@@ -28,6 +28,11 @@ import { SessoesService } from './sessoes.service';
  *
  * Rotas da tela (permissão da tela de sessões): `ler` devolve o estado guardado sem
  * chamar o runner; `reiniciar` e `resgatar` repassam ao runner com o nome de quem agiu.
+ *
+ * Vigia: processo à parte na máquina do runner (mesmo host, porta 9201, mesma senha) que
+ * religa o runner caído. A cada leitura o monitor confere `GET /health` dele e a tela
+ * mostra quando está parado (aí o runner não volta sozinho). Runner morto ou travado
+ * não recebe o próprio pedido de reinício: `reiniciar` cai em `POST /reiniciar` do vigia.
  */
 const REF = 'runner';
 const LINK = '/sistema/whatsapp';
@@ -74,12 +79,15 @@ interface Queda {
 }
 
 const EVENTO: Record<TipoQueda, string> = { mudo: 'assistente.mudo', login: 'assistente.precisa_login' };
+const PORTA_VIGIA = 9201;
 const SEM_RESPOSTA = 'O assistente não responde. O vigia reinicia sozinho em até 90 segundos.';
+const SEM_NINGUEM =
+  'Nem o assistente nem o vigia respondem. Entre na máquina do assistente e rode a tarefa "Assistente WhatsApp".';
 const semTesteDesdeASubida = (r: SaudeAssistente) =>
   !r.claude?.ultimo_teste || new Date(r.claude.ultimo_teste) <= new Date(r.subiu_em);
 const hora = (d: Date) => d.toLocaleString('pt-BR', { timeZone: 'America/Cuiaba' });
 
-export function configRunner(): { url: string; token: string } | null {
+export function configRunner(): { url: string; token: string; vigia: string } | null {
   let url = process.env.ASSISTENTE_RUNNER_URL;
   let token = process.env.ASSISTENTE_RUNNER_TOKEN;
   // a senha da transcrição só vale para o runner da transcrição: URL própria exige token próprio
@@ -91,7 +99,15 @@ export function configRunner(): { url: string; token: string } | null {
       url = undefined;
     }
   }
-  return url && token ? { url: url.replace(/\/+$/, ''), token } : null;
+  if (!url || !token) return null;
+  let vigia: URL;
+  try {
+    vigia = new URL(url);
+  } catch {
+    return null;
+  }
+  vigia.port = String(PORTA_VIGIA);
+  return { url: url.replace(/\/+$/, ''), token, vigia: vigia.origin };
 }
 
 @Injectable()
@@ -102,6 +118,8 @@ export class AssistenteService {
   retrato: SaudeAssistente | null = null;
   lidoEm: Date | null = null;
   semRespostaDesde: Date | null = null;
+  /** null = ainda não conferido. */
+  vigiaOk: boolean | null = null;
   private falhas = 0;
   private queda: Queda | null = null;
   private lidoDepoisDoBoot = false;
@@ -117,7 +135,14 @@ export class AssistenteService {
   async ler(userId?: string) {
     await this.sessoes.exigirTela(userId, 'visualizar');
     if (!configRunner()) {
-      return { configurado: false, alcancavel: false, sem_resposta_desde: null, lido_em: null, retrato: null };
+      return {
+        configurado: false,
+        alcancavel: false,
+        sem_resposta_desde: null,
+        lido_em: null,
+        retrato: null,
+        vigia_ok: null,
+      };
     }
     return {
       configurado: true,
@@ -125,6 +150,7 @@ export class AssistenteService {
       sem_resposta_desde: this.semRespostaDesde?.toISOString() ?? null,
       lido_em: this.lidoEm?.toISOString() ?? null,
       retrato: this.retrato,
+      vigia_ok: this.vigiaOk,
     };
   }
 
@@ -136,24 +162,37 @@ export class AssistenteService {
     return this.acao(userId, 'resgatar');
   }
 
-  /** POST no runner com `{ por }`; sem resposta ou erro dele vira 502. */
+  /**
+   * POST no runner com `{ por }`. Runner sem resposta ou com erro: o reinício vai ao vigia
+   * (`via: 'vigia'`); se nem ele atende, ou a ação é o resgate (só o runner faz), vira 502.
+   */
   private async acao(userId: string | undefined, rota: 'reiniciar' | 'resgatar') {
     const { nome } = await this.sessoes.exigirTela(userId, 'editar');
     const cfg = configRunner();
     if (!cfg) throw new BadGatewayException(SEM_RESPOSTA);
-    try {
-      const r = await fetch(`${cfg.url}/assistente/${rota}`, {
+    const pedir = async (url: string) => {
+      const r = await fetch(url, {
         method: 'POST',
         headers: { Authorization: `Bearer ${cfg.token}`, 'Content-Type': 'application/json' },
         body: JSON.stringify({ por: nome }),
         signal: AbortSignal.timeout(10_000),
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    };
+    try {
+      await pedir(`${cfg.url}/assistente/${rota}`);
+      return { ok: true };
     } catch (e) {
       this.logger.warn(`Assistente: ${rota} falhou: ${(e as Error).message}`);
-      throw new BadGatewayException(SEM_RESPOSTA);
     }
-    return { ok: true };
+    if (rota !== 'reiniciar') throw new BadGatewayException(this.vigiaOk === false ? SEM_NINGUEM : SEM_RESPOSTA);
+    try {
+      await pedir(`${cfg.vigia}/reiniciar`);
+    } catch (e) {
+      this.logger.warn(`Assistente: reiniciar pelo vigia falhou: ${(e as Error).message}`);
+      throw new BadGatewayException(SEM_NINGUEM);
+    }
+    return { ok: true, via: 'vigia' as const };
   }
 
   @Cron('*/30 * * * * *', { name: 'assistente-monitor' })
@@ -173,6 +212,10 @@ export class AssistenteService {
     const cfg = configRunner();
     if (!cfg) return;
     const agora = new Date();
+    this.vigiaOk = await fetch(`${cfg.vigia}/health`, { signal: AbortSignal.timeout(5_000) }).then(
+      (r) => r.ok,
+      () => false,
+    );
 
     let retrato: SaudeAssistente;
     try {
@@ -187,7 +230,8 @@ export class AssistenteService {
       this.semRespostaDesde ??= agora;
       this.logger.warn(`Assistente sem resposta (${this.falhas}x): ${(e as Error).message}`);
       if (this.falhas >= FALHAS_MUDO) {
-        this.entrarEmQueda({ tipo: 'mudo', motivo: 'runner não responde', desde: this.semRespostaDesde });
+        const motivo = this.vigiaOk ? 'runner não responde' : 'runner não responde e o vigia está parado';
+        this.entrarEmQueda({ tipo: 'mudo', motivo, desde: this.semRespostaDesde });
       }
       return;
     }

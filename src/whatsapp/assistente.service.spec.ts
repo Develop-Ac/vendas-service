@@ -4,6 +4,7 @@ import { AssistenteService, SaudeAssistente } from './assistente.service';
 describe('AssistenteService (monitor do runner)', () => {
   let avisos: { emitir: jest.Mock; resolver: jest.Mock };
   let resposta: Partial<SaudeAssistente> | Error;
+  let vigiaVivo: boolean;
   let svc: AssistenteService;
   let sessoes: { exigirTela: jest.Mock };
   const env = { ...process.env };
@@ -31,7 +32,12 @@ describe('AssistenteService (monitor do runner)', () => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
     avisos = { emitir: jest.fn(), resolver: jest.fn() };
     resposta = saude();
+    vigiaVivo = true;
     (global as any).fetch = jest.fn(async (url: string, init: any) => {
+      if (url === 'http://runner:9201/health') {
+        if (!vigiaVivo) throw new Error('ECONNREFUSED');
+        return { ok: true };
+      }
       expect(url).toBe('http://runner:9200/assistente/saude');
       expect(init.headers.Authorization).toBe('Bearer tk');
       if (resposta instanceof Error) throw resposta;
@@ -68,6 +74,22 @@ describe('AssistenteService (monitor do runner)', () => {
     expect(avisos.emitir).toHaveBeenCalledTimes(1);
     expect(svc.semRespostaDesde).not.toBeNull();
     expect(svc.retrato).not.toBeNull();
+  });
+
+  it('runner e vigia fora: o aviso diz que o vigia está parado e a tela recebe vigia_ok false', async () => {
+    resposta = new Error('timeout');
+    vigiaVivo = false;
+    await svc.tick();
+    await svc.tick();
+    await svc.tick();
+    expect(avisos.emitir).toHaveBeenCalledWith(
+      'assistente.mudo',
+      expect.objectContaining({ vars: expect.objectContaining({ motivo: 'runner não responde e o vigia está parado' }) }),
+    );
+    expect((await svc.ler('u1')).vigia_ok).toBe(false);
+    vigiaVivo = true;
+    await svc.tick();
+    expect((await svc.ler('u1')).vigia_ok).toBe(true);
   });
 
   it('retrato com login emite precisa_login com as guardadas', async () => {
@@ -195,6 +217,7 @@ describe('AssistenteService (monitor do runner)', () => {
         sem_resposta_desde: null,
         lido_em: null,
         retrato: null,
+        vigia_ok: null,
       });
     });
 
@@ -228,15 +251,33 @@ describe('AssistenteService (monitor do runner)', () => {
       }
     });
 
-    it('runner fora ou com erro -> 502 com o texto', async () => {
+    it('runner fora: reiniciar vai ao vigia com a mesma senha e o nome de quem agiu', async () => {
+      const fetchMock = jest.fn(async (url: string) => {
+        if (url.startsWith('http://runner:9200')) throw new Error('ECONNREFUSED');
+        return { ok: true, status: 202 };
+      });
+      (global as any).fetch = fetchMock;
+      expect(await svc.reiniciar('u1')).toEqual({ ok: true, via: 'vigia' });
+      const [url, init] = fetchMock.mock.calls[1] as unknown as [string, any];
+      expect(url).toBe('http://runner:9201/reiniciar');
+      expect(init.headers.Authorization).toBe('Bearer tk');
+      expect(JSON.parse(init.body)).toEqual({ por: 'Lucas' });
+    });
+
+    it('runner e vigia fora -> 502 mandando entrar na máquina', async () => {
       (global as any).fetch = jest.fn(async () => {
         throw new Error('ECONNREFUSED');
       });
-      await expect(svc.reiniciar('u1')).rejects.toThrow(
+      await expect(svc.reiniciar('u1')).rejects.toThrow(/Nem o assistente nem o vigia respondem/);
+    });
+
+    it('resgate com o runner fora -> 502 (o vigia não resgata)', async () => {
+      const fetchMock = jest.fn(async () => ({ ok: false, status: 500 }));
+      (global as any).fetch = fetchMock;
+      await expect(svc.resgatar('u1')).rejects.toThrow(
         new BadGatewayException('O assistente não responde. O vigia reinicia sozinho em até 90 segundos.'),
       );
-      (global as any).fetch = jest.fn(async () => ({ ok: false, status: 500 }));
-      await expect(svc.resgatar('u1')).rejects.toBeInstanceOf(BadGatewayException);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 });
